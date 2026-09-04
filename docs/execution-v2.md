@@ -6,6 +6,17 @@
 
 Cloud Worker plans are created only inside an authoritative Native Agent turn by `cloud_worker_propose`. A client cannot create a Worker run directly. The proposal atomically creates the plan, execution, `CLOUD_WORKER` CoreTask, and pending CoreConfirmation.
 
+The proposal operation ID is the intrinsic call's deterministic idempotency
+key. Plan, execution, Task, confirmation, and receipt IDs are derived before
+the atomic store boundary. If that store returns an error, Agent does not infer
+failure and does not issue a second write. It opens a separately bounded,
+request-cancellation-independent reconciliation read, acquires the same
+operation advisory lock, and reads the exact receipt and request digest. A
+matching receipt returns the original offer as committed; an authoritative
+absence proves `mutation_state=unchanged`; an unavailable or conflicting read
+remains `unknown_mutation` and reports the operation, plan, Task, and execution
+IDs for `plans.get`/Task read-back before any new proposal.
+
 The intrinsic input has one explicit intent. `execute` enters the normal offer
 and retained-Worker path. `proposal_only` commits a non-executing plan summary
 before provider pricing or durable offer creation; it creates no plan, Task,

@@ -522,6 +522,13 @@ type ConnectionTester interface {
 	TestConnection(context.Context, Profile) error
 }
 
+// ToolCompatibilityTester probes whether a reachable conversation profile can
+// exchange structured tool calls. Implementations must use synthetic tools and
+// must never dispatch a returned call to an executable tool runtime.
+type ToolCompatibilityTester interface {
+	TestToolCompatibility(context.Context, Profile) ToolCompatibilityResult
+}
+
 type ProfileResolver interface {
 	ResolveProfile(context.Context, string) (Profile, error)
 }

@@ -1231,7 +1231,7 @@ func (c *coreModelCapability) HandleOperation(ctx context.Context, operationID s
 		p, err := c.service.Get(ctx, stringValue(in, "profile_id"))
 		return marshalResult(p, err)
 	case "test_model":
-		p, err := c.service.TestConnectionWithIdempotency(ctx, stringValue(in, "profile_id"), key)
+		p, err := c.service.TestConnectionWithIdempotency(ctx, stringValue(in, "profile_id"), key, coremodel.ConnectionTestOptions{ProbeTools: boolValue(in, "probe_tool_compatibility")})
 		return marshalResult(p, err)
 	case "delete_model":
 		p, err := c.service.Delete(ctx, coremodel.DeleteProfileCommand{ID: stringValue(in, "profile_id"), IdempotencyKey: key, ExpectedRevision: int64(intValue(in, "expected_revision", 0))})
@@ -2141,6 +2141,8 @@ func operationResultSchema(capabilityID, operation string) string {
 		return `{"additionalProperties":false,"properties":{"default_conversation_client_profile_id":{"type":"string"},"default_embedding_client_profile_id":{"type":"string"},"default_speech_client_profile_id":{"type":"string"},"default_tool_client_profile_id":{"type":"string"},"profiles":{"type":"array"}},"required":["profiles","default_conversation_client_profile_id","default_tool_client_profile_id","default_embedding_client_profile_id","default_speech_client_profile_id"],"type":"object"}`
 	case "agent.models.v1:list_models":
 		return `{"additionalProperties":false,"properties":{"default_conversation_client_profile_id":{"type":"string"},"default_embedding_client_profile_id":{"type":"string"},"default_speech_client_profile_id":{"type":"string"},"default_tool_client_profile_id":{"type":"string"},"next_page_token":{"type":"string"},"profiles":{"type":"array"}},"required":["profiles","next_page_token","default_conversation_client_profile_id","default_tool_client_profile_id","default_embedding_client_profile_id","default_speech_client_profile_id"],"type":"object"}`
+	case "agent.models.v1:test_model":
+		return `{"additionalProperties":false,"properties":{"error_code":{"type":"string"},"reachable":{"type":"boolean"},"tool_compatibility":{"additionalProperties":false,"properties":{"probes":{"items":{"additionalProperties":false,"properties":{"error_code":{"type":"string"},"name":{"enum":["structured_tool_call","streaming_tool_call","tool_result_continuation"],"type":"string"},"status":{"enum":["passed","failed","inconclusive"],"type":"string"}},"required":["name","status"],"type":"object"},"type":"array"},"status":{"enum":["not_run","compatible","incompatible","inconclusive"],"type":"string"}},"required":["status"],"type":"object"}},"required":["reachable","error_code","tool_compatibility"],"type":"object"}`
 	default:
 		return `{"type":"object"}`
 	}
@@ -2193,6 +2195,8 @@ func operationInputSchema(capabilityID, operation string) string {
 		return `{"type":"object","additionalProperties":false,"properties":{"idempotency_key":{"type":"string"},"default_conversation_client_profile_id":{"type":"string"},"default_tool_client_profile_id":{"type":"string"},"default_embedding_client_profile_id":{"type":"string"},"default_speech_client_profile_id":{"type":"string"},"entries":{"type":"array"}},"required":["idempotency_key","entries"]}`
 	case "agent.models.v1:list_models":
 		return `{"additionalProperties":false,"properties":{"page_size":{"maximum":100,"minimum":1,"type":"integer"},"page_token":{"maxLength":4096,"type":"string"}},"type":"object"}`
+	case "agent.models.v1:test_model":
+		return `{"additionalProperties":false,"properties":{"idempotency_key":{"format":"uuid","type":"string"},"probe_tool_compatibility":{"type":"boolean"},"profile_id":{"format":"uuid","type":"string"}},"required":["profile_id"],"type":"object"}`
 	case "agent.knowledge.v1:list_sources":
 		return `{"additionalProperties":false,"properties":{"kind":{"type":"string"},"page_size":{"maximum":100,"minimum":1,"type":"integer"},"page_token":{"maxLength":4096,"type":"string"},"status":{"type":"string"}},"type":"object"}`
 	case "agent.knowledge.v1:get_config":

@@ -469,9 +469,23 @@ func TestModelMutationsRequireCanonicalIdempotencyKey(t *testing.T) {
 	}
 }
 
+type capabilityCompatibilityTester struct {
+	probeCalls int
+}
+
+func (*capabilityCompatibilityTester) TestConnection(context.Context, coremodel.Profile) error {
+	return nil
+}
+
+func (t *capabilityCompatibilityTester) TestToolCompatibility(context.Context, coremodel.Profile) coremodel.ToolCompatibilityResult {
+	t.probeCalls++
+	return coremodel.ToolCompatibilityResult{Status: coremodel.ToolCompatibilityCompatible, Probes: []coremodel.ToolCompatibilityProbeResult{{Name: "structured_tool_call", Status: "passed"}}}
+}
+
 func TestModelConnectionResultUsesThePublicWireShape(t *testing.T) {
 	repo := coremodel.NewMemoryProfileRepository()
-	service, err := coremodel.NewService(repo, coremodel.ConnectionTesterFunc(func(context.Context, coremodel.Profile) error { return nil }))
+	tester := &capabilityCompatibilityTester{}
+	service, err := coremodel.NewService(repo, tester)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -487,7 +501,7 @@ func TestModelConnectionResultUsesThePublicWireShape(t *testing.T) {
 		t.Fatal(err)
 	}
 	capability := &coreModelCapability{service: service}
-	raw, err := capability.HandleOperation(context.Background(), "test_model", []byte(`{"profile_id":"11111111-1111-4111-8111-111111111111","idempotency_key":"11111111-1111-4111-8111-111111111113"}`))
+	raw, err := capability.HandleOperation(context.Background(), "test_model", []byte(`{"profile_id":"11111111-1111-4111-8111-111111111111","idempotency_key":"11111111-1111-4111-8111-111111111113","probe_tool_compatibility":true}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -495,7 +509,8 @@ func TestModelConnectionResultUsesThePublicWireShape(t *testing.T) {
 	if err := json.Unmarshal(raw, &result); err != nil {
 		t.Fatal(err)
 	}
-	if result["reachable"] != true || result["error_code"] != "" || result["OK"] != nil || result["ErrorCode"] != nil {
+	compatibility, _ := result["tool_compatibility"].(map[string]any)
+	if result["reachable"] != true || result["error_code"] != "" || compatibility["status"] != coremodel.ToolCompatibilityCompatible || tester.probeCalls != 1 || result["OK"] != nil || result["ErrorCode"] != nil {
 		t.Fatalf("unexpected model test wire result: %s", raw)
 	}
 }

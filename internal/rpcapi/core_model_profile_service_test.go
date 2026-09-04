@@ -68,7 +68,7 @@ func TestModelProfileRPCTestConnectionIdempotent(t *testing.T) {
 	}
 	key := "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 	first, err := service.TestConnection(context.Background(), &agentv1.ModelProfileServiceTestConnectionRequest{IdempotencyKey: key, ProfileId: created.Profile.ProfileId})
-	if err != nil || !first.Reachable || calls != 1 {
+	if err != nil || !first.Reachable || first.ToolCompatibility.GetStatus() != coremodel.ToolCompatibilityNotRun || calls != 1 {
 		t.Fatalf("first test=%#v err=%v calls=%d", first, err, calls)
 	}
 	second, err := service.TestConnection(context.Background(), &agentv1.ModelProfileServiceTestConnectionRequest{IdempotencyKey: key, ProfileId: created.Profile.ProfileId})
@@ -82,6 +82,43 @@ func TestModelProfileRPCTestConnectionIdempotent(t *testing.T) {
 	_, err = service.TestConnection(context.Background(), &agentv1.ModelProfileServiceTestConnectionRequest{IdempotencyKey: key, ProfileId: other.Profile.ProfileId})
 	if status.Code(err) != codes.AlreadyExists {
 		t.Fatalf("changed profile idempotency code=%v err=%v", status.Code(err), err)
+	}
+}
+
+func TestToolCompatibilityProtoPreservesBoundedVerdict(t *testing.T) {
+	result := toolCompatibilityProto(coremodel.ToolCompatibilityResult{
+		Status: coremodel.ToolCompatibilityIncompatible,
+		Probes: []coremodel.ToolCompatibilityProbeResult{{Name: "structured_tool_call", Status: "failed", ErrorCode: "structured_tool_call_count"}},
+	})
+	if result.Status != coremodel.ToolCompatibilityIncompatible || len(result.Probes) != 1 ||
+		result.Probes[0].Name != "structured_tool_call" || result.Probes[0].Status != "failed" || result.Probes[0].ErrorCode != "structured_tool_call_count" {
+		t.Fatalf("result=%#v", result)
+	}
+}
+
+type rpcCompatibilityTester struct {
+	probeCalls int
+}
+
+func (*rpcCompatibilityTester) TestConnection(context.Context, coremodel.Profile) error { return nil }
+
+func (t *rpcCompatibilityTester) TestToolCompatibility(context.Context, coremodel.Profile) coremodel.ToolCompatibilityResult {
+	t.probeCalls++
+	return coremodel.ToolCompatibilityResult{Status: coremodel.ToolCompatibilityCompatible, Probes: []coremodel.ToolCompatibilityProbeResult{{Name: "structured_tool_call", Status: "passed"}}}
+}
+
+func TestModelProfileRPCToolCompatibilityIsExplicit(t *testing.T) {
+	repo := coremodel.NewMemoryProfileRepository()
+	tester := &rpcCompatibilityTester{}
+	domain, _ := coremodel.NewService(repo, tester)
+	service, _ := NewModelProfileService(domain)
+	created, err := service.Create(context.Background(), &agentv1.ModelProfileServiceCreateRequest{IdempotencyKey: "d0000000-0000-4000-8000-000000000001", DisplayName: "probe", Provider: agentv1.CoreModelProvider_CORE_MODEL_PROVIDER_OPENAI_COMPATIBLE, RequestDialect: string(coremodel.DialectOpenAICompatibleChatV1), Model: "m", ApiKey: "k"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.TestConnection(context.Background(), &agentv1.ModelProfileServiceTestConnectionRequest{IdempotencyKey: "d0000000-0000-4000-8000-000000000002", ProfileId: created.Profile.ProfileId, ProbeToolCompatibility: true})
+	if err != nil || result.ToolCompatibility.GetStatus() != coremodel.ToolCompatibilityCompatible || tester.probeCalls != 1 {
+		t.Fatalf("result=%#v err=%v probe_calls=%d", result, err, tester.probeCalls)
 	}
 }
 

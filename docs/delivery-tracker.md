@@ -1,5 +1,10 @@
 # Core v1 delivery tracker
 
+- Model-profile connection tests now optionally run a three-stage, synthetic
+  structured-tool compatibility handshake. Reachability remains independent,
+  probe execution is explicit, returned calls are never dispatched, and the
+  secret-free per-stage verdict is replayed through gRPC and Capability APIs.
+
 This is the single detailed record of Agent implementation status, verification
 evidence, and remaining release gates. Contract details live in the
 [architecture](architecture.md), [API contract](api-contract.md), [Core v1
@@ -9,6 +14,14 @@ contract](message-server-integration-development-contract.md), and
 
 ## Implemented at HEAD
 
+- Cloud Worker proposal persistence now reconciles a failed `CreateOffer`
+  response through the exact durable receipt under the same idempotency
+  advisory lock. A committed response-loss returns the original offer,
+  authoritative absence returns `mutation_state=unchanged`, and a failed or
+  conflicting read remains `unknown_mutation` with operation/plan/Task/execution
+  correlation IDs. Focused intrinsic tests cover all three outcomes; the PG18
+  post-commit response-loss integration test compiles but requires an available
+  `AGENT_TEST_POSTGRES_DSN` to execute locally.
 - Static page revisions can now read the latest or an exact prior immutable
   release only within the admitted owner, account generation, and conversation.
   The read-only intrinsic revalidates the database receipt against the

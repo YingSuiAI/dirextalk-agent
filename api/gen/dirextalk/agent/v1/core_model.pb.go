@@ -1278,11 +1278,12 @@ func (*ModelProfileServiceDeleteResponse) Descriptor() ([]byte, []int) {
 }
 
 type ModelProfileServiceTestConnectionRequest struct {
-	state          protoimpl.MessageState `protogen:"open.v1"`
-	IdempotencyKey string                 `protobuf:"bytes,1,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
-	ProfileId      string                 `protobuf:"bytes,2,opt,name=profile_id,json=profileId,proto3" json:"profile_id,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	state                  protoimpl.MessageState `protogen:"open.v1"`
+	IdempotencyKey         string                 `protobuf:"bytes,1,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
+	ProfileId              string                 `protobuf:"bytes,2,opt,name=profile_id,json=profileId,proto3" json:"profile_id,omitempty"`
+	ProbeToolCompatibility bool                   `protobuf:"varint,3,opt,name=probe_tool_compatibility,json=probeToolCompatibility,proto3" json:"probe_tool_compatibility,omitempty"`
+	unknownFields          protoimpl.UnknownFields
+	sizeCache              protoimpl.SizeCache
 }
 
 func (x *ModelProfileServiceTestConnectionRequest) Reset() {
@@ -1329,17 +1330,137 @@ func (x *ModelProfileServiceTestConnectionRequest) GetProfileId() string {
 	return ""
 }
 
-type ModelProfileServiceTestConnectionResponse struct {
+func (x *ModelProfileServiceTestConnectionRequest) GetProbeToolCompatibility() bool {
+	if x != nil {
+		return x.ProbeToolCompatibility
+	}
+	return false
+}
+
+type ModelToolCompatibilityProbe struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Reachable     bool                   `protobuf:"varint,1,opt,name=reachable,proto3" json:"reachable,omitempty"`
-	ErrorCode     string                 `protobuf:"bytes,2,opt,name=error_code,json=errorCode,proto3" json:"error_code,omitempty"`
+	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Status        string                 `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"`
+	ErrorCode     string                 `protobuf:"bytes,3,opt,name=error_code,json=errorCode,proto3" json:"error_code,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
+func (x *ModelToolCompatibilityProbe) Reset() {
+	*x = ModelToolCompatibilityProbe{}
+	mi := &file_dirextalk_agent_v1_core_model_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ModelToolCompatibilityProbe) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ModelToolCompatibilityProbe) ProtoMessage() {}
+
+func (x *ModelToolCompatibilityProbe) ProtoReflect() protoreflect.Message {
+	mi := &file_dirextalk_agent_v1_core_model_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ModelToolCompatibilityProbe.ProtoReflect.Descriptor instead.
+func (*ModelToolCompatibilityProbe) Descriptor() ([]byte, []int) {
+	return file_dirextalk_agent_v1_core_model_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *ModelToolCompatibilityProbe) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *ModelToolCompatibilityProbe) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *ModelToolCompatibilityProbe) GetErrorCode() string {
+	if x != nil {
+		return x.ErrorCode
+	}
+	return ""
+}
+
+type ModelToolCompatibility struct {
+	state         protoimpl.MessageState         `protogen:"open.v1"`
+	Status        string                         `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"`
+	Probes        []*ModelToolCompatibilityProbe `protobuf:"bytes,2,rep,name=probes,proto3" json:"probes,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ModelToolCompatibility) Reset() {
+	*x = ModelToolCompatibility{}
+	mi := &file_dirextalk_agent_v1_core_model_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ModelToolCompatibility) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ModelToolCompatibility) ProtoMessage() {}
+
+func (x *ModelToolCompatibility) ProtoReflect() protoreflect.Message {
+	mi := &file_dirextalk_agent_v1_core_model_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ModelToolCompatibility.ProtoReflect.Descriptor instead.
+func (*ModelToolCompatibility) Descriptor() ([]byte, []int) {
+	return file_dirextalk_agent_v1_core_model_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *ModelToolCompatibility) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *ModelToolCompatibility) GetProbes() []*ModelToolCompatibilityProbe {
+	if x != nil {
+		return x.Probes
+	}
+	return nil
+}
+
+type ModelProfileServiceTestConnectionResponse struct {
+	state             protoimpl.MessageState  `protogen:"open.v1"`
+	Reachable         bool                    `protobuf:"varint,1,opt,name=reachable,proto3" json:"reachable,omitempty"`
+	ErrorCode         string                  `protobuf:"bytes,2,opt,name=error_code,json=errorCode,proto3" json:"error_code,omitempty"`
+	ToolCompatibility *ModelToolCompatibility `protobuf:"bytes,3,opt,name=tool_compatibility,json=toolCompatibility,proto3" json:"tool_compatibility,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
 func (x *ModelProfileServiceTestConnectionResponse) Reset() {
 	*x = ModelProfileServiceTestConnectionResponse{}
-	mi := &file_dirextalk_agent_v1_core_model_proto_msgTypes[14]
+	mi := &file_dirextalk_agent_v1_core_model_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1351,7 +1472,7 @@ func (x *ModelProfileServiceTestConnectionResponse) String() string {
 func (*ModelProfileServiceTestConnectionResponse) ProtoMessage() {}
 
 func (x *ModelProfileServiceTestConnectionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_model_proto_msgTypes[14]
+	mi := &file_dirextalk_agent_v1_core_model_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1364,7 +1485,7 @@ func (x *ModelProfileServiceTestConnectionResponse) ProtoReflect() protoreflect.
 
 // Deprecated: Use ModelProfileServiceTestConnectionResponse.ProtoReflect.Descriptor instead.
 func (*ModelProfileServiceTestConnectionResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_model_proto_rawDescGZIP(), []int{14}
+	return file_dirextalk_agent_v1_core_model_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *ModelProfileServiceTestConnectionResponse) GetReachable() bool {
@@ -1381,6 +1502,13 @@ func (x *ModelProfileServiceTestConnectionResponse) GetErrorCode() string {
 	return ""
 }
 
+func (x *ModelProfileServiceTestConnectionResponse) GetToolCompatibility() *ModelToolCompatibility {
+	if x != nil {
+		return x.ToolCompatibility
+	}
+	return nil
+}
+
 type ModelProfileServiceSyncRequest struct {
 	state                              protoimpl.MessageState       `protogen:"open.v1"`
 	IdempotencyKey                     string                       `protobuf:"bytes,1,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
@@ -1395,7 +1523,7 @@ type ModelProfileServiceSyncRequest struct {
 
 func (x *ModelProfileServiceSyncRequest) Reset() {
 	*x = ModelProfileServiceSyncRequest{}
-	mi := &file_dirextalk_agent_v1_core_model_proto_msgTypes[15]
+	mi := &file_dirextalk_agent_v1_core_model_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1407,7 +1535,7 @@ func (x *ModelProfileServiceSyncRequest) String() string {
 func (*ModelProfileServiceSyncRequest) ProtoMessage() {}
 
 func (x *ModelProfileServiceSyncRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_model_proto_msgTypes[15]
+	mi := &file_dirextalk_agent_v1_core_model_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1420,7 +1548,7 @@ func (x *ModelProfileServiceSyncRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ModelProfileServiceSyncRequest.ProtoReflect.Descriptor instead.
 func (*ModelProfileServiceSyncRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_model_proto_rawDescGZIP(), []int{15}
+	return file_dirextalk_agent_v1_core_model_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *ModelProfileServiceSyncRequest) GetIdempotencyKey() string {
@@ -1478,7 +1606,7 @@ type ModelProfileServiceSyncResponse struct {
 
 func (x *ModelProfileServiceSyncResponse) Reset() {
 	*x = ModelProfileServiceSyncResponse{}
-	mi := &file_dirextalk_agent_v1_core_model_proto_msgTypes[16]
+	mi := &file_dirextalk_agent_v1_core_model_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1490,7 +1618,7 @@ func (x *ModelProfileServiceSyncResponse) String() string {
 func (*ModelProfileServiceSyncResponse) ProtoMessage() {}
 
 func (x *ModelProfileServiceSyncResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_model_proto_msgTypes[16]
+	mi := &file_dirextalk_agent_v1_core_model_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1503,7 +1631,7 @@ func (x *ModelProfileServiceSyncResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ModelProfileServiceSyncResponse.ProtoReflect.Descriptor instead.
 func (*ModelProfileServiceSyncResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_model_proto_rawDescGZIP(), []int{16}
+	return file_dirextalk_agent_v1_core_model_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *ModelProfileServiceSyncResponse) GetProfiles() []*CoreModelProfile {
@@ -1674,15 +1802,25 @@ const file_dirextalk_agent_v1_core_model_proto_rawDesc = "" +
 	"\n" +
 	"profile_id\x18\x02 \x01(\tR\tprofileId\x12+\n" +
 	"\x11expected_revision\x18\x03 \x01(\x03R\x10expectedRevision\"#\n" +
-	"!ModelProfileServiceDeleteResponse\"r\n" +
+	"!ModelProfileServiceDeleteResponse\"\xac\x01\n" +
 	"(ModelProfileServiceTestConnectionRequest\x12'\n" +
 	"\x0fidempotency_key\x18\x01 \x01(\tR\x0eidempotencyKey\x12\x1d\n" +
 	"\n" +
-	"profile_id\x18\x02 \x01(\tR\tprofileId\"h\n" +
+	"profile_id\x18\x02 \x01(\tR\tprofileId\x128\n" +
+	"\x18probe_tool_compatibility\x18\x03 \x01(\bR\x16probeToolCompatibility\"h\n" +
+	"\x1bModelToolCompatibilityProbe\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x16\n" +
+	"\x06status\x18\x02 \x01(\tR\x06status\x12\x1d\n" +
+	"\n" +
+	"error_code\x18\x03 \x01(\tR\terrorCode\"y\n" +
+	"\x16ModelToolCompatibility\x12\x16\n" +
+	"\x06status\x18\x01 \x01(\tR\x06status\x12G\n" +
+	"\x06probes\x18\x02 \x03(\v2/.dirextalk.agent.v1.ModelToolCompatibilityProbeR\x06probes\"\xc3\x01\n" +
 	")ModelProfileServiceTestConnectionResponse\x12\x1c\n" +
 	"\treachable\x18\x01 \x01(\bR\treachable\x12\x1d\n" +
 	"\n" +
-	"error_code\x18\x02 \x01(\tR\terrorCode\"\xc0\x03\n" +
+	"error_code\x18\x02 \x01(\tR\terrorCode\x12Y\n" +
+	"\x12tool_compatibility\x18\x03 \x01(\v2*.dirextalk.agent.v1.ModelToolCompatibilityR\x11toolCompatibility\"\xc0\x03\n" +
 	"\x1eModelProfileServiceSyncRequest\x12'\n" +
 	"\x0fidempotency_key\x18\x01 \x01(\tR\x0eidempotencyKey\x12G\n" +
 	"\aentries\x18\x03 \x03(\v2-.dirextalk.agent.v1.CoreModelProfileSyncEntryR\aentries\x12R\n" +
@@ -1723,7 +1861,7 @@ func file_dirextalk_agent_v1_core_model_proto_rawDescGZIP() []byte {
 }
 
 var file_dirextalk_agent_v1_core_model_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_dirextalk_agent_v1_core_model_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
+var file_dirextalk_agent_v1_core_model_proto_msgTypes = make([]protoimpl.MessageInfo, 19)
 var file_dirextalk_agent_v1_core_model_proto_goTypes = []any{
 	(CoreModelProvider)(0),                            // 0: dirextalk.agent.v1.CoreModelProvider
 	(*CoreSamplingUpdate)(nil),                        // 1: dirextalk.agent.v1.CoreSamplingUpdate
@@ -1740,17 +1878,19 @@ var file_dirextalk_agent_v1_core_model_proto_goTypes = []any{
 	(*ModelProfileServiceDeleteRequest)(nil),          // 12: dirextalk.agent.v1.ModelProfileServiceDeleteRequest
 	(*ModelProfileServiceDeleteResponse)(nil),         // 13: dirextalk.agent.v1.ModelProfileServiceDeleteResponse
 	(*ModelProfileServiceTestConnectionRequest)(nil),  // 14: dirextalk.agent.v1.ModelProfileServiceTestConnectionRequest
-	(*ModelProfileServiceTestConnectionResponse)(nil), // 15: dirextalk.agent.v1.ModelProfileServiceTestConnectionResponse
-	(*ModelProfileServiceSyncRequest)(nil),            // 16: dirextalk.agent.v1.ModelProfileServiceSyncRequest
-	(*ModelProfileServiceSyncResponse)(nil),           // 17: dirextalk.agent.v1.ModelProfileServiceSyncResponse
-	(*emptypb.Empty)(nil),                             // 18: google.protobuf.Empty
-	(*timestamppb.Timestamp)(nil),                     // 19: google.protobuf.Timestamp
+	(*ModelToolCompatibilityProbe)(nil),               // 15: dirextalk.agent.v1.ModelToolCompatibilityProbe
+	(*ModelToolCompatibility)(nil),                    // 16: dirextalk.agent.v1.ModelToolCompatibility
+	(*ModelProfileServiceTestConnectionResponse)(nil), // 17: dirextalk.agent.v1.ModelProfileServiceTestConnectionResponse
+	(*ModelProfileServiceSyncRequest)(nil),            // 18: dirextalk.agent.v1.ModelProfileServiceSyncRequest
+	(*ModelProfileServiceSyncResponse)(nil),           // 19: dirextalk.agent.v1.ModelProfileServiceSyncResponse
+	(*emptypb.Empty)(nil),                             // 20: google.protobuf.Empty
+	(*timestamppb.Timestamp)(nil),                     // 21: google.protobuf.Timestamp
 }
 var file_dirextalk_agent_v1_core_model_proto_depIdxs = []int32{
-	18, // 0: dirextalk.agent.v1.CoreSamplingUpdate.preserve:type_name -> google.protobuf.Empty
+	20, // 0: dirextalk.agent.v1.CoreSamplingUpdate.preserve:type_name -> google.protobuf.Empty
 	0,  // 1: dirextalk.agent.v1.CoreModelProfile.provider:type_name -> dirextalk.agent.v1.CoreModelProvider
-	19, // 2: dirextalk.agent.v1.CoreModelProfile.created_at:type_name -> google.protobuf.Timestamp
-	19, // 3: dirextalk.agent.v1.CoreModelProfile.updated_at:type_name -> google.protobuf.Timestamp
+	21, // 2: dirextalk.agent.v1.CoreModelProfile.created_at:type_name -> google.protobuf.Timestamp
+	21, // 3: dirextalk.agent.v1.CoreModelProfile.updated_at:type_name -> google.protobuf.Timestamp
 	0,  // 4: dirextalk.agent.v1.CoreModelProfileSyncEntry.provider:type_name -> dirextalk.agent.v1.CoreModelProvider
 	0,  // 5: dirextalk.agent.v1.ModelProfileServiceCreateRequest.provider:type_name -> dirextalk.agent.v1.CoreModelProvider
 	2,  // 6: dirextalk.agent.v1.ModelProfileServiceCreateResponse.profile:type_name -> dirextalk.agent.v1.CoreModelProfile
@@ -1760,27 +1900,29 @@ var file_dirextalk_agent_v1_core_model_proto_depIdxs = []int32{
 	1,  // 10: dirextalk.agent.v1.ModelProfileServiceUpdateRequest.temperature:type_name -> dirextalk.agent.v1.CoreSamplingUpdate
 	1,  // 11: dirextalk.agent.v1.ModelProfileServiceUpdateRequest.top_p:type_name -> dirextalk.agent.v1.CoreSamplingUpdate
 	2,  // 12: dirextalk.agent.v1.ModelProfileServiceUpdateResponse.profile:type_name -> dirextalk.agent.v1.CoreModelProfile
-	3,  // 13: dirextalk.agent.v1.ModelProfileServiceSyncRequest.entries:type_name -> dirextalk.agent.v1.CoreModelProfileSyncEntry
-	2,  // 14: dirextalk.agent.v1.ModelProfileServiceSyncResponse.profiles:type_name -> dirextalk.agent.v1.CoreModelProfile
-	4,  // 15: dirextalk.agent.v1.ModelProfileService.Create:input_type -> dirextalk.agent.v1.ModelProfileServiceCreateRequest
-	6,  // 16: dirextalk.agent.v1.ModelProfileService.Get:input_type -> dirextalk.agent.v1.ModelProfileServiceGetRequest
-	8,  // 17: dirextalk.agent.v1.ModelProfileService.List:input_type -> dirextalk.agent.v1.ModelProfileServiceListRequest
-	10, // 18: dirextalk.agent.v1.ModelProfileService.Update:input_type -> dirextalk.agent.v1.ModelProfileServiceUpdateRequest
-	12, // 19: dirextalk.agent.v1.ModelProfileService.Delete:input_type -> dirextalk.agent.v1.ModelProfileServiceDeleteRequest
-	14, // 20: dirextalk.agent.v1.ModelProfileService.TestConnection:input_type -> dirextalk.agent.v1.ModelProfileServiceTestConnectionRequest
-	16, // 21: dirextalk.agent.v1.ModelProfileService.Sync:input_type -> dirextalk.agent.v1.ModelProfileServiceSyncRequest
-	5,  // 22: dirextalk.agent.v1.ModelProfileService.Create:output_type -> dirextalk.agent.v1.ModelProfileServiceCreateResponse
-	7,  // 23: dirextalk.agent.v1.ModelProfileService.Get:output_type -> dirextalk.agent.v1.ModelProfileServiceGetResponse
-	9,  // 24: dirextalk.agent.v1.ModelProfileService.List:output_type -> dirextalk.agent.v1.ModelProfileServiceListResponse
-	11, // 25: dirextalk.agent.v1.ModelProfileService.Update:output_type -> dirextalk.agent.v1.ModelProfileServiceUpdateResponse
-	13, // 26: dirextalk.agent.v1.ModelProfileService.Delete:output_type -> dirextalk.agent.v1.ModelProfileServiceDeleteResponse
-	15, // 27: dirextalk.agent.v1.ModelProfileService.TestConnection:output_type -> dirextalk.agent.v1.ModelProfileServiceTestConnectionResponse
-	17, // 28: dirextalk.agent.v1.ModelProfileService.Sync:output_type -> dirextalk.agent.v1.ModelProfileServiceSyncResponse
-	22, // [22:29] is the sub-list for method output_type
-	15, // [15:22] is the sub-list for method input_type
-	15, // [15:15] is the sub-list for extension type_name
-	15, // [15:15] is the sub-list for extension extendee
-	0,  // [0:15] is the sub-list for field type_name
+	15, // 13: dirextalk.agent.v1.ModelToolCompatibility.probes:type_name -> dirextalk.agent.v1.ModelToolCompatibilityProbe
+	16, // 14: dirextalk.agent.v1.ModelProfileServiceTestConnectionResponse.tool_compatibility:type_name -> dirextalk.agent.v1.ModelToolCompatibility
+	3,  // 15: dirextalk.agent.v1.ModelProfileServiceSyncRequest.entries:type_name -> dirextalk.agent.v1.CoreModelProfileSyncEntry
+	2,  // 16: dirextalk.agent.v1.ModelProfileServiceSyncResponse.profiles:type_name -> dirextalk.agent.v1.CoreModelProfile
+	4,  // 17: dirextalk.agent.v1.ModelProfileService.Create:input_type -> dirextalk.agent.v1.ModelProfileServiceCreateRequest
+	6,  // 18: dirextalk.agent.v1.ModelProfileService.Get:input_type -> dirextalk.agent.v1.ModelProfileServiceGetRequest
+	8,  // 19: dirextalk.agent.v1.ModelProfileService.List:input_type -> dirextalk.agent.v1.ModelProfileServiceListRequest
+	10, // 20: dirextalk.agent.v1.ModelProfileService.Update:input_type -> dirextalk.agent.v1.ModelProfileServiceUpdateRequest
+	12, // 21: dirextalk.agent.v1.ModelProfileService.Delete:input_type -> dirextalk.agent.v1.ModelProfileServiceDeleteRequest
+	14, // 22: dirextalk.agent.v1.ModelProfileService.TestConnection:input_type -> dirextalk.agent.v1.ModelProfileServiceTestConnectionRequest
+	18, // 23: dirextalk.agent.v1.ModelProfileService.Sync:input_type -> dirextalk.agent.v1.ModelProfileServiceSyncRequest
+	5,  // 24: dirextalk.agent.v1.ModelProfileService.Create:output_type -> dirextalk.agent.v1.ModelProfileServiceCreateResponse
+	7,  // 25: dirextalk.agent.v1.ModelProfileService.Get:output_type -> dirextalk.agent.v1.ModelProfileServiceGetResponse
+	9,  // 26: dirextalk.agent.v1.ModelProfileService.List:output_type -> dirextalk.agent.v1.ModelProfileServiceListResponse
+	11, // 27: dirextalk.agent.v1.ModelProfileService.Update:output_type -> dirextalk.agent.v1.ModelProfileServiceUpdateResponse
+	13, // 28: dirextalk.agent.v1.ModelProfileService.Delete:output_type -> dirextalk.agent.v1.ModelProfileServiceDeleteResponse
+	17, // 29: dirextalk.agent.v1.ModelProfileService.TestConnection:output_type -> dirextalk.agent.v1.ModelProfileServiceTestConnectionResponse
+	19, // 30: dirextalk.agent.v1.ModelProfileService.Sync:output_type -> dirextalk.agent.v1.ModelProfileServiceSyncResponse
+	24, // [24:31] is the sub-list for method output_type
+	17, // [17:24] is the sub-list for method input_type
+	17, // [17:17] is the sub-list for extension type_name
+	17, // [17:17] is the sub-list for extension extendee
+	0,  // [0:17] is the sub-list for field type_name
 }
 
 func init() { file_dirextalk_agent_v1_core_model_proto_init() }
@@ -1806,7 +1948,7 @@ func file_dirextalk_agent_v1_core_model_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_dirextalk_agent_v1_core_model_proto_rawDesc), len(file_dirextalk_agent_v1_core_model_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   17,
+			NumMessages:   19,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

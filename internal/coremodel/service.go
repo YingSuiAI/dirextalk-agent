@@ -566,8 +566,15 @@ func (s *Service) ResolveDefaultProfileID(ctx context.Context, modelKind string)
 }
 
 type ConnectionTestResult struct {
-	OK        bool   `json:"reachable"`
-	ErrorCode string `json:"error_code"`
+	OK                bool                    `json:"reachable"`
+	ErrorCode         string                  `json:"error_code"`
+	ToolCompatibility ToolCompatibilityResult `json:"tool_compatibility"`
+}
+
+// ConnectionTestOptions selects optional, potentially billable provider
+// probes. Basic reachability remains the default for existing callers.
+type ConnectionTestOptions struct {
+	ProbeTools bool
 }
 
 func (s *Service) TestConnection(ctx context.Context, id string) (ConnectionTestResult, error) {
@@ -581,22 +588,25 @@ func (s *Service) TestConnection(ctx context.Context, id string) (ConnectionTest
 	if err != nil {
 		return ConnectionTestResult{ErrorCode: "not_found"}, err
 	}
-	return s.runConnectionTester(ctx, p), nil
+	return s.runConnectionTester(ctx, p, ConnectionTestOptions{}), nil
 }
 
-func (s *Service) TestConnectionWithIdempotency(ctx context.Context, id, idempotencyKey string) (ConnectionTestResult, error) {
+func (s *Service) TestConnectionWithIdempotency(ctx context.Context, id, idempotencyKey string, options ConnectionTestOptions) (ConnectionTestResult, error) {
 	if validateUUID(id) != nil {
 		return ConnectionTestResult{ErrorCode: "invalid_profile"}, ErrInvalidProfile
 	}
 	if validateIdempotencyKey(idempotencyKey) != nil {
 		return ConnectionTestResult{ErrorCode: "invalid_profile"}, ErrInvalidIdempotencyKey
 	}
-	digest, err := profileDigest("test_connection", struct{ ProfileID string }{id})
+	digest, err := profileDigest("test_connection", struct {
+		ProfileID  string `json:"profile_id"`
+		ProbeTools bool   `json:"probe_tools"`
+	}{ProfileID: id, ProbeTools: options.ProbeTools})
 	if err != nil {
 		return ConnectionTestResult{ErrorCode: "invalid_profile"}, err
 	}
 	result, _, err := s.repo.RunConnectionTest(ctx, idempotencyKey, digest, id, func(p Profile) ConnectionTestResult {
-		return s.runConnectionTester(ctx, p)
+		return s.runConnectionTester(ctx, p, options)
 	})
 	if err != nil {
 		return ConnectionTestResult{ErrorCode: "unavailable"}, safeServiceError(err)
@@ -604,17 +614,22 @@ func (s *Service) TestConnectionWithIdempotency(ctx context.Context, id, idempot
 	return result, nil
 }
 
-func (s *Service) runConnectionTester(ctx context.Context, p Profile) ConnectionTestResult {
+func (s *Service) runConnectionTester(ctx context.Context, p Profile, options ConnectionTestOptions) ConnectionTestResult {
+	notRun := ToolCompatibilityResult{Status: ToolCompatibilityNotRun}
 	if s.tester == nil {
-		return ConnectionTestResult{ErrorCode: "unavailable"}
+		return ConnectionTestResult{ErrorCode: "unavailable", ToolCompatibility: notRun}
 	}
 	if p.APIKey == "" {
-		return ConnectionTestResult{ErrorCode: "invalid_profile"}
+		return ConnectionTestResult{ErrorCode: "invalid_profile", ToolCompatibility: notRun}
 	}
 	if err := s.tester.TestConnection(ctx, p); err != nil {
-		return ConnectionTestResult{ErrorCode: categorizeConnectionError(ctx, err)}
+		return ConnectionTestResult{ErrorCode: categorizeConnectionError(ctx, err), ToolCompatibility: notRun}
 	}
-	return ConnectionTestResult{OK: true}
+	compatibility := notRun
+	if tester, ok := s.tester.(ToolCompatibilityTester); options.ProbeTools && ok {
+		compatibility = tester.TestToolCompatibility(ctx, p)
+	}
+	return ConnectionTestResult{OK: true, ToolCompatibility: compatibility}
 }
 
 func categorizeConnectionError(ctx context.Context, err error) string {

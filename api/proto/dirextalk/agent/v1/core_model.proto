@@ -129,10 +129,24 @@ message ModelProfileServiceDeleteResponse {}
 message ModelProfileServiceTestConnectionRequest {
   string idempotency_key = 1;
   string profile_id = 2;
+  bool probe_tool_compatibility = 3;
 }
+
+message ModelToolCompatibilityProbe {
+  string name = 1;
+  string status = 2;
+  string error_code = 3;
+}
+
+message ModelToolCompatibility {
+  string status = 1;
+  repeated ModelToolCompatibilityProbe probes = 2;
+}
+
 message ModelProfileServiceTestConnectionResponse {
   bool reachable = 1;
   string error_code = 2;
+  ModelToolCompatibility tool_compatibility = 3;
 }
 
 message ModelProfileServiceSyncRequest {

@@ -457,6 +457,59 @@ func (s *CloudWorkerStore) CreateOffer(ctx context.Context, command cloudworker.
 	return offer, nil
 }
 
+func (s *CloudWorkerStore) ResolveOffer(ctx context.Context, command cloudworker.ResolveOfferCommand) (cloudworker.Offer, error) {
+	if s == nil || s.store == nil || strings.TrimSpace(command.OwnerID) == "" || command.AccountGeneration == 0 ||
+		!coretask.ValidUUID(command.IdempotencyKey) || !coretask.ValidDigest(command.RequestDigest) ||
+		!coretask.ValidUUID(command.PlanID) {
+		return cloudworker.Offer{}, cloudworker.ErrInvalid
+	}
+	if command.DeployedV185RequestDigest != "" && !coretask.ValidDigest(command.DeployedV185RequestDigest) {
+		return cloudworker.Offer{}, cloudworker.ErrInvalid
+	}
+	tx, err := s.store.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
+	if err != nil {
+		return cloudworker.Offer{}, err
+	}
+	defer tx.Rollback(ctx)
+	// The same transaction-scoped advisory lock used by CreateOffer makes a
+	// not-found result authoritative with respect to any in-flight write for
+	// this operation identity.
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, "cloud-worker:offer:"+command.IdempotencyKey); err != nil {
+		return cloudworker.Offer{}, err
+	}
+	var replayDigest string
+	var replayRaw []byte
+	if err = tx.QueryRow(ctx, `SELECT replay.request_digest,replay.response_json
+		FROM core_cloud_worker_offer_replays replay
+		JOIN core_cloud_worker_plans plan ON plan.plan_id=replay.plan_id
+		WHERE replay.idempotency_key=$1 AND plan.owner_id=$2 AND plan.account_generation=$3`,
+		command.IdempotencyKey, strings.TrimSpace(command.OwnerID), command.AccountGeneration).Scan(&replayDigest, &replayRaw); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return cloudworker.Offer{}, cloudworker.ErrNotFound
+		}
+		return cloudworker.Offer{}, err
+	}
+	historicalV185Replay := replayDigest == command.DeployedV185RequestDigest && command.DeployedV185RequestDigest != ""
+	if replayDigest != command.RequestDigest && !historicalV185Replay {
+		return cloudworker.Offer{}, cloudworker.ErrConflict
+	}
+	var replay cloudWorkerReplay
+	if json.Unmarshal(replayRaw, &replay) != nil || replay.PlanID != command.PlanID {
+		return cloudworker.Offer{}, cloudworker.ErrConflict
+	}
+	offer, err := s.offerTx(ctx, tx, replay.PlanID)
+	if err != nil {
+		return cloudworker.Offer{}, err
+	}
+	if historicalV185Replay && !offer.Plan.IsV185NilGitHubEncoding() {
+		return cloudworker.Offer{}, cloudworker.ErrConflict
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return cloudworker.Offer{}, err
+	}
+	return offer, nil
+}
+
 func (s *CloudWorkerStore) offerTx(ctx context.Context, tx pgx.Tx, planID string) (cloudworker.Offer, error) {
 	plan, err := scanCloudWorkerPlan(tx.QueryRow(ctx, cloudWorkerPlanSelect+` WHERE plan_id=$1`, planID))
 	if err != nil {

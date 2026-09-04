@@ -171,6 +171,15 @@ the runtime never infers a dialect from a model name.
 Create, update, and sync admission require that dialect explicitly; only
 already-persisted rows may pass through the current-wire normalization used by
 storage loading and migration.
+
+Model connection testing keeps reachability and structured-tool compatibility
+as separate verdicts. Existing tests remain a bounded authenticated discovery
+request. A caller may explicitly request the potentially billable compatibility
+handshake, which uses one synthetic, non-executable function to verify a forced
+non-streaming call, a forced streaming call, and tool-result continuation. The
+Agent validates returned calls only in memory and never routes them through a
+tool resolver. Deterministic protocol failures are `incompatible`; transient
+transport, timeout, rate-limit, and provider failures are `inconclusive`.
 For OpenAI-compatible profiles, a bare HTTPS origin normalizes once to `/v1`;
 an explicit gateway path remains exact. Model discovery and completion append
 their operation paths to that same normalized root.
@@ -930,6 +939,14 @@ confirmation of that exact quote before any AWS mutation. Confirmation of the
 current unexpired offer authorizes the first AWS write directly; there is no
 second quote or confirmation step. Reusing a sufficiently large idle retained
 Worker performs no creation mutation and needs no new creation confirmation.
+The proposal idempotency key is also its operation correlation ID, and all
+offer object IDs are derived before persistence. A `CreateOffer` error enters
+reconciliation instead of being treated as failure: a fresh bounded context
+acquires the same PostgreSQL advisory lock and reads the exact operation
+receipt plus request digest. A match returns the committed offer, absence
+proves unchanged, and an unavailable/conflicting read stays
+`unknown_mutation` with operation, plan, Task, and execution IDs. Reconciliation
+is read-only and never creates a replacement offer.
 The live inventory is read only through the static `cloud_worker_inventory`
 intrinsic, whose definition contains no Worker identity or state. Execution
 revalidates the turn owner/account generation and returns a bounded ordinary

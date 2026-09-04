@@ -20,7 +20,13 @@ import (
 	"github.com/google/uuid"
 )
 
-type intrinsicStore struct{ commands []CreateOfferCommand }
+type intrinsicStore struct {
+	commands          []CreateOfferCommand
+	resolveCommands   []ResolveOfferCommand
+	createErr         error
+	resolveErr        error
+	resolveContextErr error
+}
 
 type intrinsicNoGitHubBinding struct{ calls int }
 
@@ -47,11 +53,34 @@ func (intrinsicNoWorkerReuse) CheckCreateWorkerCapacity(context.Context, string,
 
 func (s *intrinsicStore) CreateOffer(_ context.Context, command CreateOfferCommand) (Offer, error) {
 	s.commands = append(s.commands, command)
+	if s.createErr != nil {
+		return Offer{}, s.createErr
+	}
+	return intrinsicOffer(command), nil
+}
+
+func (s *intrinsicStore) ResolveOffer(ctx context.Context, command ResolveOfferCommand) (Offer, error) {
+	s.resolveCommands = append(s.resolveCommands, command)
+	s.resolveContextErr = ctx.Err()
+	if s.resolveErr != nil {
+		return Offer{}, s.resolveErr
+	}
+	for index := len(s.commands) - 1; index >= 0; index-- {
+		candidate := s.commands[index]
+		if candidate.IdempotencyKey == command.IdempotencyKey && candidate.RequestDigest == command.RequestDigest &&
+			candidate.Plan.PlanID == command.PlanID {
+			return intrinsicOffer(candidate), nil
+		}
+	}
+	return Offer{}, ErrNotFound
+}
+
+func intrinsicOffer(command CreateOfferCommand) Offer {
 	return Offer{
 		Plan: command.Plan, Execution: command.Execution,
 		Task:         coretask.Task{ID: command.Plan.TaskID, Status: coretask.StatusWaitingUser},
 		Confirmation: coreconfirmation.Confirmation{ConfirmationID: command.Plan.ConfirmationID, OwnerID: command.Plan.OwnerID, TaskID: command.Plan.TaskID, State: coreconfirmation.StatePending},
-	}, nil
+	}
 }
 
 type intrinsicOwner struct {
@@ -1049,7 +1078,7 @@ func TestIntrinsicSchemaEnumeratesOnlyFrozenTurnAttachments(t *testing.T) {
 
 func TestProposalPreMutationFailureIsSafeAndStageSpecific(t *testing.T) {
 	private := errors.New("private provider detail")
-	err := classifyProposalExecutionError(markProposalPreMutation(errors.Join(computeSelectionUnavailable("pricing"), private)))
+	err := classifyProposalExecutionError(markProposalUnchanged(errors.Join(computeSelectionUnavailable("pricing"), private)))
 	observation, ok := coreconversation.ToolExecutionErrorObservation(err)
 	if !ok || observation.Outcome != coreconversation.ToolOutcomeRetryable ||
 		observation.Summary != "AWS pricing data is temporarily unavailable; no Worker proposal or cloud resource was created" ||
@@ -1066,10 +1095,61 @@ func TestProposalPreMutationFailureIsSafeAndStageSpecific(t *testing.T) {
 	}
 }
 
+func TestProposalReconcilesCommittedOfferAfterCreateResponseIsLost(t *testing.T) {
+	evidence := &LocalBudgetEvidence{BudgetID: uuid.NewString(), Revision: 1, Digest: digestValue("local-capability")}
+	intrinsic, store, lease := intrinsicFixture(t, "use AWS Cloud Worker", nil, intrinsicBudget{evidence: evidence})
+	store.createErr = errors.New("database response lost after commit")
+
+	if err := executeIntrinsic(t, intrinsic, lease, map[string]any{"objective": "generate an image", "workspace_mode": "none"}, "lost-response"); err != nil {
+		t.Fatalf("committed offer did not reconcile: %v", err)
+	}
+	if len(store.commands) != 1 || len(store.resolveCommands) != 1 {
+		t.Fatalf("create=%d resolve=%d", len(store.commands), len(store.resolveCommands))
+	}
+	created, resolved := store.commands[0], store.resolveCommands[0]
+	if created.IdempotencyKey != resolved.IdempotencyKey || created.RequestDigest != resolved.RequestDigest ||
+		created.Plan.PlanID != resolved.PlanID || store.resolveContextErr != nil {
+		t.Fatalf("create=%+v resolve=%+v resolve_context_err=%v", created, resolved, store.resolveContextErr)
+	}
+}
+
+func TestProposalReconciliationProvesUnchangedBeforeRetry(t *testing.T) {
+	evidence := &LocalBudgetEvidence{BudgetID: uuid.NewString(), Revision: 1, Digest: digestValue("local-capability")}
+	intrinsic, store, lease := intrinsicFixture(t, "use AWS Cloud Worker", nil, intrinsicBudget{evidence: evidence})
+	private := errors.New("database connection reset")
+	store.createErr, store.resolveErr = private, ErrNotFound
+
+	err := executeIntrinsic(t, intrinsic, lease, map[string]any{"objective": "generate an image", "workspace_mode": "none"}, "confirmed-absent")
+	observation, ok := coreconversation.ToolExecutionErrorObservation(err)
+	if !ok || observation.Outcome != coreconversation.ToolOutcomeRetryable || !observation.MutationStateSet ||
+		observation.MutationState != coreconversation.ToolMutationUnchanged ||
+		!strings.Contains(observation.Summary, "confirmed that no offer, task, or cloud resource was created") ||
+		strings.Contains(observation.Summary, "connection reset") || len(store.resolveCommands) != 1 {
+		t.Fatalf("observation=%+v ok=%v err=%v resolve=%+v", observation, ok, err, store.resolveCommands)
+	}
+}
+
+func TestProposalReconciliationKeepsUnknownAndReturnsCorrelationIDs(t *testing.T) {
+	evidence := &LocalBudgetEvidence{BudgetID: uuid.NewString(), Revision: 1, Digest: digestValue("local-capability")}
+	intrinsic, store, lease := intrinsicFixture(t, "use AWS Cloud Worker", nil, intrinsicBudget{evidence: evidence})
+	store.createErr = errors.New("private write failure")
+	store.resolveErr = errors.New("private read failure")
+
+	err := executeIntrinsic(t, intrinsic, lease, map[string]any{"objective": "generate an image", "workspace_mode": "none"}, "still-unknown")
+	observation, ok := coreconversation.ToolExecutionErrorObservation(err)
+	if !ok || observation.Outcome != coreconversation.ToolOutcomeUnknownMutation || !observation.MutationStateSet ||
+		observation.MutationState != coreconversation.ToolMutationUnknown || strings.Contains(observation.Summary, "private") ||
+		!strings.Contains(observation.Summary, "operation_id=") || !strings.Contains(observation.Summary, "plan_id=") ||
+		!strings.Contains(observation.Summary, "task_id=") || !strings.Contains(observation.Summary, "execution_id=") ||
+		len(store.resolveCommands) != 1 {
+		t.Fatalf("observation=%+v ok=%v err=%v resolve=%+v", observation, ok, err, store.resolveCommands)
+	}
+}
+
 func TestProposalImageFailureIsActionableAndProviderDetailFree(t *testing.T) {
 	private := errors.New("SignatureDoesNotMatch secret-access-key")
 	imageErr := workerimage.ContractError{Kind: workerimage.FailureMissing, Flavor: workerimage.FlavorCPU}
-	err := classifyProposalExecutionError(markProposalPreMutation(errors.Join(workerImageSelectionUnavailable(imageErr), private)))
+	err := classifyProposalExecutionError(markProposalUnchanged(errors.Join(workerImageSelectionUnavailable(imageErr), private)))
 	observation, ok := coreconversation.ToolExecutionErrorObservation(err)
 	if !ok || observation.Outcome != coreconversation.ToolOutcomeFatal ||
 		!strings.Contains(observation.Summary, "Agent public release catalog") ||

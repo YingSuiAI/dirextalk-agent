@@ -217,7 +217,7 @@ func TestCoreModelProfileStoreIntegration(t *testing.T) {
 			defer wg.Done()
 			result, _, callErr := store.RunConnectionTest(ctx, connectionKey, connectionDigest, profile.ID, func(coremodel.Profile) coremodel.ConnectionTestResult {
 				atomic.AddInt32(&connectionCalls, 1)
-				return coremodel.ConnectionTestResult{OK: true}
+				return coremodel.ConnectionTestResult{OK: true, ToolCompatibility: coremodel.ToolCompatibilityResult{Status: coremodel.ToolCompatibilityCompatible, Probes: []coremodel.ToolCompatibilityProbeResult{{Name: "structured_tool_call", Status: "passed"}}}}
 			})
 			connectionResults <- result
 			connectionErrs <- callErr
@@ -232,7 +232,7 @@ func TestCoreModelProfileStoreIntegration(t *testing.T) {
 		}
 	}
 	for result := range connectionResults {
-		if !result.OK {
+		if !result.OK || result.ToolCompatibility.Status != coremodel.ToolCompatibilityCompatible || len(result.ToolCompatibility.Probes) != 1 {
 			t.Fatalf("connection result=%#v", result)
 		}
 	}

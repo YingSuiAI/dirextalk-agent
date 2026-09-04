@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -243,6 +244,46 @@ func TestServiceConnectionTestingIsReadOnlyAndSafe(t *testing.T) {
 	}
 	if _, err := svc.Get(context.Background(), serviceProfileID); err != nil {
 		t.Fatal("connection test mutated profile")
+	}
+}
+
+type probingConnectionTester struct {
+	connectionCalls    int
+	compatibilityCalls int
+	result             ToolCompatibilityResult
+}
+
+func (t *probingConnectionTester) TestConnection(context.Context, Profile) error {
+	t.connectionCalls++
+	return nil
+}
+
+func (t *probingConnectionTester) TestToolCompatibility(context.Context, Profile) ToolCompatibilityResult {
+	t.compatibilityCalls++
+	return t.result
+}
+
+func TestServiceToolCompatibilityProbeIsExplicitAndIdempotent(t *testing.T) {
+	repo := NewMemoryProfileRepository()
+	tester := &probingConnectionTester{result: ToolCompatibilityResult{Status: ToolCompatibilityCompatible, Probes: []ToolCompatibilityProbeResult{{Name: toolProbeNonStreaming, Status: ToolProbePassed}}}}
+	svc, _ := NewService(repo, tester)
+	_, err := svc.Create(context.Background(), CreateProfileCommand{IdempotencyKey: "88888888-8888-4888-8888-888888888888", Spec: serviceSpec(serviceProfileID, "Primary", strPtr(serviceKey1))})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	key := "77777777-7777-4777-8777-777777777777"
+	options := ConnectionTestOptions{ProbeTools: true}
+	first, err := svc.TestConnectionWithIdempotency(context.Background(), serviceProfileID, key, options)
+	if err != nil || !first.OK || first.ToolCompatibility.Status != ToolCompatibilityCompatible || tester.connectionCalls != 1 || tester.compatibilityCalls != 1 {
+		t.Fatalf("first=%#v err=%v connection=%d compatibility=%d", first, err, tester.connectionCalls, tester.compatibilityCalls)
+	}
+	second, err := svc.TestConnectionWithIdempotency(context.Background(), serviceProfileID, key, options)
+	if err != nil || !reflect.DeepEqual(second, first) || tester.connectionCalls != 1 || tester.compatibilityCalls != 1 {
+		t.Fatalf("replay=%#v err=%v connection=%d compatibility=%d", second, err, tester.connectionCalls, tester.compatibilityCalls)
+	}
+	if _, err := svc.TestConnectionWithIdempotency(context.Background(), serviceProfileID, key, ConnectionTestOptions{}); !errors.Is(err, ErrIdempotencyConflict) {
+		t.Fatalf("changed probe option err=%v", err)
 	}
 }
 

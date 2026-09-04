@@ -17,6 +17,7 @@ import (
 // Provider calls always happen outside Store transactions.
 type Store interface {
 	CreateOffer(context.Context, CreateOfferCommand) (Offer, error)
+	ResolveOffer(context.Context, ResolveOfferCommand) (Offer, error)
 }
 
 // WorkerReuseSelection binds an offer to one exact retained Worker and its
@@ -114,21 +115,36 @@ type Service struct {
 	selector    ComputeSelector
 }
 
-// proposalPreMutationError proves that Propose returned before CreateOffer,
-// so callers may safely report that no plan, confirmation, task, or provider
+const proposalReconciliationTimeout = 5 * time.Second
+
+var errProposalPersistenceUnavailable = errors.New("cloudworker: proposal persistence unavailable")
+
+// proposalUnchangedError proves that no plan, confirmation, task, or provider
 // resource was created. Keep the marker private to this package so only the
-// authoritative proposal path can make that claim.
-type proposalPreMutationError struct{ cause error }
+// authoritative proposal path and its serialized receipt read can make that
+// claim.
+type proposalUnchangedError struct{ cause error }
 
-func (e proposalPreMutationError) Error() string { return e.cause.Error() }
-func (e proposalPreMutationError) Unwrap() error { return e.cause }
+func (e proposalUnchangedError) Error() string { return e.cause.Error() }
+func (e proposalUnchangedError) Unwrap() error { return e.cause }
 
-func markProposalPreMutation(err error) error {
+func markProposalUnchanged(err error) error {
 	if err == nil {
 		return nil
 	}
-	return proposalPreMutationError{cause: err}
+	return proposalUnchangedError{cause: err}
 }
+
+type proposalOutcomeUnknownError struct {
+	cause       error
+	OperationID string
+	PlanID      string
+	TaskID      string
+	ExecutionID string
+}
+
+func (e proposalOutcomeUnknownError) Error() string { return e.cause.Error() }
+func (e proposalOutcomeUnknownError) Unwrap() error { return e.cause }
 
 func (s *Service) EnablePersistentWorkerReuse(resolver WorkerReuseResolver) error {
 	if s == nil || resolver == nil {
@@ -213,6 +229,19 @@ type CreateOfferCommand struct {
 	TaskPayload               coretask.CloudWorkerTaskPayload
 }
 
+// ResolveOfferCommand reads the durable receipt for one exact proposal
+// operation. Implementations must serialize this read with CreateOffer for the
+// same idempotency key so ErrNotFound proves that no offer committed before the
+// read acquired that fence.
+type ResolveOfferCommand struct {
+	OwnerID                   string
+	AccountGeneration         uint64
+	IdempotencyKey            string
+	RequestDigest             string
+	DeployedV185RequestDigest string
+	PlanID                    string
+}
+
 func deterministicID(seed, key string) string {
 	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(seed+":"+key)).String()
 }
@@ -235,7 +264,7 @@ func boundedSummary(value string) string {
 }
 
 func (s *Service) Propose(ctx context.Context, command ProposeCommand) (Offer, error) {
-	if s == nil || s.store == nil || s.awsBindings == nil || s.workerReuse == nil || s.capacity == nil || s.selector == nil || strings.TrimSpace(command.OwnerID) == "" || len(strings.TrimSpace(command.OwnerID)) > 512 || command.AccountGeneration == 0 || !validUUID(command.IdempotencyKey) || !validUUID(command.ConversationID) || !validUUID(command.TurnID) || !validUUID(command.TurnLeaseID) || command.TurnLeaseEpoch == 0 || command.ExpectedTurnRevision == 0 || strings.TrimSpace(command.Objective) == "" || len(command.Objective) > coretask.MaxGoalBytes || !validDigest(command.UserPromptDigest) || !validateWorkspaceMode(command.WorkspaceMode) || command.ComputeRequirements.validate() != nil {
+	if s == nil || ctx == nil || s.store == nil || s.awsBindings == nil || s.workerReuse == nil || s.capacity == nil || s.selector == nil || strings.TrimSpace(command.OwnerID) == "" || len(strings.TrimSpace(command.OwnerID)) > 512 || command.AccountGeneration == 0 || !validUUID(command.IdempotencyKey) || !validUUID(command.ConversationID) || !validUUID(command.TurnID) || !validUUID(command.TurnLeaseID) || command.TurnLeaseEpoch == 0 || command.ExpectedTurnRevision == 0 || strings.TrimSpace(command.Objective) == "" || len(command.Objective) > coretask.MaxGoalBytes || !validDigest(command.UserPromptDigest) || !validateWorkspaceMode(command.WorkspaceMode) || command.ComputeRequirements.validate() != nil {
 		return Offer{}, ErrInvalid
 	}
 	manifestDigest, err := command.InputManifest.Seal()
@@ -277,7 +306,7 @@ func (s *Service) Propose(ctx context.Context, command ProposeCommand) (Offer, e
 			compute.MemoryGiB < command.ComputeRequirements.MinMemoryGiB || compute.VolumeGiB < command.ComputeRequirements.DiskGiB ||
 			!acceleratorSatisfies(command.ComputeRequirements.AcceleratorType, compute.AcceleratorType) ||
 			!acceleratorMemorySatisfies(command.ComputeRequirements.MinAcceleratorMemoryGiB, compute.AcceleratorMemoryMiB) {
-			return Offer{}, markProposalPreMutation(errors.Join(ErrProviderUnavailable, err))
+			return Offer{}, markProposalUnchanged(errors.Join(ErrProviderUnavailable, err))
 		}
 		if err = s.capacity.CheckCreateWorkerCapacity(ctx, strings.TrimSpace(command.OwnerID), command.AccountGeneration, awsBinding); err != nil {
 			return Offer{}, err
@@ -326,7 +355,7 @@ func (s *Service) Propose(ctx context.Context, command ProposeCommand) (Offer, e
 	if reuse {
 		live, quoteErr := s.quoter.Quote(ctx, QuoteRequest{OwnerID: plan.OwnerID, AccountGeneration: plan.AccountGeneration, ObjectiveDigest: objectiveDigest, UserPromptDigest: plan.UserPromptDigest, InputManifestDigest: plan.InputManifestDigest, WorkspaceMode: plan.WorkspaceMode, ProposalReason: plan.ProposalReason, ModelBindingDigest: plan.ModelAuthorization.BindingDigest, AuthorizationBasisDigest: plan.AuthorizationBasisDigest, AWS: plan.AWS, Compute: plan.Compute, Limits: plan.Limits})
 		if quoteErr != nil || live.ComputeMicrosPerHour == 0 {
-			return Offer{}, markProposalPreMutation(errors.Join(ErrProviderUnavailable, quoteErr))
+			return Offer{}, markProposalUnchanged(errors.Join(ErrProviderUnavailable, quoteErr))
 		}
 		amountMicros, maximumAuthorizedMicros := live.AmountMicros, live.MaximumAuthorizedCostMicros
 		if plan.WorkloadKind == WorkloadService {
@@ -341,7 +370,7 @@ func (s *Service) Propose(ctx context.Context, command ProposeCommand) (Offer, e
 	} else {
 		quote, err = s.quoter.Quote(ctx, QuoteRequest{OwnerID: plan.OwnerID, AccountGeneration: plan.AccountGeneration, ObjectiveDigest: objectiveDigest, UserPromptDigest: plan.UserPromptDigest, InputManifestDigest: plan.InputManifestDigest, WorkspaceMode: plan.WorkspaceMode, ProposalReason: plan.ProposalReason, ModelBindingDigest: plan.ModelAuthorization.BindingDigest, AuthorizationBasisDigest: plan.AuthorizationBasisDigest, AWS: plan.AWS, Compute: plan.Compute, Limits: plan.Limits})
 		if err != nil {
-			return Offer{}, markProposalPreMutation(err)
+			return Offer{}, markProposalUnchanged(err)
 		}
 	}
 	plan.Quote = quote
@@ -371,7 +400,32 @@ func (s *Service) Propose(ctx context.Context, command ProposeCommand) (Offer, e
 		ExecutionDigest: plan.ExecutionDigest,
 	}
 	requestDigest, deployedV185RequestDigest := proposalRequestDigests(plan, command.ComputeRequirements)
-	return s.store.CreateOffer(ctx, CreateOfferCommand{IdempotencyKey: command.IdempotencyKey, RequestDigest: requestDigest, DeployedV185RequestDigest: deployedV185RequestDigest, TurnLeaseID: command.TurnLeaseID, TurnLeaseEpoch: command.TurnLeaseEpoch, ExpectedTurnRevision: command.ExpectedTurnRevision, Plan: plan, Execution: execution, BindingJSON: bindingRaw, TaskPayload: payload})
+	create := CreateOfferCommand{IdempotencyKey: command.IdempotencyKey, RequestDigest: requestDigest, DeployedV185RequestDigest: deployedV185RequestDigest, TurnLeaseID: command.TurnLeaseID, TurnLeaseEpoch: command.TurnLeaseEpoch, ExpectedTurnRevision: command.ExpectedTurnRevision, Plan: plan, Execution: execution, BindingJSON: bindingRaw, TaskPayload: payload}
+	offer, err := s.store.CreateOffer(ctx, create)
+	if err == nil {
+		return offer, nil
+	}
+
+	// CreateOffer may have committed even when its response was lost. Resolve
+	// the exact durable receipt under the same idempotency fence before telling
+	// the caller whether retrying is safe.
+	reconcileCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), proposalReconciliationTimeout)
+	defer cancel()
+	reconciled, reconcileErr := s.store.ResolveOffer(reconcileCtx, ResolveOfferCommand{
+		OwnerID: plan.OwnerID, AccountGeneration: plan.AccountGeneration,
+		IdempotencyKey: command.IdempotencyKey, RequestDigest: requestDigest,
+		DeployedV185RequestDigest: deployedV185RequestDigest, PlanID: plan.PlanID,
+	})
+	if reconcileErr == nil {
+		return reconciled, nil
+	}
+	if errors.Is(reconcileErr, ErrNotFound) {
+		return Offer{}, markProposalUnchanged(errors.Join(errProposalPersistenceUnavailable, err))
+	}
+	return Offer{}, proposalOutcomeUnknownError{
+		cause: errors.Join(err, reconcileErr), OperationID: command.IdempotencyKey,
+		PlanID: plan.PlanID, TaskID: plan.TaskID, ExecutionID: plan.ExecutionID,
+	}
 }
 
 func proposalRequestDigests(plan Plan, requirements ComputeRequirements) (string, string) {

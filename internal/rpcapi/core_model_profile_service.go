@@ -95,11 +95,21 @@ func (s *ModelProfileService) TestConnection(ctx context.Context, req *agentv1.M
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "request is required")
 	}
-	result, err := s.profiles.TestConnectionWithIdempotency(ctx, req.ProfileId, req.IdempotencyKey)
+	result, err := s.profiles.TestConnectionWithIdempotency(ctx, req.ProfileId, req.IdempotencyKey, coremodel.ConnectionTestOptions{ProbeTools: req.ProbeToolCompatibility})
 	if err != nil {
 		return nil, grpcProfileError(err)
 	}
-	return &agentv1.ModelProfileServiceTestConnectionResponse{Reachable: result.OK, ErrorCode: result.ErrorCode}, nil
+	return &agentv1.ModelProfileServiceTestConnectionResponse{Reachable: result.OK, ErrorCode: result.ErrorCode, ToolCompatibility: toolCompatibilityProto(result.ToolCompatibility)}, nil
+}
+
+// toolCompatibilityProto projects the provider-neutral, secret-free probe
+// verdict into the public API without exposing prompts or provider payloads.
+func toolCompatibilityProto(result coremodel.ToolCompatibilityResult) *agentv1.ModelToolCompatibility {
+	out := &agentv1.ModelToolCompatibility{Status: result.Status, Probes: make([]*agentv1.ModelToolCompatibilityProbe, 0, len(result.Probes))}
+	for _, probe := range result.Probes {
+		out.Probes = append(out.Probes, &agentv1.ModelToolCompatibilityProbe{Name: probe.Name, Status: probe.Status, ErrorCode: probe.ErrorCode})
+	}
+	return out
 }
 
 func (s *ModelProfileService) Sync(ctx context.Context, req *agentv1.ModelProfileServiceSyncRequest) (*agentv1.ModelProfileServiceSyncResponse, error) {

@@ -664,13 +664,24 @@ func (p *ProposeIntrinsic) execute(ctx context.Context, bound coreconversation.T
 }
 
 func classifyProposalExecutionError(err error) error {
-	var beforeMutation proposalPreMutationError
-	if err == nil || !errors.As(err, &beforeMutation) {
+	if err == nil {
+		return nil
+	}
+	var unknown proposalOutcomeUnknownError
+	if errors.As(err, &unknown) {
+		summary := fmt.Sprintf("AWS Worker proposal outcome is still unknown after durable receipt reconciliation; operation_id=%s plan_id=%s task_id=%s execution_id=%s. Read the plan or task by ID before creating another proposal", unknown.OperationID, unknown.PlanID, unknown.TaskID, unknown.ExecutionID)
+		return coreconversation.NewToolExecutionErrorWithMutation(coreconversation.ToolOutcomeUnknownMutation, summary, 0, coreconversation.ToolMutationUnknown, err)
+	}
+	var unchanged proposalUnchangedError
+	if !errors.As(err, &unchanged) {
 		return err
 	}
 	outcome := coreconversation.ToolOutcomeFatal
 	summary := "AWS Worker proposal could not be created; no offer or cloud resource was created"
 	switch {
+	case errors.Is(err, errProposalPersistenceUnavailable):
+		outcome = coreconversation.ToolOutcomeRetryable
+		summary = "AWS Worker proposal storage was temporarily unavailable; durable receipt reconciliation confirmed that no offer, task, or cloud resource was created"
 	case errors.Is(err, ErrStaleAuthorization):
 		outcome = coreconversation.ToolOutcomeAuth
 		summary = "AWS authorization is unavailable or changed; no Worker proposal or cloud resource was created"

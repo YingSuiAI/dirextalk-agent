@@ -77,6 +77,23 @@ func (pgCloudRetainedReuseResolver) CheckCreateWorkerCapacity(context.Context, s
 	return nil
 }
 
+type pgCloudLostCreateResponseStore struct {
+	store        *CloudWorkerStore
+	resolveCalls int
+}
+
+func (s *pgCloudLostCreateResponseStore) CreateOffer(ctx context.Context, command cloudworker.CreateOfferCommand) (cloudworker.Offer, error) {
+	if _, err := s.store.CreateOffer(ctx, command); err != nil {
+		return cloudworker.Offer{}, err
+	}
+	return cloudworker.Offer{}, errors.New("simulated response loss after commit")
+}
+
+func (s *pgCloudLostCreateResponseStore) ResolveOffer(ctx context.Context, command cloudworker.ResolveOfferCommand) (cloudworker.Offer, error) {
+	s.resolveCalls++
+	return s.store.ResolveOffer(ctx, command)
+}
+
 func newPGCloudWorkerHarness(t *testing.T) *pgCloudWorkerHarness {
 	t.Helper()
 	ctx, store, profileID, cleanup := corePG18Fixture(t)
@@ -163,6 +180,64 @@ func (h *pgCloudWorkerHarness) propose(t *testing.T) cloudworker.Offer {
 		t.Fatal(err)
 	}
 	return offer
+}
+
+func TestCloudWorkerProposalReconcilesPostCommitResponseLoss(t *testing.T) {
+	h := newPGCloudWorkerHarness(t)
+	defer h.cleanup()
+
+	lostResponseStore := &pgCloudLostCreateResponseStore{store: h.cloud}
+	binding := pgCloudAWSBinding()
+	service, err := cloudworker.NewServiceWithAWSBindingResolver(lostResponseStore, pgCloudDefaults(), cloudworker.FakeQuoter{
+		AmountMicros: 1000, MaximumAuthorizedMicros: 2000, ComputeMicrosPerHour: 100000,
+		TTL: time.Hour, Now: func() time.Time { return h.now },
+	}, cloudworker.AWSBindingResolverFunc(func(context.Context) (cloudworker.AWSBinding, error) { return binding, nil }), func() time.Time { return h.now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = service.EnableDynamicComputeSelection(pgCloudComputeSelector{}); err != nil {
+		t.Fatal(err)
+	}
+	if err = service.EnablePersistentWorkerReuse(pgCloudReuseResolver{}); err != nil {
+		t.Fatal(err)
+	}
+	offer, err := service.Propose(h.ctx, h.command)
+	if err != nil {
+		t.Fatalf("post-commit response loss did not reconcile: %v", err)
+	}
+	if lostResponseStore.resolveCalls != 1 || offer.Plan.TaskID == "" || offer.Task.ID != offer.Plan.TaskID ||
+		offer.Confirmation.ConfirmationID != offer.Plan.ConfirmationID {
+		t.Fatalf("resolve_calls=%d offer=%+v", lostResponseStore.resolveCalls, offer)
+	}
+	var plans, tasks, confirmations, executions, receipts int
+	for queryIndex, target := range []struct {
+		query string
+		value any
+	}{
+		{`SELECT COUNT(*) FROM core_cloud_worker_plans WHERE plan_id=$1`, &plans},
+		{`SELECT COUNT(*) FROM core_tasks WHERE task_id=$1`, &tasks},
+		{`SELECT COUNT(*) FROM core_confirmations WHERE confirmation_id=$1`, &confirmations},
+		{`SELECT COUNT(*) FROM core_cloud_worker_executions WHERE execution_id=$1`, &executions},
+		{`SELECT COUNT(*) FROM core_cloud_worker_offer_replays WHERE idempotency_key=$1`, &receipts},
+	} {
+		id := offer.Plan.PlanID
+		switch queryIndex {
+		case 1:
+			id = offer.Plan.TaskID
+		case 2:
+			id = offer.Plan.ConfirmationID
+		case 3:
+			id = offer.Plan.ExecutionID
+		case 4:
+			id = h.command.IdempotencyKey
+		}
+		if err = h.store.pool.QueryRow(h.ctx, target.query, id).Scan(target.value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if plans != 1 || tasks != 1 || confirmations != 1 || executions != 1 || receipts != 1 {
+		t.Fatalf("plans=%d tasks=%d confirmations=%d executions=%d receipts=%d", plans, tasks, confirmations, executions, receipts)
+	}
 }
 
 func (h *pgCloudWorkerHarness) proposeAdditional(t *testing.T) cloudworker.Offer {
