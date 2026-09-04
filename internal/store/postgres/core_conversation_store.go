@@ -388,12 +388,7 @@ func projectCloudWorkerRunReferences(conversation *core.Conversation, executions
 				continue
 			}
 			execution, available := executions[reference.RunID]
-			if !available || execution.ConversationID != conversation.ID ||
-				reference.AccountGeneration != execution.AccountGeneration ||
-				reference.TaskID != execution.TaskID || reference.PlanID != execution.PlanID ||
-				reference.PlanRevision != execution.PlanRevision || reference.RunRevision != execution.Revision ||
-				reference.ExecutionID != execution.ExecutionID || reference.WorkerID != execution.WorkerID ||
-				reference.Status != string(execution.State) {
+			if !available || execution.ConversationID != conversation.ID {
 				continue
 			}
 			projected = append(projected, reference)

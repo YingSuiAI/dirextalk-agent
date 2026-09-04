@@ -51,7 +51,7 @@ func TestReferenceArrayJSONPGAlwaysEncodesJSONArray(t *testing.T) {
 	}
 }
 
-func TestProjectCloudWorkerRunReferencesRequiresCurrentDurableAuthority(t *testing.T) {
+func TestProjectCloudWorkerRunReferencesRequiresDurableRunPresence(t *testing.T) {
 	reference := core.Reference{
 		Kind: "execution_run", AccountGeneration: 7, TaskID: "task", PlanID: "plan", PlanRevision: 3,
 		RunID: "run", RunRevision: 5, ExecutionID: "execution", WorkerID: "worker", Status: "succeeded",
@@ -81,10 +81,17 @@ func TestProjectCloudWorkerRunReferencesRequiresCurrentDurableAuthority(t *testi
 		t.Fatalf("missing authority references = %+v", references)
 	}
 
-	drifted := conversation()
+	historical := conversation()
 	execution.Revision++
-	projectCloudWorkerRunReferences(&drifted, map[string]cloudworker.Execution{"run": execution})
-	if len(drifted.Messages[0].References) != 2 {
-		t.Fatalf("drifted references = %+v", drifted.Messages[0].References)
+	projectCloudWorkerRunReferences(&historical, map[string]cloudworker.Execution{"run": execution})
+	if len(historical.Messages[0].References) != 3 {
+		t.Fatalf("historical references = %+v", historical.Messages[0].References)
+	}
+
+	foreign := conversation()
+	execution.ConversationID = "other-conversation"
+	projectCloudWorkerRunReferences(&foreign, map[string]cloudworker.Execution{"run": execution})
+	if len(foreign.Messages[0].References) != 2 {
+		t.Fatalf("foreign references = %+v", foreign.Messages[0].References)
 	}
 }

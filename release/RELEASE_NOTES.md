@@ -4,7 +4,7 @@
 
 ## v1.0.209
 
-1. Stop restarted, reauthenticated, and second-device clients from polling retired Cloud Worker references by omitting missing or drifted run authority from conversation history while preserving valid runs and unrelated references.
+1. Stop restarted, reauthenticated, and second-device clients from polling retired Cloud Worker references by omitting runs missing from durable conversation history while preserving valid historical results and unrelated references.
 
 ## v1.0.208
 
