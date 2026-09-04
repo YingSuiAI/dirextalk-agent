@@ -131,6 +131,13 @@ Zero-byte stdout, stderr, and result files are omitted before remote transfer an
 
 Clients read plans, runs, events, and artifacts through `agent.execution.v2.*`, and authorize spend through `agent.core.confirmations.*`. Public references are links and invalidation metadata, not mutation authority.
 
+Conversation history projects a Cloud Worker `execution_run` reference only
+while its exact persisted run identity, account generation, revisions, state,
+and Worker binding still match the durable Execution V2 record. A missing or
+drifted run is omitted from the read projection, so a restarted or newly signed
+in client does not poll an already retired Worker reference. Other transcript
+content and reference kinds remain unchanged.
+
 Offer and rejection transcript messages retain a bounded secret-free compute summary. For conversations created before that summary was persisted, the model-only context projection resolves the same owner-, account-generation-, conversation-, and plan-bound public record and adds the configuration to the latest referencing assistant message without rewriting the authoritative transcript. A rejected offer therefore remains available to later questions even though it cannot be authorized or executed.
 
 Task leases, confirmation state, run events, Worker inventory, remote task state, and local artifact records remain durable. Restart and reconnect observe the original Worker and task. An uncertain external response is resolved by reading the same provider or remote identity; it is never permission to create or start a replacement.

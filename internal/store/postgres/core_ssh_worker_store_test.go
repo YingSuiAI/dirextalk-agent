@@ -82,6 +82,62 @@ func TestCloudWorkerOfferReferencesTrackConfirmedAndRunningState(t *testing.T) {
 	assertState(string(coreconfirmation.StateConsumed), string(cloudworker.StateCanceled))
 }
 
+func TestConversationHistoryOmitsCloudWorkerRunWithoutDurableAuthority(t *testing.T) {
+	h := newPGCloudWorkerHarness(t)
+	defer h.cleanup()
+	offer := h.propose(t)
+
+	var messageID string
+	var raw []byte
+	if err := h.store.pool.QueryRow(h.ctx, `SELECT message_id::text,references_json
+		FROM core_messages WHERE conversation_id=$1 AND references_json @> '[{"kind":"execution_run"}]'::jsonb`,
+		offer.Plan.ConversationID).Scan(&messageID, &raw); err != nil {
+		t.Fatal(err)
+	}
+	var references []core.Reference
+	if json.Unmarshal(raw, &references) != nil {
+		t.Fatal("stored Cloud Worker references are invalid")
+	}
+	missingRunID := uuid.NewString()
+	for index := range references {
+		if references[index].Kind == "execution_run" {
+			references[index].RunID = missingRunID
+		}
+	}
+	encoded, err := referenceArrayJSONPG(references)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = h.store.pool.Exec(h.ctx, `UPDATE core_messages SET references_json=$2 WHERE message_id=$1`, messageID, encoded); err != nil {
+		t.Fatal(err)
+	}
+
+	conversationStore, err := NewCoreConversationStore(h.store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conversation, err := conversationStore.LoadConversation(h.ctx, offer.Plan.ConversationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var planReferences, runReferences, confirmationReferences int
+	for _, message := range conversation.Messages {
+		for _, reference := range message.References {
+			switch reference.Kind {
+			case "execution_plan":
+				planReferences++
+			case "execution_run":
+				runReferences++
+			case "execution_confirmation":
+				confirmationReferences++
+			}
+		}
+	}
+	if planReferences != 1 || runReferences != 0 || confirmationReferences != 1 {
+		t.Fatalf("history references = plan:%d run:%d confirmation:%d", planReferences, runReferences, confirmationReferences)
+	}
+}
+
 func TestRejectedCloudWorkerPlanRemainsAvailableToLaterModelContext(t *testing.T) {
 	h := newPGCloudWorkerHarness(t)
 	defer h.cleanup()

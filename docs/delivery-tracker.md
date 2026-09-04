@@ -9,6 +9,12 @@ contract](message-server-integration-development-contract.md), and
 
 ## Implemented at HEAD
 
+- Conversation history now omits a Cloud Worker run reference when its exact
+  durable Execution V2 authority is missing or has drifted. Fresh login,
+  restart, and second-device history loads therefore cannot restart polling for
+  an already retired Worker, while valid runs and unrelated references remain
+  unchanged. Focused pure-projection and PostgreSQL history regressions cover
+  valid, missing, and revision-drifted authority.
 - Static page revisions can now read the latest or an exact prior immutable
   release only within the admitted owner, account generation, and conversation.
   The read-only intrinsic revalidates the database receipt against the

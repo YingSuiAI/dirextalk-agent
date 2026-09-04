@@ -335,6 +335,73 @@ func normalizeConversationTimesPG(conversation *core.Conversation, deletedAt *ti
 	}
 }
 
+func (s *CoreConversationStore) projectAvailableCloudWorkerRuns(ctx context.Context, conversation *core.Conversation) error {
+	if s == nil || s.Store == nil || ctx == nil || conversation == nil {
+		return core.ErrInvalid
+	}
+	runIDs := make(map[string]struct{})
+	for _, message := range conversation.Messages {
+		for _, reference := range message.References {
+			if reference.Kind == "execution_run" && reference.TaskID != "" {
+				runIDs[reference.RunID] = struct{}{}
+			}
+		}
+	}
+	if len(runIDs) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(runIDs))
+	for id := range runIDs {
+		ids = append(ids, id)
+	}
+	rows, err := s.pool.Query(ctx, cloudWorkerExecutionSelect+`
+		WHERE execution_json->>'run_id'=ANY($1::text[]) AND conversation_id=$2`, ids, conversation.ID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	executions := make(map[string]cloudworker.Execution, len(ids))
+	for rows.Next() {
+		execution, scanErr := scanCloudWorkerExecution(rows)
+		if scanErr != nil {
+			return scanErr
+		}
+		executions[execution.RunID] = execution
+	}
+	if err = rows.Err(); err != nil {
+		return err
+	}
+	projectCloudWorkerRunReferences(conversation, executions)
+	return nil
+}
+
+func projectCloudWorkerRunReferences(conversation *core.Conversation, executions map[string]cloudworker.Execution) {
+	if conversation == nil {
+		return
+	}
+	for messageIndex := range conversation.Messages {
+		references := conversation.Messages[messageIndex].References
+		projected := make([]core.Reference, 0, len(references))
+		for _, reference := range references {
+			if reference.Kind != "execution_run" || reference.TaskID == "" {
+				projected = append(projected, reference)
+				continue
+			}
+			execution, available := executions[reference.RunID]
+			if !available || execution.ConversationID != conversation.ID ||
+				reference.AccountGeneration != execution.AccountGeneration ||
+				reference.TaskID != execution.TaskID || reference.PlanID != execution.PlanID ||
+				reference.PlanRevision != execution.PlanRevision || reference.RunRevision != execution.Revision ||
+				reference.ExecutionID != execution.ExecutionID || reference.WorkerID != execution.WorkerID ||
+				reference.Status != string(execution.State) {
+				continue
+			}
+			projected = append(projected, reference)
+		}
+		conversation.Messages[messageIndex].References = projected
+	}
+}
+
 func (s *CoreConversationStore) LoadConversation(ctx context.Context, id string) (core.Conversation, error) {
 	var c core.Conversation
 	var del *time.Time
@@ -418,6 +485,9 @@ func (s *CoreConversationStore) LoadConversation(ctx context.Context, id string)
 			c.Messages[i].ToolResults = append(c.Messages[i].ToolResults, r)
 		}
 		rows3.Close()
+	}
+	if e = s.projectAvailableCloudWorkerRuns(ctx, &c); e != nil {
+		return c, e
 	}
 	return c, nil
 }

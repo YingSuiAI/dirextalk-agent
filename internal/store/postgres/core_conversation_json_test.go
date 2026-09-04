@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker"
 	core "github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
 )
 
@@ -47,5 +48,43 @@ func TestReferenceArrayJSONPGAlwaysEncodesJSONArray(t *testing.T) {
 				t.Fatalf("encoded=%s length=%d err=%v", raw, len(decoded), err)
 			}
 		})
+	}
+}
+
+func TestProjectCloudWorkerRunReferencesRequiresCurrentDurableAuthority(t *testing.T) {
+	reference := core.Reference{
+		Kind: "execution_run", AccountGeneration: 7, TaskID: "task", PlanID: "plan", PlanRevision: 3,
+		RunID: "run", RunRevision: 5, ExecutionID: "execution", WorkerID: "worker", Status: "succeeded",
+	}
+	execution := cloudworker.Execution{
+		OwnerID: "owner", AccountGeneration: 7, TaskID: "task", PlanID: "plan", PlanRevision: 3,
+		RunID: "run", Revision: 5, ExecutionID: "execution", WorkerID: "worker", State: cloudworker.StateSucceeded,
+		ConversationID: "conversation",
+	}
+	conversation := func() core.Conversation {
+		return core.Conversation{ID: "conversation", Messages: []core.Message{{References: []core.Reference{
+			{Kind: "execution_plan", TaskID: "task", PlanID: "plan"},
+			reference,
+			{Kind: "execution_run", RunID: "generic-run"},
+		}}}}
+	}
+
+	available := conversation()
+	projectCloudWorkerRunReferences(&available, map[string]cloudworker.Execution{"run": execution})
+	if len(available.Messages[0].References) != 3 {
+		t.Fatalf("available references = %+v", available.Messages[0].References)
+	}
+
+	missing := conversation()
+	projectCloudWorkerRunReferences(&missing, nil)
+	if references := missing.Messages[0].References; len(references) != 2 || references[0].Kind != "execution_plan" || references[1].RunID != "generic-run" {
+		t.Fatalf("missing authority references = %+v", references)
+	}
+
+	drifted := conversation()
+	execution.Revision++
+	projectCloudWorkerRunReferences(&drifted, map[string]cloudworker.Execution{"run": execution})
+	if len(drifted.Messages[0].References) != 2 {
+		t.Fatalf("drifted references = %+v", drifted.Messages[0].References)
 	}
 }
