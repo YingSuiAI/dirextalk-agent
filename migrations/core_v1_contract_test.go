@@ -8,13 +8,14 @@ import (
 )
 
 func TestCoreV1BaselineContainsRequiredSchema(t *testing.T) {
-	if CurrentVersion != 31 {
-		t.Fatalf("CurrentVersion = %d, want 31", CurrentVersion)
+	if CurrentVersion != 32 {
+		t.Fatalf("CurrentVersion = %d, want 32", CurrentVersion)
 	}
 	entries := Entries()
 	wantEntries := []string{"000001_core_v1_fresh.up.sql", "000002_knowledge_search_provenance.up.sql", "000003_aws_credential_test_claims.up.sql", "000004_knowledge_pgvector.up.sql", "000005_cloud_worker_v1.up.sql", "000006_image_tools_v1.up.sql", "000007_unbounded_agent_rounds.up.sql", "000008_cloud_worker_progress_events.up.sql", "000009_static_site_releases.up.sql", "000010_builtin_skill_seeds.up.sql", "000011_managed_node_mcp_quotas.up.sql", "000012_managed_node_prepared_cleanup.up.sql", "000013_structured_memory_v2.up.sql", "000014_memory_controls.up.sql", "000015_remove_default_client_profile_alias.up.sql", "000016_remove_cloud_worker_result_message.up.sql", "000017_builtin_mcp_seeds.up.sql", "000018_remove_legacy_cloud_worker_schema.up.sql", "000019_conversation_model_budget.up.sql", "000020_model_request_dialects.up.sql", "000021_turn_model_attempts.up.sql", "000022_progress_working_context.up.sql", "000023_server_artifact_inventory.up.sql", "000024_turn_dispatch_directives.up.sql", "000025_turn_finalization_intents.up.sql", "000026_tool_observations.up.sql", "000027_constrained_workflow_finalization.up.sql", "000028_github_configuration.up.sql", "000029_model_tool_call_format_finalization.up.sql"}
 	wantEntries = append(wantEntries, "000030_turn_execution_budget.up.sql")
 	wantEntries = append(wantEntries, "000031_turn_steer_supersedes_model.up.sql")
+	wantEntries = append(wantEntries, "000032_deepseek_dsml_dialect.up.sql")
 	if !reflect.DeepEqual(entries, wantEntries) {
 		t.Fatalf("unexpected baseline entries: %v", entries)
 	}

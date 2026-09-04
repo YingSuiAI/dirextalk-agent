@@ -372,7 +372,14 @@ func (c *providerClient) Generate(ctx context.Context, request CompletionRequest
 	if status < 200 || status >= 300 {
 		return Completion{}, providerHTTPStatusFailure(status, headers)
 	}
-	return decodeCompletionWithGeminiToolIDs(c.profile.Provider, body, headers, newGeminiToolCallIDAllocator(request.Messages))
+	completion, err := decodeCompletionWithGeminiToolIDs(c.profile.Provider, body, headers, newGeminiToolCallIDAllocator(request.Messages))
+	if err != nil {
+		return Completion{}, err
+	}
+	if c.profile.RequestDialect == DialectDeepSeekDSMLV4 {
+		return normalizeDeepSeekCompletion(completion, request.Tools, request.Messages)
+	}
+	return completion, nil
 }
 
 func (c *providerClient) Stream(ctx context.Context, request CompletionRequest) (Stream, error) {
@@ -462,6 +469,9 @@ func (c *providerClient) Stream(ctx context.Context, request CompletionRequest) 
 	}
 	stream := &sseStream{reader: bufio.NewReader(source), body: resp.Body, provider: c.profile.Provider, cancel: cancel, source: source, idle: idle, geminiToolIDs: newGeminiToolCallIDAllocator(request.Messages)}
 	cancel = nil // ownership transfers to the returned stream
+	if c.profile.RequestDialect == DialectDeepSeekDSMLV4 && len(request.Tools) > 0 {
+		return newDeepSeekDSMLStream(stream, request.Tools, request.Messages), nil
+	}
 	return stream, nil
 }
 
@@ -501,7 +511,7 @@ func (c *providerClient) payload(r CompletionRequest, stream bool) (any, error) 
 		return anthropicPayload(c.profile, r, stream), nil
 	case DialectGeminiGenerateV1Beta:
 		return geminiPayload(c.profile, r), nil
-	case DialectOpenAICompatibleChatV1, DialectOpenAIReasoningChatV1:
+	case DialectOpenAICompatibleChatV1, DialectOpenAIReasoningChatV1, DialectDeepSeekDSMLV4:
 		return openAIPayload(c.profile, r, stream), nil
 	default:
 		return nil, ErrInvalidProfile

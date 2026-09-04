@@ -25,6 +25,7 @@ const (
 const (
 	DialectOpenAICompatibleChatV1 RequestDialect = "openai_compatible_chat_v1"
 	DialectOpenAIReasoningChatV1  RequestDialect = "openai_reasoning_chat_v1"
+	DialectDeepSeekDSMLV4         RequestDialect = "deepseek_dsml_v4"
 	DialectAnthropicMessagesV1    RequestDialect = "anthropic_messages_2023_06"
 	DialectGeminiGenerateV1Beta   RequestDialect = "gemini_generate_content_v1beta"
 	DialectVolcVoiceV1            RequestDialect = "volc_voice_v1"

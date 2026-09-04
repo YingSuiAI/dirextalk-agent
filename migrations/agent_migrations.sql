@@ -2931,3 +2931,15 @@ WHERE conversation.conversation_id=first_turn.conversation_id
   AND conversation.deleted_at IS NULL
   AND conversation.title='';
 -- dirextalk-agent migration end 000031_turn_steer_supersedes_model.up.sql
+-- dirextalk-agent migration begin 000032_deepseek_dsml_dialect.up.sql
+-- Keep the provider vocabulary stable while admitting the explicit DeepSeek
+-- response adapter as an OpenAI-compatible request dialect.
+ALTER TABLE core_model_profiles
+    DROP CONSTRAINT core_model_profiles_request_dialect_check,
+    ADD CONSTRAINT core_model_profiles_request_dialect_check CHECK (
+        (provider = 'openai_compatible' AND request_dialect IN ('openai_compatible_chat_v1','openai_reasoning_chat_v1','deepseek_dsml_v4')) OR
+        (provider = 'anthropic' AND request_dialect = 'anthropic_messages_2023_06') OR
+        (provider = 'gemini' AND request_dialect = 'gemini_generate_content_v1beta') OR
+        (provider = 'volc_voice' AND request_dialect = 'volc_voice_v1')
+    );
+-- dirextalk-agent migration end 000032_deepseek_dsml_dialect.up.sql

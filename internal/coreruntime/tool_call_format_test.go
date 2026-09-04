@@ -55,6 +55,12 @@ func modelToolProtocolTestRequest() coreconversation.ModelRunRequest {
 	}
 }
 
+func TestDeepSeekDSMLDialectRetainsOpenAIToolProtocolGuard(t *testing.T) {
+	if !isOpenAIToolProtocol("openai_compatible", "deepseek_dsml_v4", 1, false) {
+		t.Fatal("DeepSeek DSML adapter dialect lost the runtime text quarantine")
+	}
+}
+
 func TestModelRunnerQuarantinesTextEncodedToolCall(t *testing.T) {
 	client := &streamClient{stream: &fakeStream{deltas: []coremodel.Delta{
 		{Content: " \n<｜｜DSML｜｜tool_"},

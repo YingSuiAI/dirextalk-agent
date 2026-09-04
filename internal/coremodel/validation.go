@@ -450,7 +450,7 @@ func currentEquivalentDialect(provider ModelProvider) RequestDialect {
 func validRequestDialect(provider ModelProvider, dialect RequestDialect) bool {
 	switch provider {
 	case ProviderOpenAICompatible:
-		return dialect == DialectOpenAICompatibleChatV1 || dialect == DialectOpenAIReasoningChatV1
+		return dialect == DialectOpenAICompatibleChatV1 || dialect == DialectOpenAIReasoningChatV1 || dialect == DialectDeepSeekDSMLV4
 	case ProviderAnthropic:
 		return dialect == DialectAnthropicMessagesV1
 	case ProviderGemini:

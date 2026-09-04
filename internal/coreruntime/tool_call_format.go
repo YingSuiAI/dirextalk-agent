@@ -182,7 +182,7 @@ func isOpenAIToolProtocol(profileProvider string, requestDialect string, toolCou
 	if (toolCount == 0 && !guardToolFree) || profileProvider != "openai_compatible" {
 		return false
 	}
-	return requestDialect == "openai_compatible_chat_v1" || requestDialect == "openai_reasoning_chat_v1"
+	return requestDialect == "openai_compatible_chat_v1" || requestDialect == "openai_reasoning_chat_v1" || requestDialect == "deepseek_dsml_v4"
 }
 
 // isDeepSeekToolProtocol recognizes both the first-party API and DeepSeek

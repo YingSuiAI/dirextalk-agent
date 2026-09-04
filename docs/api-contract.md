@@ -392,8 +392,13 @@ or stream after admission. It never cancels the accepted Turn; callers use
   further failure completes through deterministic Markdown. No retry restores
   tool authority, and text inside the candidate is never promoted into a tool
   call. Structured tool calls remain the sole execution authority.
-- The DeepSeek compatibility adapter does not add a second executable
-  protocol. For the first-party DeepSeek API and DeepSeek models reached
+- The opt-in `deepseek_dsml_v4` compatibility adapter does not add a second
+  executable protocol. It strictly normalizes only a complete DSML V4 envelope
+  whose function is present in the current request's declared tool set; native
+  structured calls remain preferred. Prose, generic XML, malformed DSML,
+  duplicate parameters, unknown functions, and invalid JSON remain
+  non-executable and enter the existing quarantine. For the first-party
+  DeepSeek API and DeepSeek models reached
   through an OpenAI-compatible gateway, a tools-admitted request carries fixed
   platform guidance that ordinary content is non-executable and an explicit
   `tool_choice: auto`. After a quarantined text-protocol response, the single

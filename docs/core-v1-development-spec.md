@@ -165,7 +165,11 @@ reference plus the digest of every snapshotted provider parameter.
 Conversation profiles also persist an explicit versioned request dialect.
 `openai_compatible_chat_v1` retains the compatible `max_tokens` projection,
 while `openai_reasoning_chat_v1` uses `max_completion_tokens` and rejects
-temperature or top-p sampling. Anthropic and Gemini use
+temperature or top-p sampling. `deepseek_dsml_v4` sends the same compatible
+request shape but strictly normalizes a complete DeepSeek V4 DSML response to
+provider-neutral tool calls. Native structured calls take precedence; prose,
+unknown tools, malformed envelopes, and invalid arguments are never promoted
+to executable calls. Anthropic and Gemini use
 `anthropic_messages_2023_06` and `gemini_generate_content_v1beta` respectively;
 the runtime never infers a dialect from a model name.
 Create, update, and sync admission require that dialect explicitly; only
