@@ -447,9 +447,13 @@ func assertTerminalFallbackMarkdown(t *testing.T, turn core.Turn) {
 	if turn.State != core.TurnCompleted || turn.Response == nil {
 		t.Fatalf("turn did not complete: %+v", turn)
 	}
-	for _, heading := range []string{"## Completed work", "## Best conclusion", "## Incomplete items", "## Stop reason"} {
-		if !strings.Contains(turn.Response.Message.Content, heading) {
-			t.Fatalf("fallback omitted %q: %q", heading, turn.Response.Message.Content)
+	content := strings.TrimSpace(turn.Response.Message.Content)
+	if content == "" {
+		t.Fatal("fallback response was empty")
+	}
+	for _, internal := range []string{"## Stop reason", "finalization_timeout", "provider_invalid_response", "provider_uncertain"} {
+		if strings.Contains(content, internal) {
+			t.Fatalf("fallback exposed internal status %q: %q", internal, content)
 		}
 	}
 }
@@ -737,8 +741,8 @@ func TestTerminalToolOutcomeFinalizationFailureFallsBackPostgres(t *testing.T) {
 
 	terminal := recoverConversationTurnUntilTerminal(t, service, h.store, turn.ID, 8*time.Second)
 	assertTerminalFallbackMarkdown(t, terminal)
-	if !strings.Contains(terminal.Response.Message.Content, "`provider_invalid_response`: model provider returned an invalid response") {
-		t.Fatalf("terminal fallback=%q", terminal.Response.Message.Content)
+	if terminal.TerminalCode != "provider_invalid_response" {
+		t.Fatalf("terminal code=%q fallback=%q", terminal.TerminalCode, terminal.Response.Message.Content)
 	}
 	requests := model.snapshotRequests()
 	if len(requests) != 1 {
