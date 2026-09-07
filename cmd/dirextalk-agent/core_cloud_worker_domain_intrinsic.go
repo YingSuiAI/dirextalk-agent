@@ -112,7 +112,13 @@ func (executor *sshWorkerExecutor) ResolveRetainedWorkerDomain(ctx context.Conte
 	return payload, nil
 }
 
-func (executor *sshWorkerExecutor) ApplyRetainedWorkerDomain(ctx context.Context, expected cloudworker.RetainedWorkerDomainIntent) (cloudworker.RetainedWorkerDomainResult, error) {
+func (executor *sshWorkerExecutor) ApplyRetainedWorkerDomain(ctx context.Context, expected cloudworker.RetainedWorkerDomainIntent) (answer cloudworker.RetainedWorkerDomainResult, err error) {
+	stage := "preflight"
+	defer func() {
+		if err != nil {
+			err = &cloudworker.DomainOperationError{Stage: stage, Cause: err}
+		}
+	}()
 	if executor == nil || ctx == nil || expected.IntentDigest == "" || cloudWorkerDomainIntentDigest(expected) != expected.IntentDigest {
 		return cloudworker.RetainedWorkerDomainResult{}, cloudworker.ErrInvalid
 	}
@@ -142,6 +148,7 @@ func (executor *sshWorkerExecutor) ApplyRetainedWorkerDomain(ctx context.Context
 	}
 	mutation := domainMutation(expected.AWSAccountID, expected.WorkerID, expected.WorkloadID, action, domain)
 	if expected.Operation == "bind" {
+		stage = "persistence"
 		if err = executor.workloads.StageDomain(ctx, identity, expected.WorkloadID, domain); err != nil {
 			return cloudworker.RetainedWorkerDomainResult{}, fmt.Errorf("stage retained Worker domain: %w", err)
 		}
@@ -149,16 +156,20 @@ func (executor *sshWorkerExecutor) ApplyRetainedWorkerDomain(ctx context.Context
 		if loadErr != nil {
 			return cloudworker.RetainedWorkerDomainResult{}, loadErr
 		}
+		stage = "proxy"
 		if err = executor.reconcileRetainedServiceExposure(ctx, identity, service, expected.Hostname); err == nil {
+			stage = "ports"
 			err = executor.setRetainedDomainPublicPort(ctx, identity, 80, true)
 		}
 		if err == nil {
 			err = executor.setRetainedDomainPublicPort(ctx, identity, 443, true)
 		}
 		if err == nil {
+			stage = "dns"
 			err = remoteservice.ReconcilePlannedUpsert(ctx, fenced, mutation)
 		}
 		if err == nil {
+			stage = "https"
 			verify := executor.verifyHTTPS
 			if verify == nil {
 				verify = verifyPublicServiceHTTPS
@@ -166,20 +177,25 @@ func (executor *sshWorkerExecutor) ApplyRetainedWorkerDomain(ctx context.Context
 			err = verify(ctx, expected.Hostname, expected.TargetIPv4, service.HealthPath, nil)
 		}
 		if err == nil {
+			stage = "ports"
 			err = executor.setRetainedDomainPublicPort(ctx, identity, service.Port, false)
 		}
 		if err == nil {
+			stage = "persistence"
 			err = executor.workloads.CommitDomain(ctx, identity, expected.WorkloadID)
 		}
 	} else {
+		stage = "dns"
 		err = remoteservice.ReconcilePlannedDelete(ctx, fenced, mutation)
 		if err == nil {
+			stage = "persistence"
 			err = executor.workloads.SetDomain(ctx, identity, expected.WorkloadID, nil)
 		}
 	}
 	if err != nil {
 		return cloudworker.RetainedWorkerDomainResult{}, err
 	}
+	stage = "persistence"
 	stored, err := executor.workloads.Get(ctx, identity, expected.WorkloadID)
 	if err != nil {
 		return cloudworker.RetainedWorkerDomainResult{}, err

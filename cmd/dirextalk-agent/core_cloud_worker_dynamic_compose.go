@@ -85,7 +85,7 @@ func composeDynamicCloudWorkerProposal(cfg config.Config, store *postgres.Store,
 	if err = intrinsic.EnableRetainedWorkerManagement(executor, conversationStore); err != nil {
 		return nil, fmt.Errorf("initialize retained Worker conversation management: %w", err)
 	}
-	if err = intrinsic.EnableRetainedWorkerDomains(executor, conversationStore); err != nil {
+	if err = intrinsic.EnableRetainedWorkerDomains(executor); err != nil {
 		return nil, fmt.Errorf("initialize retained Worker domain conversation management: %w", err)
 	}
 	if err = domain.EnablePersistentWorkerReuse(executor); err != nil {

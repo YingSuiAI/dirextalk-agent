@@ -6,9 +6,9 @@ import (
 )
 
 // executeImmediateTool is the central supervisor for inline MCP, synthetic
-// extension, and read-only intrinsic execution. Only an explicitly classified
-// read-only transient outcome is retried, and only once.
-func executeImmediateTool(ctx context.Context, call ToolCall, execute func(context.Context, ToolExecutionRequest) (ToolResult, error)) ToolResult {
+// extension and observation-returning intrinsic execution. Only a transient
+// outcome proven to have made no changes is retried, and only once.
+func executeImmediateTool(ctx context.Context, call ToolCall, readOnly bool, execute func(context.Context, ToolExecutionRequest) (ToolResult, error)) ToolResult {
 	transientRetries := uint8(0)
 	for {
 		result, err := execute(ctx, ToolExecutionRequest{Call: call})
@@ -16,9 +16,19 @@ func executeImmediateTool(ctx context.Context, call ToolCall, execute func(conte
 			details, classified := ToolExecutionErrorObservation(err)
 			if !classified {
 				details = ToolExecutionErrorDetails{Outcome: ToolOutcomeFatal, Summary: "tool execution failed"}
+				if !readOnly {
+					details.Outcome = ToolOutcomeUnknownMutation
+					details.Summary = "The operation did not return a verified result; check its current state before retrying."
+				}
 			}
 			mutation := ToolMutationNone
 			if details.Outcome == ToolOutcomeUnknownMutation {
+				mutation = ToolMutationUnknown
+			}
+			if details.MutationStateSet {
+				mutation = details.MutationState
+			} else if !readOnly {
+				details.Outcome = ToolOutcomeUnknownMutation
 				mutation = ToolMutationUnknown
 			}
 			result = ToolResult{CallID: call.ID, ToolName: call.Name, Content: details.Summary}
@@ -34,6 +44,9 @@ func executeImmediateTool(ctx context.Context, call ToolCall, execute func(conte
 			if result.ValidateObservation() != nil {
 				result = ToolResult{CallID: call.ID, ToolName: call.Name, Content: "tool returned an invalid read-only observation"}.
 					WithObservation(ToolOutcomeFatal, "Tool returned an invalid read-only observation", ToolMutationNone)
+				if !readOnly {
+					result = (ToolResult{CallID: call.ID, ToolName: call.Name, Content: "The operation returned an invalid receipt; verify its current state before retrying."}).WithObservation(ToolOutcomeUnknownMutation, "The operation returned an invalid receipt; verify its current state before retrying.", ToolMutationUnknown)
+				}
 			}
 		}
 		if result.Retry.TransientRetries < transientRetries {
@@ -42,7 +55,7 @@ func executeImmediateTool(ctx context.Context, call ToolCall, execute func(conte
 		if result.Outcome == ToolOutcomeInvalid {
 			result.Retry.ValidationCorrections = 1
 		}
-		if result.Outcome == ToolOutcomeRetryable && result.MutationState == ToolMutationNone &&
+		if result.Outcome == ToolOutcomeRetryable && (result.MutationState == ToolMutationNone || result.MutationState == ToolMutationUnchanged) &&
 			result.Retry.TransientRetries < result.Retry.TransientLimit && ctx.Err() == nil {
 			if result.Retry.RetryAfterMilliseconds != 0 {
 				timer := time.NewTimer(time.Duration(result.Retry.RetryAfterMilliseconds) * time.Millisecond)

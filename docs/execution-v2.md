@@ -86,7 +86,8 @@ call directly and creates no second confirmation, Task, action card, or
 the Agent and targets the Worker's authoritatively observed current public
 IPv4 only for a longest-suffix matching public Route53 zone owned by the
 current verified AWS account. Private, external/manual, and cross-account
-zones have no fallback; no match yields an explicit correctable tool error with
+zones have no fallback; no match requests owner input rather than guessing a
+different domain or account, with
 no Apply, provider write, binding persistence, or turn-success commit. Manual
 DNS instructions remain only an initial service-deployment outcome. Before any
 Worker proxy, security-group, workload-state, or DNS mutation, bind reads the
@@ -99,13 +100,31 @@ revision, Worker resource identity, workload, zone, and record. Both mutations
 verify the owning account and Route53 provider read-back. Bind also reconciles
 the exact managed Caddy reverse proxy over the pinned Worker SSH identity,
 opens 80 and 443, proves HTTPS directly against that Worker's authoritative
-IPv4, and closes the direct workload port before committing success. Proxy,
+IPv4, and closes the direct workload port before returning a verified tool result. Proxy,
 port, DNS, and HTTPS failures retain the staged identity for an idempotent
 retry and never yield a successful domain tool result. Agent retains the
 active binding or last exact removed-record receipt so a retry after provider
 mutation but before final turn commit idempotently reconciles and reads back the
 same record again. Route53 is not required for Worker creation,
 reuse, observation, or ordinary jobs.
+
+Domain bind/unbind do not commit the final chat answer. Core records their
+dispatch and observation in the normal durable tool ledger, then continues
+remaining work (for example, searching the bound site's homepage). A started
+mutation without a durable result is uncertain and is not blindly replayed.
+Argument validation permits one model correction. Explicitly unchanged transient
+preflight errors permit one retry; unknown write outcomes require read-back,
+and permissions or custom server configuration require user action. Safe,
+phase-specific errors are retained for the model and diagnostic logs, without
+raw provider/SSH output or credentials. If the final model also fails, the
+response preserves the specific failed observation rather than listing generic
+internal tool names as completed work.
+
+Initial deployment and later domain binding use the same Caddy ownership check:
+an absent or Agent-managed main config is allowed; a package-provided config is
+adopted only when its contents exactly match the installed package's recorded
+checksum. Modified, linked, unreadable, or unverifiable configs fail closed.
+Candidate validation and rollback protect the existing config on exposure errors.
 
 ## Results and artifacts
 

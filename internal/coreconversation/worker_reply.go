@@ -58,7 +58,7 @@ func delegatedWorkerReply(authorities map[string]turnToolCallAuthority, prompt s
 			return "", false
 		}
 		label := "Open website"
-		if terminalResponseLanguage(prompt) == "zh" {
+		if ResponseLanguage(prompt) == "zh" {
 			label = "打开网站"
 		}
 		content += "\n\n[" + label + "](" + result.ServiceURL + ")"
@@ -74,7 +74,7 @@ func delegatedWorkerReply(authorities map[string]turnToolCallAuthority, prompt s
 		}
 	}
 	if result.PersistentWorker {
-		switch terminalResponseLanguage(prompt) {
+		switch ResponseLanguage(prompt) {
 		case "zh":
 			content += "\n\n运行环境已保留，可能继续计费；实际费用尚未确认。需要我把它删除吗？"
 		case "ja":

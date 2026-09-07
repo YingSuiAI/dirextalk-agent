@@ -402,7 +402,7 @@ or stream after admission. It never cancels the accepted Turn; callers use
   further failure completes through deterministic Markdown. No retry restores
   tool authority, and text inside the candidate is never promoted into a tool
   call. Structured tool calls remain the sole execution authority.
-- The DeepSeek compatibility adapter does not add a second executable
+- Standard OpenAI-compatible DeepSeek profiles retain the structured-tool
   protocol. For the first-party DeepSeek API and DeepSeek models reached
   through an OpenAI-compatible gateway, a tools-admitted request carries fixed
   platform guidance that ordinary content is non-executable and an explicit
@@ -415,6 +415,21 @@ or stream after admission. It never cancels the accepted Turn; callers use
   shape only and never bypass tool schema validation, accepted snapshots,
   permissions, confirmations, or the text quarantine. DeepSeek strict mode is
   not enabled by silently changing a configured endpoint to its beta API.
+- Tools-disabled finalization explicitly sends `tool_choice: none` on the
+  OpenAI wire. DeepSeek finalization carries historical tool calls/results as
+  untrusted recorded evidence in user messages, not live assistant/tool protocol
+  turns. Evidence and user input remain intact; provider reasoning stays private.
+  No finalization response can restore tool authority.
+- A profile may explicitly select `request_dialect=deepseek_dsml_v4` for a gateway
+  that returns native DSML in content. Only a complete top-level DSML envelope,
+  declared tool names, and valid JSON/parameter arguments are normalized into
+  structured calls. Native calls take precedence; generated IDs avoid history
+  collisions. Prose, quoted examples, malformed/truncated envelopes and undeclared
+  tools never become executable. Parameter strings are preserved verbatim.
+  Buffered fragments produce private progress through Eino and the turn watchdog,
+  renewing idle liveness without claiming a complete action. Tools-disabled
+  dispatches never apply this decoder. Migration 32 adds this explicit dialect;
+  existing profiles are not silently switched.
 - Recent tool-loop recovery is deliberately conservative and resets at an
   accepted steer. It recognizes only repeated canonical action/result pairs or
   exact A/B alternation. Argument object key order and harmless unquoted local

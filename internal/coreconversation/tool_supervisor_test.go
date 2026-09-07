@@ -28,7 +28,7 @@ func TestImmediateToolSupervisorBoundsRetriesAndClassifiesTerminalOutcomes(t *te
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			calls := 0
-			result := executeImmediateTool(context.Background(), call, func(context.Context, ToolExecutionRequest) (ToolResult, error) {
+			result := executeImmediateTool(context.Background(), call, true, func(context.Context, ToolExecutionRequest) (ToolResult, error) {
 				failure := test.failures[calls]
 				calls++
 				if failure != nil {
@@ -46,7 +46,7 @@ func TestImmediateToolSupervisorBoundsRetriesAndClassifiesTerminalOutcomes(t *te
 
 func TestImmediateToolSupervisorRejectsUnclassifiedReadOnlyResult(t *testing.T) {
 	call := ToolCall{ID: "call-1", Name: "lookup", Arguments: `{}`}
-	result := executeImmediateTool(context.Background(), call, func(context.Context, ToolExecutionRequest) (ToolResult, error) {
+	result := executeImmediateTool(context.Background(), call, true, func(context.Context, ToolExecutionRequest) (ToolResult, error) {
 		return ToolResult{Content: `{"ok":true}`}, nil
 	})
 	if result.Outcome != ToolOutcomeFatal || result.Summary != "Tool returned an invalid read-only observation" ||
@@ -58,7 +58,7 @@ func TestImmediateToolSupervisorRejectsUnclassifiedReadOnlyResult(t *testing.T) 
 func TestImmediateToolSupervisorPreservesProducerRetryBudget(t *testing.T) {
 	call := ToolCall{ID: "call-1", Name: "lookup", Arguments: `{}`}
 	calls := 0
-	result := executeImmediateTool(context.Background(), call, func(context.Context, ToolExecutionRequest) (ToolResult, error) {
+	result := executeImmediateTool(context.Background(), call, true, func(context.Context, ToolExecutionRequest) (ToolResult, error) {
 		calls++
 		return ToolResult{
 			Content: "provider unavailable",
@@ -77,7 +77,7 @@ func TestImmediateToolSupervisorCancellationDuringRetryAfterDoesNotConsumeRetry(
 	calls := make(chan struct{}, 2)
 	done := make(chan ToolResult, 1)
 	go func() {
-		done <- executeImmediateTool(ctx, call, func(context.Context, ToolExecutionRequest) (ToolResult, error) {
+		done <- executeImmediateTool(ctx, call, true, func(context.Context, ToolExecutionRequest) (ToolResult, error) {
 			calls <- struct{}{}
 			return ToolResult{}, NewToolExecutionError(ToolOutcomeRetryable, "provider unavailable", 250, errors.New("down"))
 		})

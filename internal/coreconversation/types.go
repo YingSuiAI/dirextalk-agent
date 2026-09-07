@@ -485,6 +485,8 @@ type AtomicCompletion struct {
 }
 
 type ModelRunRequest struct {
+	// Finalization is derived from the durable tools-disabled directive.
+	Finalization          bool
 	Conversation          Conversation
 	Profile               ResolvedProfile
 	Snapshot              coremodel.ExecutionSnapshot
@@ -539,13 +541,16 @@ type ResolvedExtension struct {
 
 // ResolvedIntrinsic is a Core-owned model tool. It is deliberately separate
 // from extension snapshots and never crosses MCP, Skills, or Extension Runner
-// resolution. Read-only intrinsics return a ToolResult that Core persists
-// before resuming the turn. All other intrinsics must atomically commit the
-// durable turn before reporting success.
+// resolution. Read-only and ReturnsObservation intrinsics return a ToolResult
+// that Core persists before continuing the turn. Other terminal intrinsics
+// atomically commit the durable turn before reporting success.
 type ResolvedIntrinsic struct {
 	Tool     coremodel.Tool
 	ReadOnly bool
-	Execute  func(context.Context, IntrinsicExecutionRequest) (IntrinsicExecutionResult, error)
+	// ReturnsObservation keeps a mutating intrinsic in the durable tool loop;
+	// it does not grant read-only retry semantics or commit the final answer.
+	ReturnsObservation bool
+	Execute            func(context.Context, IntrinsicExecutionRequest) (IntrinsicExecutionResult, error)
 }
 
 type IntrinsicExecutionRequest struct {
@@ -800,6 +805,9 @@ type StreamingModelRunner interface {
 	Stream(context.Context, ModelRunRequest, func(ModelDelta) error) (ModelRunResult, error)
 }
 type ModelDelta struct {
+	// ProviderProgress renews private liveness without claiming a complete
+	// answer or a valid tool call (for buffered DSML fragments).
+	ProviderProgress bool
 	Text             string
 	ReasoningContent string
 	ToolCall         *ToolCall

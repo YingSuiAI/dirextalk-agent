@@ -277,16 +277,15 @@ func boundedInventoryText(value string) string {
 }
 
 type ProposeIntrinsic struct {
-	service     *Service
-	owners      IntrinsicOwnerResolver
-	manifests   IntrinsicManifestResolver
-	budgets     IntrinsicBudgetResolver
-	github      GitHubBindingResolver
-	workers     RetainedWorkerInventoryResolver
-	manager     RetainedWorkerManager
-	turns       IntrinsicTurnCommitter
-	domains     RetainedWorkerDomainManager
-	domainTurns IntrinsicTurnCommitter
+	service   *Service
+	owners    IntrinsicOwnerResolver
+	manifests IntrinsicManifestResolver
+	budgets   IntrinsicBudgetResolver
+	github    GitHubBindingResolver
+	workers   RetainedWorkerInventoryResolver
+	manager   RetainedWorkerManager
+	turns     IntrinsicTurnCommitter
+	domains   RetainedWorkerDomainManager
 }
 
 func (p *ProposeIntrinsic) EnableGitHubBinding(resolver GitHubBindingResolver) error {

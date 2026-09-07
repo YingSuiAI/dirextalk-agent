@@ -122,10 +122,7 @@ func CompileRuntime(request RuntimeRequest) (RuntimeMaterial, error) {
 	caddySetup := ""
 	if request.Service != nil && request.Service.Hostname != "" {
 		caddyPreflight = "command -v caddy >/dev/null\n"
-		caddySetup = `if [[ -f /etc/caddy/Caddyfile ]] && ! grep -qxF '# Managed by Dirextalk Agent' /etc/caddy/Caddyfile; then
-  echo 'refusing to replace an unmanaged Caddyfile' >&2
-  exit 1
-fi
+		caddySetup = caddyConfigOwnershipScript + `caddy_config_may_be_managed /etc/caddy/Caddyfile
 sudo install -d -m 0755 /etc/caddy/dirextalk
 caddy_main="$(mktemp)"
 trap 'rm -f -- "$caddy_main"' EXIT

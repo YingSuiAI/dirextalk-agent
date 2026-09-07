@@ -748,7 +748,7 @@ func (s TurnRuntimeSnapshot) Validate() error {
 
 func validRuntimeRequestDialect(value string) bool {
 	switch coremodel.RequestDialect(value) {
-	case coremodel.DialectOpenAICompatibleChatV1, coremodel.DialectOpenAIReasoningChatV1,
+	case coremodel.DialectOpenAICompatibleChatV1, coremodel.DialectOpenAIReasoningChatV1, coremodel.DialectDeepSeekDSMLV4,
 		coremodel.DialectAnthropicMessagesV1, coremodel.DialectGeminiGenerateV1Beta:
 		return true
 	default:

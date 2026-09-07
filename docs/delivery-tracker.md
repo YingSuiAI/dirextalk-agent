@@ -9,6 +9,21 @@ contract](message-server-integration-development-contract.md), and
 
 ## Implemented at HEAD
 
+- Domain bind/unbind now return durable tool observations so the same request
+  can continue to homepage search and one final answer. Phase-specific safe
+  errors survive into model evidence; argument correction, unchanged transient
+  retry, and uncertain-write stop semantics remain distinct. Caddy setup accepts
+  only a managed config or the checksum-verified installed package baseline and
+  preserves customized configuration. Real shell/SSH-consumer fixtures cover
+  stock adoption, custom refusal, metadata failure, and rollback.
+- DeepSeek finalization sends explicit no-tools selection and non-executable
+  historical evidence. The opt-in DSML dialect reuses the bounded normalization
+  intent from PR #32, with private progress preserved through the actual HTTP,
+  Eino and runner path, exact parameter text, and no finalization tool decoding.
+  Migration 32 adds only the dialect; PR #32's probe API and Worker proposal
+  reconciliation changes are not included. Focused workflow, race, and PostgreSQL
+  fresh-state tests cover the local implementation; no live AWS mutation,
+  production deployment, or real-provider quality acceptance is claimed.
 - Whole-request Worker delegation can choose `response_mode=reply_to_user`:
   safe Pi final text is delivered once without a parent-model rewrite. Partial
   delegation retains ordinary follow-up tools; plain chat adds no summary.

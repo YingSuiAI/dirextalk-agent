@@ -339,7 +339,11 @@ func fromEinoCompletion(message *schema.Message) Completion {
 }
 
 func toEinoDelta(delta Delta) *schema.Message {
-	return toEinoMessage(Message{Role: RoleAssistant, Content: delta.Content, ReasoningContent: delta.ReasoningContent, ToolCalls: delta.ToolCalls})
+	message := toEinoMessage(Message{Role: RoleAssistant, Content: delta.Content, ReasoningContent: delta.ReasoningContent, ToolCalls: delta.ToolCalls})
+	if delta.ProviderProgress {
+		message.Extra = map[string]any{"dirextalk_provider_progress": true}
+	}
+	return message
 }
 
 func fromEinoDelta(message *schema.Message) Delta {
@@ -347,7 +351,8 @@ func fromEinoDelta(message *schema.Message) Delta {
 		return Delta{}
 	}
 	converted := fromEinoMessage(message)
-	return Delta{Content: converted.Content, ReasoningContent: converted.ReasoningContent, ToolCalls: converted.ToolCalls}
+	progress, _ := message.Extra["dirextalk_provider_progress"].(bool)
+	return Delta{Content: converted.Content, ReasoningContent: converted.ReasoningContent, ToolCalls: converted.ToolCalls, ProviderProgress: progress}
 }
 
 func toEinoRole(role Role) schema.RoleType {

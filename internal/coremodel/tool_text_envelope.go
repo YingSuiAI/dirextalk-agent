@@ -8,9 +8,12 @@ const (
 )
 
 var textToolCallEnvelopeMarkers = []string{
-	dsmlToolCallsEnvelope,
-	"<|dsml|tool_calls>",
-	"<｜dsml｜tool_calls>",
+	strings.TrimSuffix(dsmlToolCallsEnvelope, ">"),
+	"<|dsml|tool_calls",
+	"<｜dsml｜tool_calls",
+	dsmlInvokePrefix,
+	"<|dsml|invoke",
+	"<｜dsml｜invoke",
 	"<｜tool▁calls▁begin｜>",
 	"<|tool_calls_begin|>",
 	"<tool_calls>",

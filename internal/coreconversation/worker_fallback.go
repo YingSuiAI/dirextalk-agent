@@ -25,7 +25,7 @@ func workerOutcomeFallback(results []ToolResult, prompt string) (string, bool) {
 			!validUUID(outcome.ExecutionID) || (outcome.Status != "succeeded" && outcome.Status != "failed") {
 			continue
 		}
-		language := terminalResponseLanguage(prompt)
+		language := ResponseLanguage(prompt)
 		completed := "Worker execution " + outcome.Status + "."
 		if language == "zh" {
 			if outcome.Status == "succeeded" {

@@ -165,7 +165,8 @@ reference plus the digest of every snapshotted provider parameter.
 Conversation profiles also persist an explicit versioned request dialect.
 `openai_compatible_chat_v1` retains the compatible `max_tokens` projection,
 while `openai_reasoning_chat_v1` uses `max_completion_tokens` and rejects
-temperature or top-p sampling. Anthropic and Gemini use
+temperature or top-p sampling. `deepseek_dsml_v4` is an explicit opt-in
+OpenAI-compatible gateway dialect added by migration 32. Anthropic and Gemini use
 `anthropic_messages_2023_06` and `gemini_generate_content_v1beta` respectively;
 the runtime never infers a dialect from a model name.
 Create, update, and sync admission require that dialect explicitly; only
@@ -675,10 +676,19 @@ authority boundary. A DeepSeek tools-admitted dispatch, including thinking
 mode, explicitly selects structured automatic tool choice and adds fixed
 platform guidance before the first provider call. A quarantined format-recovery
 dispatch with tools still available selects structured required tool choice;
-an exact forced tool keeps the existing named choice instead. The adapter
-quarantines known DSML, XML, and model-template text envelopes but never parses
-them into calls, never changes
-the admitted tool set, and never opts a profile into DeepSeek's beta endpoint.
+an exact forced tool keeps the existing named choice instead. Standard profiles
+quarantine DSML, XML, and model-template text envelopes. Only the explicit
+`deepseek_dsml_v4` dialect converts complete top-level DSML into declared
+structured calls, with native-call precedence, exact parameter content, and
+history-safe IDs. It buffers public content but forwards private progress through
+the actual Eino adapter, so active streams do not falsely time out before EOF.
+Incomplete protocol progress renews rather than disables the idle guard.
+No decoder changes the admitted tool set or opts into a beta endpoint.
+Tools-disabled finalization sends explicit `tool_choice: none` and presents
+DeepSeek with tool history as untrusted recorded evidence rather than active
+tool-protocol messages. It never normalizes a finalization DSML response into
+executable tools. Original transcript, profile choice and reasoning privacy remain
+unchanged.
 
 Workload Tasks use that same revision/attempt/lease-epoch fencing path. The
 local runner receives only a descriptor request bound to the dispatch; it
@@ -1056,7 +1066,7 @@ record identity before each Route53 call. Bind uses the Worker's
 authoritatively observed current public IPv4 and requires a longest-suffix
 matching public hosted zone owned by the current verified AWS account. Private,
 external/manual, and cross-account zones are unsupported; no match returns a
-stable correctable tool error before Apply, provider write, binding persistence,
+stable user-input error before Apply, provider write, binding persistence,
 or turn-success commit. Bind also reads the existing A record before any
 Worker proxy, security-group, workload-state, or DNS mutation. A differing
 IPv4 or TTL returns a correctable `user_input` observation that includes the
@@ -1068,8 +1078,13 @@ the mutation by provider read-back. A later bind is a complete publication
 transaction: over the pinned Worker identity it reconciles the Agent-managed
 Caddy route, opens ports 80 and 443, reconciles Route53, proves public HTTPS
 against the exact Worker IPv4, closes the direct workload port, and only then
-commits success. Any failed stage remains retryable under the same frozen
-identity and cannot produce an HTTPS-ready result. Active binding state and the
+records a successful observation and continues the ordinary conversation loop,
+without prematurely completing a request that also needs search or other work.
+Each failure retains its safe phase-specific cause. Only parameter validation
+and proven unchanged transient preflights receive their bounded correction/retry
+allowance; unknown write outcomes never authorize blind retries. Modified Caddy
+configuration is protected, while the unchanged installed package baseline can
+be adopted. No failed stage produces an HTTPS-ready result. Active binding state and the
 last exact removed record provide idempotent reconciliation when a provider mutation
 succeeds but the final turn commit must retry; the retry revalidates the same
 identity and repeats provider read-back. Route53 is not required for Worker creation or

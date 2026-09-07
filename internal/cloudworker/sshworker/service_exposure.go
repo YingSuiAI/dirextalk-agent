@@ -2,11 +2,18 @@ package sshworker
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os/exec"
 	"strconv"
 	"strings"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/remoteservice"
+)
+
+var (
+	ErrUnmanagedCaddyConfig     = errors.New("Worker reverse-proxy configuration was customized; automatic replacement is refused")
+	ErrCaddyBaselineUnavailable = errors.New("Worker reverse-proxy package baseline is missing or cannot be verified")
 )
 
 func (exposure ServiceExposure) valid() bool {
@@ -38,10 +45,20 @@ func (source CommandStatusSource) ReconcileServiceExposure(ctx context.Context, 
 	}
 	remote := fmt.Sprintf("bash -s -- %s %s %s", shellQuote(exposure.WorkloadID),
 		shellQuote(remoteservice.CanonicalHostname(exposure.Hostname)), shellQuote(strconv.Itoa(int(exposure.Port))))
-	return sshWithInput(ctx, sshPath, base, remote, strings.NewReader(reconcileServiceExposureScript))
+	err = sshWithInput(ctx, sshPath, base, remote, strings.NewReader(reconcileServiceExposureScript))
+	var exit *exec.ExitError
+	if errors.As(err, &exit) {
+		switch exit.ExitCode() {
+		case 78:
+			return errors.Join(ErrUnmanagedCaddyConfig, err)
+		case 69:
+			return errors.Join(ErrCaddyBaselineUnavailable, err)
+		}
+	}
+	return err
 }
 
-const reconcileServiceExposureScript = `set -euo pipefail
+const reconcileServiceExposureScript = caddyConfigOwnershipScript + `set -euo pipefail
 umask 077
 
 readonly workload_id="$1"
@@ -53,12 +70,9 @@ readonly target="$caddy_dir/$workload_id.caddy"
 
 if ! command -v caddy >/dev/null 2>&1; then
   echo 'worker image is missing the required caddy baseline' >&2
-  exit 1
+  exit 69
 fi
-if [[ -f "$caddy_main" ]] && ! grep -qxF '# Managed by Dirextalk Agent' "$caddy_main"; then
-  echo 'refusing to replace an unmanaged Caddyfile' >&2
-  exit 1
-fi
+caddy_config_may_be_managed "$caddy_main"
 
 sudo install -d -m 0755 "$caddy_dir"
 candidate="$(mktemp)"
@@ -95,6 +109,7 @@ rollback() {
   sudo systemctl reload caddy.service >/dev/null 2>&1 || true
 }
 
+caddy_config_may_be_managed "$caddy_main"
 sudo install -m 0644 "$main_candidate" "$caddy_main"
 sudo install -m 0644 "$candidate" "$target"
 if ! sudo caddy validate --config "$caddy_main" --adapter caddyfile >/dev/null ||

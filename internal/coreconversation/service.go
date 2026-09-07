@@ -134,7 +134,7 @@ func (g *turnModelDeadlineGuard) expire(failure error) {
 }
 
 func nonemptyProviderPayload(delta ModelDelta) bool {
-	if delta.Text != "" || delta.ReasoningContent != "" || delta.PrivateProgress {
+	if delta.Text != "" || delta.ReasoningContent != "" || delta.PrivateProgress || delta.ProviderProgress {
 		return true
 	}
 	return delta.ToolCall != nil && (delta.ToolCall.ID != "" || delta.ToolCall.Name != "" || delta.ToolCall.Arguments != "")
@@ -145,7 +145,7 @@ func meaningfulProviderAction(delta ModelDelta) bool {
 }
 
 func providerWorkProgress(delta ModelDelta) bool {
-	return strings.TrimSpace(delta.ReasoningContent) != "" || delta.ToolCall != nil &&
+	return delta.ProviderProgress || strings.TrimSpace(delta.ReasoningContent) != "" || delta.ToolCall != nil &&
 		(delta.ToolCall.ID != "" || delta.ToolCall.Name != "" || delta.ToolCall.Arguments != "")
 }
 
@@ -1710,6 +1710,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 		systemPrompt = appendSystemPrompt(systemPrompt, finalResponseSynthesisGuidance)
 	}
 	frozenModelRequest := ModelRunRequest{
+		Finalization: finalizing,
 		Conversation: modelConversation,
 		Profile: ResolvedProfile{
 			ID:           profile.ID,
@@ -2088,7 +2089,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 							}
 							return
 						}
-						if intrinsic.ReadOnly {
+						if intrinsic.ReadOnly || intrinsic.ReturnsObservation {
 							if err = roundStore.RecordConversationToolCall(ctx, lease, call); err != nil {
 								return
 							}
@@ -2100,14 +2101,14 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 								_, _ = roundStore.FailConversationToolDispatch(ctx, lease, call, "tool_dispatch_uncertain", "read-only intrinsic dispatch outcome is unknown")
 								return
 							}
-							result := executeImmediateTool(child, call, func(runCtx context.Context, _ ToolExecutionRequest) (ToolResult, error) {
+							result := executeImmediateTool(child, call, intrinsic.ReadOnly, func(runCtx context.Context, _ ToolExecutionRequest) (ToolResult, error) {
 								intrinsicResult, intrinsicErr := intrinsic.Execute(runCtx, IntrinsicExecutionRequest{
 									Lease: lease, Call: call, CanonicalArguments: arguments,
 									ConversationRevision: conv.Revision,
 								})
 								if intrinsicErr != nil {
-									if errors.Is(intrinsicErr, ErrInvalid) {
-										intrinsicErr = NewToolExecutionError(ToolOutcomeInvalid, "Core intrinsic arguments are invalid", 0, intrinsicErr)
+									if _, classified := ToolExecutionErrorObservation(intrinsicErr); !classified && errors.Is(intrinsicErr, ErrInvalid) {
+										intrinsicErr = NewToolExecutionErrorWithMutation(ToolOutcomeInvalid, "Tool arguments do not match the declared schema. Correct them using the latest verified IDs and retry once.", 0, ToolMutationUnchanged, intrinsicErr)
 									}
 									return ToolResult{}, intrinsicErr
 								}
@@ -2185,7 +2186,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 							_, _ = roundStore.FailConversationToolDispatch(ctx, lease, call, "tool_dispatch_uncertain", "read-only tool dispatch outcome is unknown")
 							return
 						}
-						result := executeImmediateTool(child, call, executable.Execute)
+						result := executeImmediateTool(child, call, true, executable.Execute)
 						if child.Err() != nil {
 							return
 						}
@@ -2480,6 +2481,12 @@ func (s *Service) commitTurnFinalizationFallback(ctx context.Context, lease Turn
 	}
 	historyTasks, historyPlans, historyReferences, historySummaries, historyResults := turnToolMetadata(conv.Messages[persistedMessageCount:])
 	content := terminalFallbackMarkdown(partial, lease.Turn.Prompt, historySummaries)
+	if strings.TrimSpace(partial) == "" && len(historyResults) > 0 {
+		last := historyResults[len(historyResults)-1]
+		if last.IsError && strings.TrimSpace(last.Summary) != "" {
+			content = terminalToolFailureMarkdown(last, lease.Turn.Prompt)
+		}
+	}
 	if workerContent, ok := workerOutcomeFallback(historyResults, lease.Turn.Prompt); ok {
 		content = workerContent
 	}
@@ -2545,7 +2552,7 @@ func terminalFallbackMarkdown(partial, prompt string, toolSummaries []string) st
 	if len(toolSummaries) > 0 {
 		var content strings.Builder
 		wroteSummary := false
-		switch terminalResponseLanguage(prompt) {
+		switch ResponseLanguage(prompt) {
 		case "zh":
 			content.WriteString("已完成的工具结果：")
 		case "ja":
@@ -2567,7 +2574,7 @@ func terminalFallbackMarkdown(partial, prompt string, toolSummaries []string) st
 			return boundedTerminalText(content.String(), MaxContentBytes)
 		}
 	}
-	switch terminalResponseLanguage(prompt) {
+	switch ResponseLanguage(prompt) {
 	case "zh":
 		return "这次没有生成可用结果，请重试。"
 	case "ja":
@@ -2579,7 +2586,9 @@ func terminalFallbackMarkdown(partial, prompt string, toolSummaries []string) st
 	}
 }
 
-func terminalResponseLanguage(prompt string) string {
+// ResponseLanguage selects the same language for safe tool observations and
+// terminal fallback text. Normal model answers also honor explicit user requests.
+func ResponseLanguage(prompt string) string {
 	hasHan := false
 	for _, current := range prompt {
 		switch {

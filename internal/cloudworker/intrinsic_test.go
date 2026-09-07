@@ -622,8 +622,7 @@ func TestIntrinsicDomainToolsExecuteDirectlyWithoutConfirmationWait(t *testing.T
 		InstanceID: "i-123", KeyPairID: "key-123", SecurityGroupID: "sg-123", ZoneID: "Z123",
 		TargetIPv4: "203.0.113.10", TTL: 300, IntentDigest: strings.Repeat("a", 64),
 	}}
-	committer := &intrinsicTurnCommitter{}
-	if err := intrinsic.EnableRetainedWorkerDomains(domainManager, committer); err != nil {
+	if err := intrinsic.EnableRetainedWorkerDomains(domainManager); err != nil {
 		t.Fatal(err)
 	}
 	tools, err := intrinsic.ResolveIntrinsicTools(context.Background(), lease)
@@ -641,13 +640,12 @@ func TestIntrinsicDomainToolsExecuteDirectlyWithoutConfirmationWait(t *testing.T
 	bindRaw := json.RawMessage(fmt.Sprintf(`{"worker_id":%q,"workload_id":"web","hostname":"app.example.com"}`, workerID))
 	result, err := bind.Execute(context.Background(), coreconversation.IntrinsicExecutionRequest{Lease: lease, ConversationRevision: 4, CanonicalArguments: bindRaw,
 		Call: coreconversation.ToolCall{ID: "domain-bind-call", Name: coremodel.IntrinsicCloudWorkerDomainBindToolName, Arguments: string(bindRaw)}})
-	if err != nil || !result.TurnCommitted || domainManager.applied.IntentDigest == "" || domainManager.applied.CredentialRevision != 3 ||
+	if err != nil || result.TurnCommitted || result.ToolResult == nil || !bind.ReturnsObservation || bind.ReadOnly || domainManager.applied.IntentDigest == "" || domainManager.applied.CredentialRevision != 3 ||
 		domainManager.owner != lease.Turn.OwnerID || domainManager.gen != lease.Turn.AccountGeneration || domainManager.op != "bind" {
 		t.Fatalf("result=%+v err=%v manager=%+v", result, err, domainManager)
 	}
-	if !committer.response.Done || committer.response.Revision != 5 || !strings.Contains(committer.response.Message.Content, "app.example.com") ||
-		strings.Contains(committer.response.Message.Content, "confirmation") {
-		t.Fatalf("direct domain response=%+v", committer.response)
+	if result.ToolResult.ValidateObservation() != nil || !strings.Contains(result.ToolResult.Content, "app.example.com") || result.ToolResult.MutationState != coreconversation.ToolMutationChanged {
+		t.Fatalf("domain observation=%+v", result.ToolResult)
 	}
 	unbindRaw := json.RawMessage(fmt.Sprintf(`{"worker_id":%q,"workload_id":"web","hostname":"forged.example.com"}`, workerID))
 	if _, err = unbind.Execute(context.Background(), coreconversation.IntrinsicExecutionRequest{Lease: lease, ConversationRevision: 4, CanonicalArguments: unbindRaw,
@@ -670,8 +668,7 @@ func TestIntrinsicDomainUnbindExecutesExactPersistedRecordDirectly(t *testing.T)
 		Hostname: "app.example.com", ZoneID: "Z456", TargetIPv4: "203.0.113.11", TTL: 300,
 		IntentDigest: strings.Repeat("b", 64),
 	}}
-	committer := &intrinsicTurnCommitter{}
-	if err := intrinsic.EnableRetainedWorkerDomains(domainManager, committer); err != nil {
+	if err := intrinsic.EnableRetainedWorkerDomains(domainManager); err != nil {
 		t.Fatal(err)
 	}
 	tools, err := intrinsic.ResolveIntrinsicTools(context.Background(), lease)
@@ -682,23 +679,16 @@ func TestIntrinsicDomainUnbindExecutesExactPersistedRecordDirectly(t *testing.T)
 	raw := json.RawMessage(fmt.Sprintf(`{"worker_id":%q,"workload_id":"web"}`, workerID))
 	request := coreconversation.IntrinsicExecutionRequest{Lease: lease, ConversationRevision: 6, CanonicalArguments: raw,
 		Call: coreconversation.ToolCall{ID: "domain-unbind-direct-call", Name: coremodel.IntrinsicCloudWorkerDomainUnbindToolName, Arguments: string(raw)}}
-	commitErr := errors.New("turn commit unavailable")
-	committer.err = commitErr
-	if result, err := unbind.Execute(context.Background(), request); !errors.Is(err, commitErr) || result.TurnCommitted || domainManager.applyCalls != 1 {
-		t.Fatalf("interrupted commit result=%+v err=%v manager=%+v", result, err, domainManager)
-	}
-	committer.err = nil
 	result, err := unbind.Execute(context.Background(), request)
-	if err != nil || !result.TurnCommitted || domainManager.op != "unbind" || domainManager.applied.Hostname != "app.example.com" {
+	if err != nil || result.TurnCommitted || result.ToolResult == nil || domainManager.op != "unbind" || domainManager.applied.Hostname != "app.example.com" {
 		t.Fatalf("result=%+v err=%v manager=%+v", result, err, domainManager)
 	}
-	if domainManager.applyCalls != 2 || committer.calls != 2 || !committer.response.Done || committer.response.Revision != 7 || committer.response.Message.Content !=
-		"Domain app.example.com was removed from Worker "+workerID+" workload web." {
-		t.Fatalf("direct unbind response=%+v", committer.response)
+	if domainManager.applyCalls != 1 || result.ToolResult.ValidateObservation() != nil || !strings.Contains(result.ToolResult.Content, `"record_status":"absent"`) {
+		t.Fatalf("unbind observation=%+v", result.ToolResult)
 	}
 }
 
-func TestIntrinsicDomainBindReturnsCorrectablePublicRoute53ErrorWithoutApply(t *testing.T) {
+func TestIntrinsicDomainBindRequestsUserInputForMissingZoneWithoutApply(t *testing.T) {
 	intrinsic, _, lease := intrinsicFixture(t, "bind a domain outside Route53", nil, nil)
 	lease.Turn.CreatedAt = time.Date(2026, 8, 18, 10, 0, 0, 0, time.UTC)
 	workerID := uuid.NewString()
@@ -707,8 +697,7 @@ func TestIntrinsicDomainBindReturnsCorrectablePublicRoute53ErrorWithoutApply(t *
 		t.Fatal(err)
 	}
 	domainManager := &intrinsicDomainManager{resolveErr: ErrRetainedWorkerPublicRoute53Required}
-	committer := &intrinsicTurnCommitter{}
-	if err := intrinsic.EnableRetainedWorkerDomains(domainManager, committer); err != nil {
+	if err := intrinsic.EnableRetainedWorkerDomains(domainManager); err != nil {
 		t.Fatal(err)
 	}
 	tools, err := intrinsic.ResolveIntrinsicTools(context.Background(), lease)
@@ -719,9 +708,10 @@ func TestIntrinsicDomainBindReturnsCorrectablePublicRoute53ErrorWithoutApply(t *
 	raw := json.RawMessage(fmt.Sprintf(`{"worker_id":%q,"workload_id":"web","hostname":"outside.example.net"}`, workerID))
 	result, err := bind.Execute(context.Background(), coreconversation.IntrinsicExecutionRequest{Lease: lease, ConversationRevision: 3, CanonicalArguments: raw,
 		Call: coreconversation.ToolCall{ID: "domain-public-zone-required", Name: coremodel.IntrinsicCloudWorkerDomainBindToolName, Arguments: string(raw)}})
-	if !errors.Is(err, ErrRetainedWorkerPublicRoute53Required) || !errors.Is(err, coreconversation.ErrInvalid) ||
-		err.Error() != retainedWorkerPublicRoute53Correction || result.TurnCommitted || domainManager.applyCalls != 0 || committer.response.Done {
-		t.Fatalf("result=%+v err=%v manager=%+v response=%+v", result, err, domainManager, committer.response)
+	details, classified := coreconversation.ToolExecutionErrorObservation(err)
+	if !errors.Is(err, ErrRetainedWorkerPublicRoute53Required) || !classified || details.Outcome != coreconversation.ToolOutcomeUserInput || details.MutationState != coreconversation.ToolMutationUnchanged ||
+		result.TurnCommitted || domainManager.applyCalls != 0 {
+		t.Fatalf("result=%+v err=%v manager=%+v", result, err, domainManager)
 	}
 }
 
@@ -738,8 +728,7 @@ func TestIntrinsicDomainBindReturnsExistingRecordConflictAsUnchangedUserInput(t 
 		Intended: remoteservice.ARecord{ZoneID: "Z123", Hostname: "app.example.com", IPv4: "203.0.113.10", TTL: 300},
 	}
 	domainManager := &intrinsicDomainManager{resolveErr: conflict}
-	committer := &intrinsicTurnCommitter{}
-	if err := intrinsic.EnableRetainedWorkerDomains(domainManager, committer); err != nil {
+	if err := intrinsic.EnableRetainedWorkerDomains(domainManager); err != nil {
 		t.Fatal(err)
 	}
 	tools, err := intrinsic.ResolveIntrinsicTools(context.Background(), lease)
@@ -753,8 +742,8 @@ func TestIntrinsicDomainBindReturnsExistingRecordConflictAsUnchangedUserInput(t 
 	details, classified := coreconversation.ToolExecutionErrorObservation(err)
 	if !classified || details.Outcome != coreconversation.ToolOutcomeUserInput || !details.MutationStateSet ||
 		details.MutationState != coreconversation.ToolMutationUnchanged || !strings.Contains(details.Summary, "198.51.100.20") ||
-		!strings.Contains(details.Summary, "203.0.113.10") || result.TurnCommitted || domainManager.applyCalls != 0 || committer.response.Done {
-		t.Fatalf("result=%+v err=%v details=%+v manager=%+v response=%+v", result, err, details, domainManager, committer.response)
+		!strings.Contains(details.Summary, "203.0.113.10") || result.TurnCommitted || domainManager.applyCalls != 0 {
+		t.Fatalf("result=%+v err=%v details=%+v manager=%+v", result, err, details, domainManager)
 	}
 }
 
