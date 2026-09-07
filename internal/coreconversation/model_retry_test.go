@@ -256,7 +256,8 @@ func TestTurnFinalizesFromExistingEvidenceAfterSecondToolCallFormatFailure(t *te
 	}
 	finalRequest := model.requests[2]
 	if finalRequest.ToolCallFormatRecovery || len(finalRequest.Intrinsics) != 0 || len(finalRequest.Extensions) != 0 ||
-		len(finalRequest.ExtensionSnapshots) != 0 || !strings.Contains(finalRequest.Profile.SystemPrompt, toolCallFormatSynthesisGuidance) {
+		len(finalRequest.ExtensionSnapshots) != 0 || !strings.Contains(finalRequest.Profile.SystemPrompt, toolCallFormatSynthesisGuidance) ||
+		!strings.HasSuffix(finalRequest.Profile.SystemPrompt, finalResponseSynthesisGuidance) {
 		t.Fatalf("final request=%+v", finalRequest)
 	}
 	for _, event := range store.events {
@@ -379,7 +380,7 @@ func TestToolFreeFinalizationUsesFrozenRuntimeWithMessageMCP(t *testing.T) {
 	request := model.requests[0]
 	if len(request.Intrinsics) != 0 || len(request.Extensions) != 0 || len(request.ExtensionSnapshots) != 0 ||
 		!strings.Contains(request.Profile.SystemPrompt, messageMCPRoutingGuidance) ||
-		!strings.Contains(request.Profile.SystemPrompt, toolLoopSynthesisGuidance) {
+		!strings.HasSuffix(request.Profile.SystemPrompt, finalResponseSynthesisGuidance) {
 		t.Fatalf("tools-disabled finalization did not preserve the frozen prompt: %+v", request)
 	}
 }

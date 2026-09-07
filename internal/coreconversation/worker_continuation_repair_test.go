@@ -129,52 +129,27 @@ func TestNewTurnBudgetAllowsRequestedWorkAndHistoricalPins(t *testing.T) {
 	}
 }
 
-func TestFinalizationFormatRecoveryGetsFreshFullWindow(t *testing.T) {
+func TestFinalizationFormatRecoveryDoesNotAddOuterDeadline(t *testing.T) {
 	service, store, turn := newAttemptTurnService(t, &retrySequenceModel{})
 	intent := NewTurnFinalizationIntent(TurnFinalizationToolBudget)
 	store.finalization = &intent
 	calls := 0
-	var secondRemaining time.Duration
 	service.models = continuationModelFunc(func(ctx context.Context, request ModelRunRequest, _ func(ModelDelta) error) (ModelRunResult, error) {
 		calls++
+		if deadline, ok := ctx.Deadline(); ok {
+			t.Errorf("finalization attempt %d received extra outer deadline %s", calls, time.Until(deadline))
+		}
 		if calls == 1 {
-			time.Sleep(300 * time.Millisecond)
 			return ModelRunResult{}, coremodel.ErrModelToolCallFormatInvalid
 		}
-		deadline, ok := ctx.Deadline()
-		if !ok {
-			t.Error("final recovery has no deadline")
-		}
-		secondRemaining = time.Until(deadline)
 		if !request.ToolCallFormatRecovery || len(request.Intrinsics)+len(request.Extensions)+len(request.ExtensionSnapshots) != 0 {
 			t.Error("recovery restored tools or lost protocol guidance")
 		}
 		return ModelRunResult{Done: true, Message: Message{ID: uuid.NewString(), Role: RoleAssistant, Content: "done", CreatedAt: time.Now().UTC()}}, nil
 	})
 	service.executeTurn(context.Background(), turn.ID)
-	if calls != 2 || secondRemaining < MaxTurnFinalizationDuration-100*time.Millisecond || store.turn.State != TurnCompleted || store.finalization.Reason != intent.Reason {
-		t.Fatalf("calls=%d remaining=%s turn=%s intent=%+v", calls, secondRemaining, store.turn.State, store.finalization)
-	}
-}
-
-func TestFinalizationDeadlineIsNotOrdinaryBudgetExhaustion(t *testing.T) {
-	calls := 0
-	model := continuationModelFunc(func(ctx context.Context, _ ModelRunRequest, emit func(ModelDelta) error) (ModelRunResult, error) {
-		calls++
-		if err := emit(ModelDelta{Text: "Verified partial work."}); err != nil {
-			return ModelRunResult{}, err
-		}
-		<-ctx.Done()
-		return ModelRunResult{}, ctx.Err()
-	})
-	service, store, turn := newTerminalFinalizationFixture(t, model)
-	service.finalizationDuration = 60 * time.Millisecond
-	intent := NewTurnFinalizationIntent(TurnFinalizationToolBudget)
-	store.finalization = &intent
-	service.executeTurn(context.Background(), turn.ID)
-	service.executeTurn(context.Background(), turn.ID)
-	if calls != 1 || store.turn.State != TurnCompleted || store.turn.TerminalCode != "finalization_timeout" || store.finalization.Reason != intent.Reason {
-		t.Fatalf("calls=%d state=%s code=%s intent=%+v", calls, store.turn.State, store.turn.TerminalCode, store.finalization)
+	if calls != 2 || store.turn.State != TurnCompleted || store.finalization.Reason != intent.Reason {
+		t.Fatalf("calls=%d turn=%s intent=%+v", calls, store.turn.State, store.finalization)
 	}
 }
 

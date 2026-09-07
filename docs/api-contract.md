@@ -218,7 +218,7 @@ or stream after admission. It never cancels the accepted Turn; callers use
   tool-call fragments satisfy the first-payload deadline and renew the 90-second
   progress-idle window, but keepalives, empty deltas, and whitespace do not.
   User-visible text, a complete valid tool call, or a normal runner return is
-  meaningful and ends that progress-idle check. The
+  meaningful and ends that progress-idle check. For an ordinary dispatch, the
   admitted remaining model-active duration is the stronger outer bound; when
   it equals a local deadline, expiration remains `model_budget_exhausted`.
   Provider-adapter request and stream-idle deadlines remain internal transport
@@ -228,23 +228,29 @@ or stream after admission. It never cancels the accepted Turn; callers use
   invalid or empty terminal output, repeated no-progress tool use, and either
   ordinary budget cap first persist an immutable turn-finalization intent.
   That intent normally admits exactly one additional physical provider attempt
-  with an independent two-minute timeout; it carries no intrinsic or extension
-  tools and is not charged to the admitted ordinary clock. It cannot retry for
-  an ordinary provider, timeout, empty-output, or budget failure. The only
-  exception is a quarantined `MODEL_TOOL_CALL_FORMAT_INVALID` response from a
-  turn whose admitted runtime originally exposed structured tools: Core may
-  repeat the same tools-disabled finalization directive once with explicit
-  protocol-recovery guidance and a fresh full two-minute window. That retry never
-  restores tool authority. Expiry of the finalization window is
-  `finalization_timeout`, not ordinary `model_budget_exhausted`; earlier provider
-  or dispatch-local timeouts retain their own classification. The
+  with fresh first-payload, progress-idle, and absolute dispatch guards; it has
+  no additional finalization-only wall-clock deadline, carries no intrinsic or
+  extension tools, and is not charged to the admitted ordinary clock. It cannot
+  retry for an ordinary provider, timeout, empty-output, or budget failure. The
+  only exception is a quarantined `MODEL_TOOL_CALL_FORMAT_INVALID` response
+  from a turn whose admitted runtime originally exposed structured tools: Core
+  may repeat the same tools-disabled finalization directive once with explicit
+  protocol-recovery guidance and fresh standard dispatch guards. That retry
+  never restores tool authority. A finalization guard expiry is
+  `provider_timeout`, not ordinary `model_budget_exhausted`; earlier provider
+  failures retain their own classification. The
   total physical attempt sequence can therefore reach the admitted dispatch
   cap plus one normally (at most 53), or plus two only for that exact live
   format-recovery case (at most 54). If the final attempt returns useful text,
-  that text is
-  the normal completed Markdown response. If it fails, is empty or invalid, or
-  returns a tool call, Core returns durable partial text directly when present,
-  otherwise a concise same-language tool-result summary or retry message. Internal
+  that text is the normal completed Markdown response. If the model returned
+  before every dispatch guard and only the durable delta flush crosses the
+  ordinary model-active deadline, Core does not relabel that completed result
+  as a budget failure. If it fails, is empty or invalid, or returns a tool call,
+  Core returns durable partial text directly when present. A failed tools-disabled
+  stream may publish only buffered user-visible text that passes the same
+  tool-envelope quarantine; protocol-shaped text, provider reasoning, and text
+  from an explicitly canceled turn remain private. Without a safe partial, Core
+  returns a concise same-language tool-result summary or retry message. Internal
   terminal codes remain in turn metadata and are not exposed in the user-facing
   response. A restart before
   the final dispatch may perform it once; a started, retryable, dispatched, or
@@ -318,7 +324,11 @@ or stream after admission. It never cancels the accepted Turn; callers use
   model-authored content private until the complete provider step is known. A
   step containing structured tool calls publishes no model-authored text; only
   a completed, tool-free final answer is released as bounded coalesced public
-  text. Provider reasoning is absent from public messages, stream events, Capability JSON,
+  text. The sole failed-step exception is a tools-disabled finalization stream:
+  buffered visible text may be released only after the same protocol-envelope
+  guard accepts it; suspicious markup, structured calls, reasoning, and
+  explicitly canceled output remain private. Provider reasoning is absent from
+  public messages, stream events, Capability JSON,
   RPC projections, conversation history, failed transcripts, and every durable
   model-result envelope. A complete model step publishes the existing
   `tool_call` event only after the model step and tool identity are durable, and

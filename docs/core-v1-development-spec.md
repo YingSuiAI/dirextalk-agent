@@ -296,9 +296,11 @@ seconds; other transport failures and all post-payload failures are never
 replayed. Once ordinary provider work stops because of one of these
 classifications, invalid or empty terminal output, no-progress tool use, or an
 ordinary model/tool budget, Core persists a versioned finalization intent. The
-intent admits one separate tools-disabled provider attempt with a two-minute
-deadline, plus only the single quarantined-format recovery described below.
-It does not consume the ordinary active-time budget. A
+intent admits one separate tools-disabled provider attempt with fresh standard
+first-payload, progress-idle, and absolute dispatch guards, plus only the single
+quarantined-format recovery described below. It has no additional
+finalization-only wall-clock deadline and does not consume the ordinary
+active-time budget. A
 provider dispatch already started under that intent is never replayed after
 restart.
 
@@ -568,29 +570,35 @@ five-minute absolute deadline. Nonempty reasoning and incomplete tool-call
 fragments satisfy the first deadline and renew the progress-idle window;
 keepalives, empty deltas, and whitespace do not. User-visible text, a complete
 valid tool call, or a normal runner return is meaningful and ends the
-progress-idle check. The admitted remaining
+progress-idle check. For an ordinary dispatch, the admitted remaining
 model-active clock is stronger and owns equal expirations as
 `model_budget_exhausted`; a dispatch-local expiry is `provider_timeout`. A
 durable finalization intent normally reserves one additional physical attempt,
 so the ledger permits at most sequence 53 without changing the admitted
 ordinary fuse. The finalization attempt has no intrinsic tools, extensions,
-extension snapshots, or forced tool; uses an independent two-minute deadline;
-and is not added to ordinary model-active time. It never retries for an
+extension snapshots, or forced tool; receives fresh standard dispatch guards
+without an additional finalization-only deadline; and is not added to ordinary
+model-active time. It never retries for an
 ordinary failure. The sole exception is a quarantined
 `MODEL_TOOL_CALL_FORMAT_INVALID` response from a turn whose admitted runtime
 originally exposed structured tools: one live recovery attempt copies the same
 tools-disabled directive, receives final-answer-only protocol guidance, and may
-reach sequence 54 with a fresh full two-minute window. It never restores tool
-authority. Final-window expiry is `finalization_timeout`, not ordinary budget
-exhaustion; earlier provider deadlines remain provider failures. Intent
-persistence before dispatch allows one attempt after restart. Persistence of a
-finalization dispatch directive is the no-replay boundary: a started,
+reach sequence 54 with fresh standard dispatch guards. It never restores tool
+authority. A finalization guard expiry is `provider_timeout`, not ordinary
+budget exhaustion; earlier provider failures retain their classification.
+Intent persistence before dispatch allows one attempt after restart.
+Persistence of a finalization dispatch directive is the no-replay boundary: a started,
 retryable, dispatched, or uncertain final attempt after process recovery
 instead completes through deterministic fallback. A valid final response is
-committed normally. Provider failure,
+committed normally. When the model returned before every dispatch guard and
+only durable delta persistence crosses the ordinary model-active deadline, Core
+does not relabel the completed result as a budget failure. Provider failure,
 invalid/empty output, or a tool call from the final attempt produces a bounded
-response that returns durable partial deltas directly when available, otherwise
-uses concise same-language tool summaries or a retry message. Internal terminal
+response that returns durable partial deltas directly when available. A failed
+tools-disabled stream publishes buffered visible text only after the existing
+tool-envelope guard accepts it; protocol markup, provider reasoning, and output
+from an explicitly canceled turn stay private. Without a safe partial, Core uses
+concise same-language tool summaries or a retry message. Internal terminal
 codes remain durable metadata and are not rendered in user-facing content; the
 existing task, plan, reference, tool-summary, and tool-result projections remain
 preserved.
@@ -656,6 +664,11 @@ retained evidence. The guard remains active there, a single live recovery retry
 retains zero tools, and another format failure creates deterministic Markdown.
 No path executes the text or restores tool authority. Ordinary repository text
 that quotes or fences the markers remains visible content.
+A failed tools-disabled finalization stream is the only incomplete-step
+exception: its buffered visible text may be published only after this same
+guard accepts it. Protocol-shaped text, structured calls, reasoning, and output
+from an explicitly canceled generation remain private, and the original stream
+failure classification is preserved.
 
 The DeepSeek provider adaptation stays inside that same OpenAI-compatible
 authority boundary. A DeepSeek tools-admitted dispatch, including thinking

@@ -24,7 +24,6 @@ const (
 	MaxAdmittedTurnModelActiveDuration = time.Hour
 	MaxTurnFinalizationDispatches      = 1
 	MaxTurnFinalizationFormatRetries   = 1
-	MaxTurnFinalizationDuration        = 2 * time.Minute
 	turnModelFirstPayloadDeadline      = 15 * time.Second
 	turnModelMeaningfulActionDeadline  = 90 * time.Second
 	turnModelSingleDispatchDeadline    = 5 * time.Minute
@@ -34,6 +33,7 @@ const (
 	toolLoopSynthesisGuidance          = "The tool loop continued without new evidence. Do not call tools. Produce the best useful answer now from all accumulated evidence and explicitly state remaining gaps."
 	workerTerminalSynthesisGuidance    = "The Cloud Worker is terminal. Its stdout and Worker report are internal evidence, not a user-facing deliverable: do not paste, quote, or lightly reformat them. Synthesize a concise normal answer from the completed work, verification, failures, and genuine user-requested artifacts. Preserve only useful artifact references, and mention the retained Worker and ask whether to destroy it when the result says it remains available. " + CloudWorkerCompletionGuidance
 	workerSuccessContinuationGuidance  = "The Cloud Worker execution succeeded; this is an intermediate result, not proof that the entire user request is complete. Continue outstanding user-authorized actions with the admitted tools and remaining budget, including recipient lookup and report delivery when requested. Claim a follow-up action succeeded only after its own successful tool receipt. Its stdout and Worker report are internal evidence: do not paste, quote, or lightly reformat them. After completing the authorized follow-ups, summarize the verified result and only useful deliverables. " + CloudWorkerCompletionGuidance
+	finalResponseSynthesisGuidance     = "Finalization mode: tools are unavailable in this dispatch; do not attempt tool calls. Using only recorded evidence, return one concise user-facing Markdown answer now in the latest user language. Summarize verified completed work and remaining gaps. Do not expose internal reasoning, protocol markup, or raw tool or Worker output. Preserve only verified requested artifact references."
 	toolCallFormatSynthesisGuidance    = "A previous tool-enabled response used invalid text markup instead of the structured tool protocol. Tools are disabled for this finalization. Produce the best useful final answer from evidence already present in the conversation, explicitly state any remaining gaps, and do not emit or describe DSML, XML, or tool-call markup."
 	outputContinuationGuidance         = "Continue the previous assistant response by emitting only the missing suffix. Do not restart or repeat any prior analysis, reasoning, plan, or response text. Preserve the work already completed. If a tool call was cut off, issue it again once as one complete call."
 	staticSitePublishCorrection        = "static_site_publish arguments are invalid; invoke static_site_publish again immediately with the required non-empty html string containing the complete page, and do not repeat analysis or draft the page outside the tool call"
@@ -51,7 +51,6 @@ var (
 	errTurnModelFirstPayloadDeadline     = fmt.Errorf("model provider produced no payload before the deadline: %w", context.DeadlineExceeded)
 	errTurnModelMeaningfulActionDeadline = fmt.Errorf("model provider produced no meaningful action before the deadline: %w", context.DeadlineExceeded)
 	errTurnModelSingleDispatchDeadline   = fmt.Errorf("model provider dispatch exceeded its deadline: %w", context.DeadlineExceeded)
-	errTurnFinalizationDeadline          = errors.New("final response synthesis exceeded its deadline")
 )
 
 func defaultTurnModelDeadlines() turnModelDeadlines {
@@ -190,35 +189,34 @@ func (g *turnModelDeadlineGuard) finish() error {
 }
 
 type Service struct {
-	store                Store
-	models               ModelRunner
-	extensions           ExtensionResolver
-	intrinsics           IntrinsicResolver
-	staticSites          StaticSitePublisher
-	staticSiteOrigin     string
-	memoryRecall         MemoryRecallResolver
-	titleGenerator       ConversationTitleGenerator
-	snapshots            SnapshotProfileResolver
-	now                  func() time.Time
-	turnLeaseTTL         time.Duration
-	turns                TurnStore
-	lifecycleCtx         context.Context
-	lifecycleCancel      context.CancelFunc
-	workers              sync.WaitGroup
-	cancelMu             sync.Mutex
-	cancelSignals        map[string]chan struct{}
-	steerSignals         map[string]chan struct{}
-	runtimeMu            sync.Mutex
-	runtime              map[string]*turnRuntime
-	turnOrderingMu       sync.Mutex
-	turnOrdering         map[string]*turnDeltaOrdering
-	modelDeadlines       turnModelDeadlines
-	finalizationDuration time.Duration
-	memoryRecallTimeout  time.Duration
-	continuityMu         sync.Mutex
-	continuity           map[string]string
-	convergenceMu        sync.Mutex
-	convergenceObserver  ConvergenceObserver
+	store               Store
+	models              ModelRunner
+	extensions          ExtensionResolver
+	intrinsics          IntrinsicResolver
+	staticSites         StaticSitePublisher
+	staticSiteOrigin    string
+	memoryRecall        MemoryRecallResolver
+	titleGenerator      ConversationTitleGenerator
+	snapshots           SnapshotProfileResolver
+	now                 func() time.Time
+	turnLeaseTTL        time.Duration
+	turns               TurnStore
+	lifecycleCtx        context.Context
+	lifecycleCancel     context.CancelFunc
+	workers             sync.WaitGroup
+	cancelMu            sync.Mutex
+	cancelSignals       map[string]chan struct{}
+	steerSignals        map[string]chan struct{}
+	runtimeMu           sync.Mutex
+	runtime             map[string]*turnRuntime
+	turnOrderingMu      sync.Mutex
+	turnOrdering        map[string]*turnDeltaOrdering
+	modelDeadlines      turnModelDeadlines
+	memoryRecallTimeout time.Duration
+	continuityMu        sync.Mutex
+	continuity          map[string]string
+	convergenceMu       sync.Mutex
+	convergenceObserver ConvergenceObserver
 }
 
 type turnModelOutcome struct {
@@ -296,18 +294,11 @@ func NewService(store Store, models ModelRunner, extensions ExtensionResolver, p
 		extensions = noopExtensions{}
 	}
 	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
-	s := &Service{store: store, models: models, extensions: extensions, snapshots: profiles, now: func() time.Time { return time.Now().UTC() }, turnLeaseTTL: 2 * time.Minute, lifecycleCtx: lifecycleCtx, lifecycleCancel: lifecycleCancel, cancelSignals: map[string]chan struct{}{}, steerSignals: map[string]chan struct{}{}, runtime: map[string]*turnRuntime{}, turnOrdering: map[string]*turnDeltaOrdering{}, modelDeadlines: defaultTurnModelDeadlines(), finalizationDuration: MaxTurnFinalizationDuration, memoryRecallTimeout: turnMemoryRecallTimeout, continuity: map[string]string{}, convergenceObserver: slogConvergenceObserver{}}
+	s := &Service{store: store, models: models, extensions: extensions, snapshots: profiles, now: func() time.Time { return time.Now().UTC() }, turnLeaseTTL: 2 * time.Minute, lifecycleCtx: lifecycleCtx, lifecycleCancel: lifecycleCancel, cancelSignals: map[string]chan struct{}{}, steerSignals: map[string]chan struct{}{}, runtime: map[string]*turnRuntime{}, turnOrdering: map[string]*turnDeltaOrdering{}, modelDeadlines: defaultTurnModelDeadlines(), memoryRecallTimeout: turnMemoryRecallTimeout, continuity: map[string]string{}, convergenceObserver: slogConvergenceObserver{}}
 	if turns, ok := store.(TurnStore); ok {
 		s.turns = turns
 	}
 	return s, nil
-}
-
-func (s *Service) turnFinalizationDuration() time.Duration {
-	if s.finalizationDuration > 0 {
-		return s.finalizationDuration
-	}
-	return MaxTurnFinalizationDuration
 }
 
 func (s *Service) takeProviderContinuity(turnID string) string {
@@ -1620,29 +1611,27 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 		turn.ModelDispatchCount = prepared.ModelDispatchCount
 		turn.ModelActiveDuration = prepared.ModelActiveDuration
 		remaining := executionPolicy.MaxModelActiveDuration() - prepared.ModelActiveDuration
-		if finalizing {
-			remaining = s.turnFinalizationDuration()
-		}
-		if remaining <= 0 {
-			if !finalizing {
-				if !durableFinalization {
-					_, _ = s.turns.FailTurn(ctx, lease, "finalization_store_unavailable", "durable turn finalization store is unavailable")
-					return
-				}
-				finalization = NewTurnFinalizationIntent(TurnFinalizationModelBudget)
+		if !finalizing && remaining <= 0 {
+			if !durableFinalization {
+				_, _ = s.turns.FailTurn(ctx, lease, "finalization_store_unavailable", "durable turn finalization store is unavailable")
+				return
 			}
+			finalization = NewTurnFinalizationIntent(TurnFinalizationModelBudget)
 			failure := ModelAttemptFailure{Code: modelBudgetExhaustedCode, Summary: modelBudgetExhaustedSummary}
 			if err = finalizationStore.PrepareTurnFinalization(ctx, lease, finalization, &failure); err != nil {
 				return
 			}
-			if !finalizing {
-				s.executeTurn(ctx, id)
-				return
-			}
-			commitFallback(finalization, failure.Code, failure.Summary)
+			s.executeTurn(ctx, id)
 			return
 		}
-		modelDeadlineCap = remaining
+		if finalizing {
+			// Finalization is already bounded by the standard first-payload,
+			// progress-idle, and absolute dispatch guards. Do not add a shorter
+			// wall-clock deadline that can discard a progressing final answer.
+			modelDeadlineCap = 0
+		} else {
+			modelDeadlineCap = remaining
+		}
 		persistedDirective, loadErr := dispatchStore.LoadTurnModelDirective(ctx, lease)
 		if loadErr != nil || persistedDirective.Digest() != directive.Digest() {
 			_ = dispatchStore.MarkTurnModelUncertain(ctx, lease, turnRuntimeIncompatibleCode, turnRuntimeIncompatibleSummary)
@@ -1690,13 +1679,17 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 	case TurnDispatchGuidanceLoopNudge:
 		systemPrompt = appendSystemPrompt(systemPrompt, toolLoopNudgeGuidance)
 	case TurnDispatchGuidanceLoopSynthesis:
-		guidance := toolLoopSynthesisGuidance
-		if directive.FinalizationReason == TurnFinalizationToolCallFormat {
-			guidance = toolCallFormatSynthesisGuidance
-		} else if directive.FinalizationReason == TurnFinalizationToolOutcome && (terminalWorker || failedWorker) {
-			guidance = workerTerminalSynthesisGuidance
+		switch {
+		case directive.FinalizationReason == TurnFinalizationToolLoop:
+			systemPrompt = appendSystemPrompt(systemPrompt, toolLoopSynthesisGuidance)
+		case directive.FinalizationReason == TurnFinalizationToolCallFormat:
+			systemPrompt = appendSystemPrompt(systemPrompt, toolCallFormatSynthesisGuidance)
+		case directive.FinalizationReason == TurnFinalizationToolOutcome && (terminalWorker || failedWorker):
+			systemPrompt = appendSystemPrompt(systemPrompt, workerTerminalSynthesisGuidance)
 		}
-		systemPrompt = appendSystemPrompt(systemPrompt, guidance)
+		// Keep the short final-answer-only policy last so frozen tool-routing
+		// instructions cannot distract a tools-disabled synthesis.
+		systemPrompt = appendSystemPrompt(systemPrompt, finalResponseSynthesisGuidance)
 	}
 	frozenModelRequest := ModelRunRequest{
 		Conversation: modelConversation,
@@ -1763,6 +1756,10 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 				callbackErr = deltaBuffer.Append(ModelDelta{Text: delta.Text})
 				return callbackErr
 			})
+			modelReturnedBeforeAttemptDeadline := true
+			if attemptDeadline, ok := attemptCtx.Deadline(); ok {
+				modelReturnedBeforeAttemptDeadline = !time.Now().After(attemptDeadline)
+			}
 			deadlineErr := deadlineGuard.finish()
 			flushErr := deltaBuffer.Close()
 			if runErr == nil && flushErr != nil {
@@ -1772,13 +1769,10 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 				(runErr == nil || errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded)) {
 				runErr = deadlineErr
 			}
-			if callbackErr == nil && flushErr == nil && child.Err() == nil {
-				if errors.Is(attemptCtx.Err(), context.DeadlineExceeded) {
-					runErr = ErrModelBudgetExhausted
-					if finalizing {
-						runErr = errTurnFinalizationDeadline
-					}
-				}
+			if callbackErr == nil && flushErr == nil && child.Err() == nil &&
+				errors.Is(attemptCtx.Err(), context.DeadlineExceeded) &&
+				(runErr != nil || !modelReturnedBeforeAttemptDeadline) {
+				runErr = ErrModelBudgetExhausted
 			}
 			retry := coremodel.PreOutputRetryMetadata(runErr)
 			formatFailure := errors.Is(runErr, coremodel.ErrModelToolCallFormatInvalid)
@@ -2320,7 +2314,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			turn.ModelActiveDuration = prepared.ModelActiveDuration
 			modelDeadlineCap = executionPolicy.MaxModelActiveDuration() - prepared.ModelActiveDuration
 			if finalizing {
-				modelDeadlineCap = s.turnFinalizationDuration()
+				modelDeadlineCap = 0
 			}
 			runAttempt(retryFormatRecovery)
 			retryFormatRecovery = false
@@ -2610,8 +2604,7 @@ const (
 	modelResponseTimeoutSummary       = "model stream stopped producing progress; outcome is unknown; send a new turn to retry"
 	modelBudgetExhaustedCode          = "model_budget_exhausted"
 	modelBudgetExhaustedSummary       = "model execution budget was exhausted before a final response"
-	finalizationTimeoutCode           = "finalization_timeout"
-	finalizationTimeoutSummary        = "final response synthesis exceeded its time limit"
+	finalizationTimeoutCode           = "finalization_timeout" // Legacy persisted turns only.
 	toolBudgetExhaustedCode           = "tool_budget_exhausted"
 	toolBudgetExhaustedSummary        = "tool call budget was exhausted before a final response"
 	modelProviderRejectedCode         = "provider_rejected"
@@ -2631,9 +2624,6 @@ const (
 )
 
 func classifyModelDispatchFailure(err error) (string, string) {
-	if errors.Is(err, errTurnFinalizationDeadline) {
-		return finalizationTimeoutCode, finalizationTimeoutSummary
-	}
 	if errors.Is(err, coremodel.ErrModelToolCallFormatInvalid) {
 		return modelToolCallFormatInvalidCode, modelToolCallFormatInvalidSummary
 	}
