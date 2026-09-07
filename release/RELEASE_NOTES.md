@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v1.0.211
+
+1. Deliver delegated Pi results directly when the task is fully delegated, keep ordinary chat answers free of appended summaries, and retain the main answer loop only when follow-up actions remain.
+
 ## v1.0.210
 
 1. Prevent login, restart, and second-device history reloads from recreating destroyed Cloud Worker cards by checking persisted Worker lifecycle authority and omitting the retired run and deleted artifact references while preserving conversation text and valid retained-Worker results.
