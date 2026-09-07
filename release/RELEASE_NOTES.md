@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v1.0.212
+
+1. Preserve durable domain workflows and normalize DeepSeek tool handling without losing streamed progress, parameters, or authority boundaries.
+
 ## v1.0.211
 
 1. Deliver delegated Pi results directly when the task is fully delegated, keep ordinary chat answers free of appended summaries, and retain the main answer loop only when follow-up actions remain.
