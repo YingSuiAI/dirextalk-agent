@@ -93,9 +93,10 @@ func (c *completionRequestCaptureClient) Stream(context.Context, coremodel.Compl
 }
 
 type fakeStream struct {
-	deltas []coremodel.Delta
-	i      int
-	err    error
+	deltas      []coremodel.Delta
+	i           int
+	err         error
+	beforeError func()
 }
 
 func (s *fakeStream) Recv() (coremodel.Delta, error) {
@@ -105,6 +106,10 @@ func (s *fakeStream) Recv() (coremodel.Delta, error) {
 		return d, nil
 	}
 	if s.err != nil {
+		if s.beforeError != nil {
+			s.beforeError()
+			s.beforeError = nil
+		}
 		return coremodel.Delta{}, s.err
 	}
 	return coremodel.Delta{}, io.EOF
@@ -906,12 +911,16 @@ func TestSummaryTruncationPreservesUTF8(t *testing.T) {
 	}
 }
 
-type streamClient struct{ stream coremodel.Stream }
+type streamClient struct {
+	stream  coremodel.Stream
+	request coremodel.CompletionRequest
+}
 
 func (s *streamClient) Generate(context.Context, coremodel.CompletionRequest) (coremodel.Completion, error) {
 	return coremodel.Completion{}, nil
 }
-func (s *streamClient) Stream(context.Context, coremodel.CompletionRequest) (coremodel.Stream, error) {
+func (s *streamClient) Stream(_ context.Context, request coremodel.CompletionRequest) (coremodel.Stream, error) {
+	s.request = request
 	return s.stream, nil
 }
 

@@ -1668,6 +1668,7 @@ func testExecuteTurnSynthesizesSucceededCloudWorker(t *testing.T, saturated bool
 		t.Fatalf("terminal response metadata=%+v", response)
 	}
 	if !strings.Contains(model.request.Profile.SystemPrompt, workerTerminalSynthesisGuidance) ||
+		!strings.HasSuffix(model.request.Profile.SystemPrompt, finalResponseSynthesisGuidance) ||
 		!strings.Contains(model.request.Profile.SystemPrompt, "latest user message") ||
 		strings.Contains(model.request.Profile.SystemPrompt, "Simplified Chinese") ||
 		strings.Contains(model.request.Profile.SystemPrompt, "Chinese") ||
@@ -2359,7 +2360,7 @@ func TestExecuteTurnEnforcesDurableToolCallBudget(t *testing.T) {
 	if model.runs != 1 || executions != 0 || store.dispatchState != "completed" {
 		t.Fatalf("model_runs=%d executions=%d dispatch=%q", model.runs, executions, store.dispatchState)
 	}
-	if len(model.request.Extensions) != 0 || len(model.request.ExtensionSnapshots) != 0 || !strings.Contains(model.request.Profile.SystemPrompt, toolLoopSynthesisGuidance) {
+	if len(model.request.Extensions) != 0 || len(model.request.ExtensionSnapshots) != 0 || !strings.HasSuffix(model.request.Profile.SystemPrompt, finalResponseSynthesisGuidance) {
 		t.Fatalf("budget-exhausted request retained tools or omitted synthesis guidance: %+v", model.request)
 	}
 	directiveRaw, _ := json.Marshal(store.directive)
