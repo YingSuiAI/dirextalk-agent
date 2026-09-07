@@ -239,10 +239,35 @@ func (r *ModelRunner) Stream(ctx context.Context, req coreconversation.ModelRunR
 	for {
 		d, e := stream.Recv()
 		if e != nil {
+			partialCause := context.Cause(ctx)
+			if partialCause != nil && !errors.Is(partialCause, context.DeadlineExceeded) {
+				// Cancellation, steering, and shutdown revoke this generation even
+				// when the provider reports a concurrent clean EOF or maps the
+				// cancellation to another transport error.
+				return coreconversation.ModelRunResult{}, partialCause
+			}
 			if errors.Is(e, io.EOF) {
 				break
 			}
 			hasPartialOutput := content.Len() != 0 || reasoning.Len() != 0 || len(callsByIndex) != 0
+			// Tools-disabled finalization still buffers text so a provider cannot
+			// smuggle a textual tool-call envelope into the conversation. When that
+			// stream fails, publish only ordinary user-visible text accepted by the
+			// same guard. Suspicious markup stays private and the original failure
+			// classification is preserved.
+			if hasPartialOutput && len(cr.Tools) == 0 && req.GuardTextToolCallEnvelope && content.Len() != 0 {
+				_, guardErr := guard.Finish(content.String(), len(callsByIndex) != 0, func(text string) error {
+					if emit == nil {
+						return nil
+					}
+					return emit(coreconversation.ModelDelta{Text: text})
+				})
+				if guardErr != nil {
+					return coreconversation.ModelRunResult{}, guardErr
+				}
+				r.logProviderFailure(ctx, p.ID, e)
+				return coreconversation.ModelRunResult{}, e
+			}
 			if hasPartialOutput && (errors.Is(e, coremodel.ErrOutputLimitReached) ||
 				errors.Is(e, coremodel.ErrStreamTruncated) || errors.Is(e, coremodel.ErrProviderUnavailable) || errors.Is(e, coremodel.ErrStreamIdleTimeout)) {
 				continueOutput = true

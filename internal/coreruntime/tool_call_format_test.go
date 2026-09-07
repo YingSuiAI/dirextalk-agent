@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"testing"
 
@@ -200,6 +201,99 @@ func TestModelRunnerToolFreeGuardDoesNotHideOrdinaryRepositoryText(t *testing.T)
 	})
 	if err != nil || !result.Done || result.Message.Content != content || public.String() != content {
 		t.Fatalf("result=%+v err=%v public=%q", result, err, public.String())
+	}
+}
+
+func TestModelRunnerToolFreeGuardPublishesSafePartialOnStreamFailure(t *testing.T) {
+	const partial = "Completed the verified work; one follow-up remains."
+	request := modelToolProtocolTestRequest()
+	request.Extensions = nil
+	request.GuardTextToolCallEnvelope = true
+	ctx, cancel := context.WithCancelCause(context.Background())
+	client := &streamClient{stream: &fakeStream{
+		deltas: []coremodel.Delta{{Content: partial}}, err: coremodel.ErrStreamIdleTimeout,
+		beforeError: func() { cancel(context.DeadlineExceeded) },
+	}}
+	runner, _ := NewModelRunner(func(coremodel.Profile) (coremodel.Client, error) { return client, nil })
+	var public strings.Builder
+
+	result, err := runner.Stream(ctx, request, func(delta coreconversation.ModelDelta) error {
+		public.WriteString(delta.Text)
+		return nil
+	})
+
+	if len(client.request.Tools) != 0 {
+		t.Fatalf("tools-disabled request exposed %d tools", len(client.request.Tools))
+	}
+	if !errors.Is(err, coremodel.ErrStreamIdleTimeout) || public.String() != partial || result.Message.ID != "" {
+		t.Fatalf("result=%+v err=%v public=%q", result, err, public.String())
+	}
+}
+
+func TestModelRunnerToolFreeGuardQuarantinesProtocolPartialOnStreamFailure(t *testing.T) {
+	request := modelToolProtocolTestRequest()
+	request.Extensions = nil
+	request.GuardTextToolCallEnvelope = true
+	ctx, cancel := context.WithCancelCause(context.Background())
+	client := &streamClient{stream: &fakeStream{
+		deltas: []coremodel.Delta{{Content: "I will retry.\n" + dsmlToolCallsEnvelope}}, err: coremodel.ErrStreamIdleTimeout,
+		beforeError: func() { cancel(context.DeadlineExceeded) },
+	}}
+	runner, _ := NewModelRunner(func(coremodel.Profile) (coremodel.Client, error) { return client, nil })
+	var public strings.Builder
+
+	result, err := runner.Stream(ctx, request, func(delta coreconversation.ModelDelta) error {
+		public.WriteString(delta.Text)
+		return nil
+	})
+
+	if !errors.Is(err, coremodel.ErrStreamIdleTimeout) || errors.Is(err, coremodel.ErrModelToolCallFormatInvalid) || public.Len() != 0 || result.Message.ID != "" {
+		t.Fatalf("result=%+v err=%v public=%q", result, err, public.String())
+	}
+}
+
+func TestModelRunnerGuardKeepsFailedToolStepAndCanceledFinalizationPrivate(t *testing.T) {
+	for _, test := range []struct {
+		name                 string
+		request              coreconversation.ModelRunRequest
+		streamErr            error
+		cancelBeforeTerminal bool
+		wantErr              error
+	}{
+		{name: "tool-enabled step", request: modelToolProtocolTestRequest(), streamErr: context.Canceled, wantErr: context.Canceled},
+		{name: "caller-canceled finalization", request: func() coreconversation.ModelRunRequest {
+			request := modelToolProtocolTestRequest()
+			request.Extensions = nil
+			request.GuardTextToolCallEnvelope = true
+			return request
+		}(), streamErr: coremodel.ErrProviderUnavailable, cancelBeforeTerminal: true, wantErr: context.Canceled},
+		{name: "caller-canceled finalization at EOF", request: func() coreconversation.ModelRunRequest {
+			request := modelToolProtocolTestRequest()
+			request.Extensions = nil
+			request.GuardTextToolCallEnvelope = true
+			return request
+		}(), streamErr: io.EOF, cancelBeforeTerminal: true, wantErr: context.Canceled},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			var beforeError func()
+			if test.cancelBeforeTerminal {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithCancel(ctx)
+				defer cancel()
+				beforeError = cancel
+			}
+			client := &streamClient{stream: &fakeStream{deltas: []coremodel.Delta{{Content: "private partial"}}, err: test.streamErr, beforeError: beforeError}}
+			runner, _ := NewModelRunner(func(coremodel.Profile) (coremodel.Client, error) { return client, nil })
+			var public strings.Builder
+			_, err := runner.Stream(ctx, test.request, func(delta coreconversation.ModelDelta) error {
+				public.WriteString(delta.Text)
+				return nil
+			})
+			if !errors.Is(err, test.wantErr) || public.Len() != 0 {
+				t.Fatalf("err=%v public=%q", err, public.String())
+			}
+		})
 	}
 }
 

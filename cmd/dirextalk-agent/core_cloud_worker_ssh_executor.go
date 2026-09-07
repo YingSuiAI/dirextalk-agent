@@ -212,11 +212,10 @@ func (executor *sshWorkerExecutor) Execute(ctx context.Context, request sshflow.
 				}
 			}
 			publication, publishErr := executor.publishService(finalizeCtx, provider, sshworker.OwnerAuthority{OwnerID: request.OwnerID, AccountGeneration: request.AccountGeneration}, identity, workerID, request.ExecutionID, *request.Service, request.ReportProgress)
-			if detail := publication.summary(); publishErr == nil && detail != "" {
-				if strings.TrimSpace(result.Summary) == "" {
-					result.Summary = detail
-				} else {
-					result.Summary = boundedWorkerSummary(result.Summary + "\n\n" + detail)
+			if publishErr == nil {
+				result.ServiceVerification = publication.summary()
+				if publication.TLSReady {
+					result.ServiceURL = "https://" + publication.Hostname + "/"
 				}
 			}
 			return publishErr
@@ -234,6 +233,8 @@ func (executor *sshWorkerExecutor) Execute(ctx context.Context, request sshflow.
 			return executor.resolveDeferredWorkerGuidance(guidanceCtx, request)
 		}, ReportProgress: request.ReportProgress, Finalize: finalize})
 	workerResult := sshflow.Result{ExitCode: result.ExitCode, WorkerID: result.WorkerID}
+	workerResult.Report, workerResult.ServiceVerification = result.Report, result.ServiceVerification
+	workerResult.ServiceURL = result.ServiceURL
 	workerResult.AppliedSteerIDs = append([]string(nil), result.AppliedSteerIDs...)
 	if errors.Is(err, context.Canceled) || errors.Is(err, sshworker.ErrExecutionFailed) {
 		// Destruction drains the provider before deleting output. Do not publish
@@ -245,10 +246,7 @@ func (executor *sshWorkerExecutor) Execute(ctx context.Context, request sshflow.
 	if artifactErr != nil {
 		err = errors.Join(err, artifactErr)
 	}
-	workerResult.Summary = boundedWorkerSummary(result.Summary)
-	if workerResult.Summary == "" {
-		workerResult.Summary = fmt.Sprintf("Cloud Worker %s completed with exit code %d and %d artifacts", workerResult.WorkerID, result.ExitCode, result.ArtifactCount)
-	}
+	workerResult.Summary = fmt.Sprintf("Cloud Worker completed with exit code %d and %d artifacts", result.ExitCode, result.ArtifactCount)
 	if errors.Is(err, sshworker.ErrAmbiguous) {
 		err = errors.Join(sshflow.ErrExecutionUncertain, err)
 	}
@@ -723,18 +721,6 @@ func (executor *sshWorkerExecutor) CheckCreateWorkerCapacity(ctx context.Context
 		return err
 	}
 	return provider.CheckCreateCapacity(ctx, sshworker.OwnerAuthority{OwnerID: ownerID, AccountGeneration: accountGeneration}, identity)
-}
-
-func boundedWorkerSummary(value string) string {
-	value = strings.TrimSpace(value)
-	if len(value) <= 3000 {
-		return value
-	}
-	runes := []rune(value)
-	for len(string(runes)) > 3000 {
-		runes = runes[1:]
-	}
-	return strings.TrimSpace(string(runes))
 }
 
 type sshWorkerCredentials struct{ executor *sshWorkerExecutor }

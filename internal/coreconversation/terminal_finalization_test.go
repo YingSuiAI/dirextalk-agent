@@ -191,6 +191,9 @@ func TestExecuteTurnFinalizesInvalidOrEmptyOutputAsUsefulMarkdown(t *testing.T) 
 			if len(model.requests[1].Intrinsics) != 0 || len(model.requests[1].Extensions) != 0 || len(model.requests[1].ExtensionSnapshots) != 0 {
 				t.Fatalf("final provider request retained tools: %+v", model.requests[1])
 			}
+			if prompt := model.requests[1].Profile.SystemPrompt; !strings.HasSuffix(prompt, finalResponseSynthesisGuidance) || strings.Contains(prompt, toolLoopSynthesisGuidance) {
+				t.Fatalf("invalid-output finalization did not end with final-answer guidance: %q", prompt)
+			}
 		})
 	}
 }

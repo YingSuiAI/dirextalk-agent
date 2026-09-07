@@ -13,9 +13,11 @@ import (
 	"reflect"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/sshflow"
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/sshworker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
 	core "github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
@@ -390,6 +392,9 @@ func (store *SSHWorkerStore) persistArtifactsTx(ctx context.Context, tx pgx.Tx, 
 }
 
 func sshWorkerContinuation(dispatch *core.ModelRunResult, plan cloudworker.Plan, execution cloudworker.Execution, summary string, result sshflow.Result, artifacts []sshflow.Artifact) (core.ToolCall, core.ToolResult, error) {
+	if len(result.Report) > sshworker.MaxWorkerReportBytes || !utf8.ValidString(result.Report) || len(result.ServiceVerification) > core.MaxSummaryBytes || !utf8.ValidString(result.ServiceVerification) {
+		return core.ToolCall{}, core.ToolResult{}, errSSHWorkerStoreInvalid
+	}
 	if dispatch == nil {
 		return core.ToolCall{}, core.ToolResult{}, cloudworker.ErrConflict
 	}
@@ -437,18 +442,13 @@ func sshWorkerContinuation(dispatch *core.ModelRunResult, plan cloudworker.Plan,
 	}
 	completion := map[string]any{"schema": "dirextalk.ssh-worker-completion/v1",
 		"execution_id": plan.ExecutionID, "status": terminal, "worker_id": result.WorkerID,
-		"persistent_worker": true, "worker_report": summary, "artifacts": deliverables,
-		"cost_evidence": sshWorkerCostEvidence(plan), "artifacts_omitted": omitted,
-		"central_instruction": core.CloudWorkerCompletionGuidance}
+		"persistent_worker": true, "worker_report": result.Report, "artifacts": deliverables,
+		"terminal_summary": summary, "exit_code": result.ExitCode,
+		"service_verification": result.ServiceVerification,
+		"service_url":          result.ServiceURL,
+		"cost_evidence":        sshWorkerCostEvidence(plan), "artifacts_omitted": omitted}
 	if len(result.AppliedSteerIDs) != 0 {
 		completion["applied_steer_ids"] = append([]string(nil), result.AppliedSteerIDs...)
-	}
-	if terminal == cloudworker.StateSucceeded {
-		completion["next_action"] = map[string]any{
-			"kind": "confirm_destroy_worker", "operation": "destroy_worker", "worker_id": result.WorkerID, "default": "retain",
-			"question": "The Worker is retained for reuse. Ask the user whether to destroy it now.",
-		}
-		completion["central_instruction"] = core.CloudWorkerCompletionGuidance + " Tell the user which Worker was retained and ask whether to destroy it now; do not destroy it without their explicit choice."
 	}
 	payload, _ := json.Marshal(completion)
 	toolResult := core.ToolResult{CallID: calls[0].ID, ToolName: coremodel.IntrinsicCloudWorkerProposeToolName,

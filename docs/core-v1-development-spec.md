@@ -296,9 +296,11 @@ seconds; other transport failures and all post-payload failures are never
 replayed. Once ordinary provider work stops because of one of these
 classifications, invalid or empty terminal output, no-progress tool use, or an
 ordinary model/tool budget, Core persists a versioned finalization intent. The
-intent admits one separate tools-disabled provider attempt with a two-minute
-deadline, plus only the single quarantined-format recovery described below.
-It does not consume the ordinary active-time budget. A
+intent admits one separate tools-disabled provider attempt with fresh standard
+first-payload, progress-idle, and absolute dispatch guards, plus only the single
+quarantined-format recovery described below. It has no additional
+finalization-only wall-clock deadline and does not consume the ordinary
+active-time budget. A
 provider dispatch already started under that intent is never replayed after
 restart.
 
@@ -310,9 +312,9 @@ After a tool call is public or dispatched, Core preserves that authority and
 lease and waits for its result. Ordinary tools then give the next model round
 both the result and ordered guidance. The current SSH Worker text protocol
 cannot inject guidance into an already running remote process. Worker terminal
-stdout is internal evidence rather than a user deliverable. Without later
-guidance, Core performs one tools-disabled model synthesis instead of copying
-that report into the response; with unapplied deferred guidance, Core resumes
+stdout is collected separately from diagnostics. A whole-task delegation can
+deliver its safe final answer directly under the response-ownership contract
+below; any later guidance prevents that shortcut. With unapplied deferred guidance, Core resumes
 one normal model round in the same durable turn with both the Worker result and
 that guidance, and the model may answer or reuse the retained Worker. Either
 response uses the latest user message's language unless explicitly requested
@@ -568,29 +570,35 @@ five-minute absolute deadline. Nonempty reasoning and incomplete tool-call
 fragments satisfy the first deadline and renew the progress-idle window;
 keepalives, empty deltas, and whitespace do not. User-visible text, a complete
 valid tool call, or a normal runner return is meaningful and ends the
-progress-idle check. The admitted remaining
+progress-idle check. For an ordinary dispatch, the admitted remaining
 model-active clock is stronger and owns equal expirations as
 `model_budget_exhausted`; a dispatch-local expiry is `provider_timeout`. A
 durable finalization intent normally reserves one additional physical attempt,
 so the ledger permits at most sequence 53 without changing the admitted
 ordinary fuse. The finalization attempt has no intrinsic tools, extensions,
-extension snapshots, or forced tool; uses an independent two-minute deadline;
-and is not added to ordinary model-active time. It never retries for an
+extension snapshots, or forced tool; receives fresh standard dispatch guards
+without an additional finalization-only deadline; and is not added to ordinary
+model-active time. It never retries for an
 ordinary failure. The sole exception is a quarantined
 `MODEL_TOOL_CALL_FORMAT_INVALID` response from a turn whose admitted runtime
 originally exposed structured tools: one live recovery attempt copies the same
 tools-disabled directive, receives final-answer-only protocol guidance, and may
-reach sequence 54 with a fresh full two-minute window. It never restores tool
-authority. Final-window expiry is `finalization_timeout`, not ordinary budget
-exhaustion; earlier provider deadlines remain provider failures. Intent
-persistence before dispatch allows one attempt after restart. Persistence of a
-finalization dispatch directive is the no-replay boundary: a started,
+reach sequence 54 with fresh standard dispatch guards. It never restores tool
+authority. A finalization guard expiry is `provider_timeout`, not ordinary
+budget exhaustion; earlier provider failures retain their classification.
+Intent persistence before dispatch allows one attempt after restart.
+Persistence of a finalization dispatch directive is the no-replay boundary: a started,
 retryable, dispatched, or uncertain final attempt after process recovery
 instead completes through deterministic fallback. A valid final response is
-committed normally. Provider failure,
+committed normally. When the model returned before every dispatch guard and
+only durable delta persistence crosses the ordinary model-active deadline, Core
+does not relabel the completed result as a budget failure. Provider failure,
 invalid/empty output, or a tool call from the final attempt produces a bounded
-response that returns durable partial deltas directly when available, otherwise
-uses concise same-language tool summaries or a retry message. Internal terminal
+response that returns durable partial deltas directly when available. A failed
+tools-disabled stream publishes buffered visible text only after the existing
+tool-envelope guard accepts it; protocol markup, provider reasoning, and output
+from an explicitly canceled turn stay private. Without a safe partial, Core uses
+concise same-language tool summaries or a retry message. Internal terminal
 codes remain durable metadata and are not rendered in user-facing content; the
 existing task, plan, reference, tool-summary, and tool-result projections remain
 preserved.
@@ -656,6 +664,11 @@ retained evidence. The guard remains active there, a single live recovery retry
 retains zero tools, and another format failure creates deterministic Markdown.
 No path executes the text or restores tool authority. Ordinary repository text
 that quotes or fences the markers remains visible content.
+A failed tools-disabled finalization stream is the only incomplete-step
+exception: its buffered visible text may be published only after this same
+guard accepts it. Protocol-shaped text, structured calls, reasoning, and output
+from an explicitly canceled generation remain private, and the original stream
+failure classification is preserved.
 
 The DeepSeek provider adaptation stays inside that same OpenAI-compatible
 authority boundary. A DeepSeek tools-admitted dispatch, including thinking
@@ -984,8 +997,24 @@ only an optional phase enum for client localization. Remote finite execution run
 inside a task-named systemd scope; timeout cancellation stops that scope so
 session-changing descendants cannot continue after the task is terminal.
 
-Worker results are copied into the Agent-owned local artifact repository and
-returned to the original durable turn. Success does not force tools-disabled
+Worker files are copied into the Agent-owned local artifact repository and
+returned to the original durable turn. Pi writes a short, plain-language final
+answer instead of a technical execution report. Its stdout is kept separate
+from stderr; a 32 KiB UTF-8-safe bound preserves both ends and explicitly marks
+omissions. Short task status, failed-task error, private report, and host service
+verification are separate fields; failed collection/commit never substitutes
+diagnostic log tails for an answer. Public task text does not expose the report.
+
+The durable `cloud_worker_propose` call may explicitly select
+`response_mode=reply_to_user` when its objective covers the entire request.
+Only a successful latest tool result, no unfinished tools or later steers,
+and complete safe answer permit direct final-message commit without a provider
+dispatch. Canonical links and a concise billing/retention notice are added by
+Core, not invented by Pi. The commit locks and checks the exact turn event
+sequence, owner-bound lease, and cancellation before changing state. `continue`
+or no delegation leaves answer ownership with Core. Ordinary chat already
+returns its model answer directly; no post-answer summarizer exists.
+Success does not force tools-disabled
 synthesis: outstanding authorized follow-ups continue through the same pinned
 tool catalog and remaining ordinary budget. Sending success requires its own
 durable successful receipt, not a Worker report or partial model statement.

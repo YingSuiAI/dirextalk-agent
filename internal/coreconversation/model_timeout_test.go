@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -34,6 +35,46 @@ type deadlineTurnModel struct {
 	mode          string
 	streamCalls   int
 	firstCanceled time.Duration
+	sawDeadline   bool
+}
+
+type completedBeforeFlushDeadlineModel struct {
+	attemptContexts chan context.Context
+	streamCalls     int
+}
+
+func (*completedBeforeFlushDeadlineModel) Run(context.Context, ModelRunRequest) (ModelRunResult, error) {
+	return ModelRunResult{}, errors.New("non-streaming model path must not be used")
+}
+
+func (m *completedBeforeFlushDeadlineModel) Stream(ctx context.Context, _ ModelRunRequest, emit func(ModelDelta) error) (ModelRunResult, error) {
+	m.streamCalls++
+	if m.streamCalls > 1 {
+		return ModelRunResult{Done: true, Message: Message{ID: uuid.NewString(), Role: RoleAssistant, Content: "unexpected fallback", CreatedAt: time.Now().UTC()}}, nil
+	}
+	m.attemptContexts <- ctx
+	if err := emit(ModelDelta{Text: "verified final answer"}); err != nil {
+		return ModelRunResult{}, err
+	}
+	return ModelRunResult{Done: true, Message: Message{ID: uuid.NewString(), Role: RoleAssistant, Content: "verified final answer", CreatedAt: time.Now().UTC()}}, nil
+}
+
+type lateToolCallTurnModel struct {
+	streamCalls int
+}
+
+func (*lateToolCallTurnModel) Run(context.Context, ModelRunRequest) (ModelRunResult, error) {
+	return ModelRunResult{}, errors.New("non-streaming model path must not be used")
+}
+
+func (m *lateToolCallTurnModel) Stream(ctx context.Context, _ ModelRunRequest, _ func(ModelDelta) error) (ModelRunResult, error) {
+	m.streamCalls++
+	if m.streamCalls > 1 {
+		return ModelRunResult{Done: true, Message: Message{ID: uuid.NewString(), Role: RoleAssistant, Content: "safe final answer", CreatedAt: time.Now().UTC()}}, nil
+	}
+	<-ctx.Done()
+	call := ToolCall{ID: uuid.NewString(), Name: "late_tool", Arguments: `{}`}
+	return ModelRunResult{Message: Message{ID: uuid.NewString(), Role: RoleAssistant, ToolCalls: []ToolCall{call}, CreatedAt: time.Now().UTC()}, ToolCalls: []ToolCall{call}}, nil
 }
 
 func (*deadlineTurnModel) Run(context.Context, ModelRunRequest) (ModelRunResult, error) {
@@ -42,6 +83,7 @@ func (*deadlineTurnModel) Run(context.Context, ModelRunRequest) (ModelRunResult,
 
 func (m *deadlineTurnModel) Stream(ctx context.Context, _ ModelRunRequest, emit func(ModelDelta) error) (ModelRunResult, error) {
 	m.streamCalls++
+	_, m.sawDeadline = ctx.Deadline()
 	if m.streamCalls > 1 {
 		return ModelRunResult{Done: true, Message: Message{ID: uuid.NewString(), Role: RoleAssistant, Content: "final answer", CreatedAt: time.Now().UTC()}}, nil
 	}
@@ -67,6 +109,111 @@ func (m *deadlineTurnModel) Stream(ctx context.Context, _ ModelRunRequest, emit 
 	<-ctx.Done()
 	m.firstCanceled = time.Since(started)
 	return ModelRunResult{}, ctx.Err()
+}
+
+func TestFinalizationHasNoExtraDeadlineAndKeepsDispatchWatchdogs(t *testing.T) {
+	deadlines := turnModelDeadlines{firstPayload: 20 * time.Millisecond, meaningfulAction: 80 * time.Millisecond, singleDispatch: 160 * time.Millisecond}
+	for _, test := range []struct {
+		name string
+		mode string
+		want time.Duration
+	}{
+		{name: "first payload", want: deadlines.firstPayload},
+		{name: "reasoning progress", mode: "reasoning", want: deadlines.meaningfulAction},
+		{name: "absolute dispatch", mode: "text", want: deadlines.singleDispatch},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			model := &deadlineTurnModel{mode: test.mode}
+			service, store, turn := newTerminalFinalizationFixture(t, model)
+			service.modelDeadlines = deadlines
+			intent := NewTurnFinalizationIntent(TurnFinalizationToolBudget)
+			store.finalization = &intent
+
+			ctx, cancel := context.WithCancel(context.Background())
+			safetyTimer := time.AfterFunc(500*time.Millisecond, cancel)
+			defer safetyTimer.Stop()
+			defer cancel()
+			service.executeTurn(ctx, turn.ID)
+
+			if model.sawDeadline {
+				t.Fatal("finalization received an additional context deadline")
+			}
+			if model.firstCanceled < test.want*3/4 || model.firstCanceled > test.want+60*time.Millisecond {
+				t.Fatalf("finalization canceled after %s, want around %s", model.firstCanceled, test.want)
+			}
+			if model.streamCalls != 1 || store.turn.State != TurnCompleted || store.turn.Response == nil {
+				t.Fatalf("calls=%d terminal turn=%+v", model.streamCalls, store.turn)
+			}
+			if store.turn.TerminalCode != modelResponseTimeoutCode || store.turn.TerminalSummary != modelResponseTimeoutSummary {
+				t.Fatalf("terminal code=%q summary=%q", store.turn.TerminalCode, store.turn.TerminalSummary)
+			}
+		})
+	}
+}
+
+func TestDispatchWatchdogRejectsLateToolCall(t *testing.T) {
+	model := &lateToolCallTurnModel{}
+	service, store, turn := newTerminalFinalizationFixture(t, model)
+	service.modelDeadlines = turnModelDeadlines{
+		firstPayload: 20 * time.Millisecond, meaningfulAction: time.Second,
+		singleDispatch: time.Second,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	service.executeTurn(ctx, turn.ID)
+
+	if model.streamCalls != 2 {
+		t.Fatalf("model calls=%d, want timed-out dispatch plus finalization", model.streamCalls)
+	}
+	if store.prepareCalls != 0 {
+		t.Fatalf("late tool call reached execution preparation %d time(s)", store.prepareCalls)
+	}
+	if store.turn.State != TurnCompleted || store.turn.Response == nil || store.turn.Response.Message.Content != "safe final answer" {
+		t.Fatalf("terminal turn=%+v", store.turn)
+	}
+	if store.turn.TerminalCode != modelResponseTimeoutCode || store.turn.TerminalSummary != modelResponseTimeoutSummary {
+		t.Fatalf("terminal code=%q summary=%q", store.turn.TerminalCode, store.turn.TerminalSummary)
+	}
+}
+
+func TestOuterModelBudgetRejectsLateToolCall(t *testing.T) {
+	model := &lateToolCallTurnModel{}
+	service, store, turn := newTerminalFinalizationFixture(t, model)
+	policy, err := AdmittedTurnExecutionPolicy(TurnExecutionDeep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy.MaxModelActiveMilliseconds = 200
+	runtime, err := newTurnRuntimeSnapshotWithPolicy(
+		appendSystemPrompt(turn.ProfileSnapshot.SystemPrompt, conversationConvergenceGuidance),
+		turn.ProfileSnapshot, nil, "", "", "", policy, TurnConstrainedWorkflow{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	turn.RuntimeSnapshot = &runtime
+	turn.ModelActiveDuration = policy.MaxModelActiveDuration() - 20*time.Millisecond
+	store.turn = turn
+	service.modelDeadlines = turnModelDeadlines{
+		firstPayload: time.Second, meaningfulAction: time.Second,
+		singleDispatch: time.Second,
+	}
+
+	service.executeTurn(context.Background(), turn.ID)
+
+	if model.streamCalls != 2 {
+		t.Fatalf("model calls=%d, want over-budget dispatch plus finalization", model.streamCalls)
+	}
+	if store.prepareCalls != 0 {
+		t.Fatalf("over-budget tool call reached execution preparation %d time(s)", store.prepareCalls)
+	}
+	if store.turn.State != TurnCompleted || store.turn.Response == nil || store.turn.Response.Message.Content != "safe final answer" {
+		t.Fatalf("terminal turn=%+v", store.turn)
+	}
+	if store.turn.TerminalCode != modelBudgetExhaustedCode || store.turn.TerminalSummary != modelBudgetExhaustedSummary {
+		t.Fatalf("terminal code=%q summary=%q", store.turn.TerminalCode, store.turn.TerminalSummary)
+	}
 }
 
 func (m *failingTurnModel) Run(context.Context, ModelRunRequest) (ModelRunResult, error) {
@@ -108,6 +255,22 @@ type timeoutTurnStore struct {
 	uncertainCode    string
 	uncertainSummary string
 	failedSummary    string
+}
+
+type deadlineFlushTurnStore struct {
+	*timeoutTurnStore
+	attemptContexts <-chan context.Context
+	waitOnce        sync.Once
+}
+
+func (s *deadlineFlushTurnStore) AppendTurnEvent(ctx context.Context, id string, event TurnEvent) (TurnEvent, error) {
+	if event.Kind == TurnEventDelta {
+		s.waitOnce.Do(func() {
+			attemptCtx := <-s.attemptContexts
+			<-attemptCtx.Done()
+		})
+	}
+	return s.timeoutTurnStore.AppendTurnEvent(ctx, id, event)
 }
 
 type timeoutRecoveryStore struct {
@@ -226,9 +389,6 @@ func TestTurnModelBudgetUsesStabilityCaps(t *testing.T) {
 	}
 	if MaxAdmittedTurnModelActiveDuration != time.Hour {
 		t.Fatalf("model active duration cap=%s", MaxAdmittedTurnModelActiveDuration)
-	}
-	if MaxTurnFinalizationDuration != 2*time.Minute {
-		t.Fatalf("finalization duration=%s", MaxTurnFinalizationDuration)
 	}
 }
 
@@ -404,6 +564,46 @@ func TestExecuteTurnAppliesPersistedModelActiveDurationBudget(t *testing.T) {
 	}
 	if request := model.requests[1]; len(request.Intrinsics) != 0 || len(request.Extensions) != 0 || len(request.ExtensionSnapshots) != 0 {
 		t.Fatalf("finalization request retained tools: %+v", request)
+	}
+}
+
+func TestCompletedResultSurvivesOuterBudgetDuringDeltaFlush(t *testing.T) {
+	attemptContexts := make(chan context.Context, 1)
+	model := &completedBeforeFlushDeadlineModel{attemptContexts: attemptContexts}
+	service, baseStore, turn := newTerminalFinalizationFixture(t, model)
+	policy, err := AdmittedTurnExecutionPolicy(TurnExecutionDeep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy.MaxModelActiveMilliseconds = 200
+	runtime, err := newTurnRuntimeSnapshotWithPolicy(
+		appendSystemPrompt(turn.ProfileSnapshot.SystemPrompt, conversationConvergenceGuidance),
+		turn.ProfileSnapshot, nil, "", "", "", policy, TurnConstrainedWorkflow{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	turn.RuntimeSnapshot = &runtime
+	turn.ModelActiveDuration = policy.MaxModelActiveDuration() - 40*time.Millisecond
+	baseStore.turn = turn
+	store := &deadlineFlushTurnStore{timeoutTurnStore: baseStore, attemptContexts: attemptContexts}
+	service.store = store
+	service.turns = store
+	service.modelDeadlines = turnModelDeadlines{
+		firstPayload: time.Second, meaningfulAction: time.Second,
+		singleDispatch: time.Second,
+	}
+
+	service.executeTurn(context.Background(), turn.ID)
+
+	if model.streamCalls != 1 {
+		t.Fatalf("model calls=%d, successful provider result was retried or finalized", model.streamCalls)
+	}
+	if store.turn.State != TurnCompleted || store.turn.Response == nil || store.turn.Response.Message.Content != "verified final answer" {
+		t.Fatalf("completed provider result was discarded during durable flush: %+v", store.turn)
+	}
+	if store.turn.TerminalCode != "" || store.turn.TerminalSummary != "" {
+		t.Fatalf("successful turn acquired terminal failure %q %q", store.turn.TerminalCode, store.turn.TerminalSummary)
 	}
 }
 

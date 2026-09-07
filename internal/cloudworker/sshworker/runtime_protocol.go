@@ -23,6 +23,7 @@ const (
 	RuntimeStop          RuntimeAction = "stop"
 	RuntimeStatus        RuntimeAction = "status"
 	RuntimeLog           RuntimeAction = "log"
+	RuntimeReport        RuntimeAction = "report"
 	RuntimeArtifact      RuntimeAction = "artifact"
 	RuntimeServerStatus  RuntimeAction = "server-status"
 	RuntimeServiceStatus RuntimeAction = "service-status"
@@ -102,6 +103,14 @@ func (protocol RuntimeProtocol) Log(offset int64) (RuntimeCommand, error) {
 		return RuntimeCommand{}, ErrInvalid
 	}
 	return RuntimeCommand{Shell: runnerCommand(RuntimeLog, protocol.TaskID, fmt.Sprint(offset))}, nil
+}
+
+// Report returns only the private, bounded Pi final answer, never diagnostics.
+func (protocol RuntimeProtocol) Report() (RuntimeCommand, error) {
+	if !protocol.valid() {
+		return RuntimeCommand{}, ErrInvalid
+	}
+	return RuntimeCommand{Shell: runnerCommand(RuntimeReport, protocol.TaskID)}, nil
 }
 
 // Artifact lists artifacts when name is empty and streams one regular file

@@ -109,10 +109,24 @@ reuse, observation, or ordinary jobs.
 
 ## Results and artifacts
 
-Terminal stdout is returned to the original durable turn as the internal
-`cloud_worker_propose` tool report. Central resumes that turn and synthesizes,
-rather than pastes, the user-facing answer in the latest user's language unless
-the user explicitly requested another language. The runtime does not create
+Pi's pinned text/print mode produces its final assistant answer only. The runner
+captures redacted stdout separately from diagnostic stderr, with a 32 KiB
+UTF-8-safe head/tail bound and explicit truncation marker. Its internal `report`
+SSH action reads that private text; logs never become a substitute report.
+The Agent's normal task bootstrap compiles this embedded runner; no independent
+runner or base-image release is introduced. The short status/error summary,
+report, and host service verification remain distinct through persistence,
+including failures. Reports, logs, and artifacts share the admitted byte budget.
+
+The parent selects `response_mode=reply_to_user` on `cloud_worker_propose` only
+for a whole-request delegation. Successful, complete, safe Pi output then becomes
+the final reply directly, without a second model rewrite. Central adds verified
+links and a short resource-retention notice. `continue` or an omitted selection
+keeps partial work in the ordinary Agent loop for remaining actions. New user
+guidance, pending work, invalid output, and failed execution do not fast-finish.
+Replies use the requested language and explain the result simply; commands,
+logs, detailed verification reports, and internal paths are not default output.
+The runtime does not create
 `final-report.md`, `completion-report.md`, or another generic report merely to
 transport terminal text. Genuine files requested by the user remain ordinary
 artifacts, and operational/debug output may remain internal Agent state.

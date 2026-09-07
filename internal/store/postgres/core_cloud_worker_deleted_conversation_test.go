@@ -78,6 +78,10 @@ func (pgCloudRetainedReuseResolver) CheckCreateWorkerCapacity(context.Context, s
 }
 
 func newPGCloudWorkerHarness(t *testing.T) *pgCloudWorkerHarness {
+	return newPGCloudWorkerHarnessWithResponseMode(t, "continue")
+}
+
+func newPGCloudWorkerHarnessWithResponseMode(t *testing.T, mode string) *pgCloudWorkerHarness {
 	t.Helper()
 	ctx, store, profileID, cleanup := corePG18Fixture(t)
 	now := time.Now().UTC().Truncate(time.Microsecond)
@@ -144,7 +148,7 @@ func newPGCloudWorkerHarness(t *testing.T) *pgCloudWorkerHarness {
 			Digest: pgCloudDigest("local-budget")}, InputManifest: cloudworker.InputManifest{},
 		WorkspaceMode: cloudworker.WorkspaceNone, ModelAuthorization: authorization,
 		ComputeRequirements: cloudworker.ComputeRequirements{MinVCPU: 2, MinMemoryGiB: 4, DiskGiB: 32, EstimatedRuntimeMinutes: 60}}
-	arguments, _ := json.Marshal(map[string]any{"objective": command.Objective, "workspace_mode": string(command.WorkspaceMode)})
+	arguments, _ := json.Marshal(map[string]any{"objective": command.Objective, "workspace_mode": string(command.WorkspaceMode), "response_mode": mode})
 	call := core.ToolCall{ID: uuid.NewString(), Name: coremodel.IntrinsicCloudWorkerProposeToolName, Arguments: string(arguments)}
 	bindPGCloudWorkerModelAttempt(t, conversation, ctx, lease, cleanup)
 	if err = conversation.RecordTurnModelResult(ctx, lease, core.ModelRunResult{ToolCalls: []core.ToolCall{call}}); err != nil {

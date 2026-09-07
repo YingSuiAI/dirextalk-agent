@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -18,8 +19,8 @@ type recordingResultSink struct {
 	artifacts map[string][]byte
 }
 
-func (sink *recordingResultSink) StoreText(_ context.Context, stdout, _ []byte, _ int) error {
-	sink.text = bytes.Clone(stdout)
+func (sink *recordingResultSink) StoreText(_ context.Context, stdout, stderr []byte, _ int) error {
+	sink.text = bytes.Clone(append(stdout, stderr...))
 	return nil
 }
 
@@ -49,6 +50,7 @@ case "$remote" in
     touch "$state/started"
     ;;
   *"'log'"*) printf '%s\n' 'resumed successfully' ;;
+  *"'report'"*) exit 0 ;;
   *"'artifact'"*) exit 0 ;;
   *) exit 64 ;;
 esac
@@ -60,6 +62,30 @@ esac
 	}
 	if result.ExitCode != 0 || string(sink.text) != "resumed successfully\n" || readCount(t, state, "status") != 2 || readCount(t, state, "start") != 1 {
 		t.Fatalf("result=%+v text=%q status=%d start=%d", result, sink.text, readCount(t, state, "status"), readCount(t, state, "start"))
+	}
+}
+
+func TestCommandSSHExecutorKeepsDiagnosticsOutOfCompletion(t *testing.T) {
+	state := t.TempDir()
+	ssh := writeFakeSSH(t, state, `
+case "$remote" in
+  *"'status'"*) printf '%s\n' '{"phase":"completed","exit_code":0}' ;;
+  *"'log'"*) printf '%s\n' 'PRIVATE-STDERR-DIAGNOSTIC' ;;
+  *"'report'"*) printf '%s\n' 'OPENING-VERIFIED-WORK final evidence CLOSING-VERIFICATION' ;;
+  *"'artifact'"*) exit 0 ;;
+  *) exit 64 ;;
+esac
+`)
+	sink := &recordingResultSink{artifacts: make(map[string][]byte)}
+	result, err := (CommandSSHExecutor{SSHPath: ssh}).Execute(context.Background(), sshRequestFixture(t, sink))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Report != "OPENING-VERIFIED-WORK final evidence CLOSING-VERIFICATION" || strings.Contains(result.Report, "PRIVATE-STDERR") {
+		t.Fatalf("final answer mixed with diagnostics: %q", result.Report)
+	}
+	if bytes.Contains([]byte(result.Summary), []byte("PRIVATE-STDERR")) {
+		t.Fatalf("diagnostics promoted into completion: %q", result.Summary)
 	}
 }
 
@@ -97,6 +123,7 @@ case "$remote" in
   *"objective.txt"*) cat > "$state/guidance" ;;
   *"'start'"*) cat >/dev/null; touch "$state/started" ;;
   *"'log'"*) printf '%s\n' 'completed with RIVER-LANTERN-7392' ;;
+  *"'report'"*) exit 0 ;;
   *"'artifact'"*) exit 0 ;;
   *) exit 64 ;;
 esac
@@ -130,6 +157,7 @@ case "$remote" in
     [[ "$(count log)" -gt 1 ]] || exit 255
     printf '%s\n' 'completed after reconnect'
     ;;
+  *"'report'"*) printf 'Pi final answer' ;;
   *"'artifact'"*"'report.txt'"*)
     [[ "$(count download)" -gt 1 ]] || exit 255
     printf 'data'
@@ -172,6 +200,7 @@ func TestCommandSSHExecutorSharesResultBudgetAcrossLogsAndArtifacts(t *testing.T
 case "$remote" in
   *"'status'"*) printf '%s\n' '{"phase":"completed","exit_code":0}' ;;
   *"'log'"*) printf '12345' ;;
+  *"'report'"*) printf '1' ;;
   *"'artifact'"*"'report.txt'"*) count download >/dev/null; printf 'data' ;;
   *"'artifact'"*) printf '%s\n' '{"name":"report.txt","size":4}' ;;
   *) exit 64 ;;
@@ -248,6 +277,7 @@ case "$remote" in
     if [[ "$current" -le 2 ]]; then printf '%s\n' '{"phase":"running","exit_code":0}'; else printf '%s\n' '{"phase":"completed","exit_code":0}'; fi
     ;;
   *"'log'"*) printf '%s\n' 'completed after progress' ;;
+  *"'report'"*) exit 0 ;;
   *"'artifact'"*) exit 0 ;;
   *) exit 64 ;;
 esac
@@ -384,7 +414,8 @@ case "$remote" in
   *"'stop'"*) count stop >/dev/null ;;
   *) exit 64 ;;
 esac`)
-	ctx, cancel := context.WithCancel(context.Background()); cancel()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
 	protocol := RuntimeProtocol{TaskID: "execution-recovery", secretEnvelope: encodeRuntimeSecretEnvelope("secret", "")}
 	err := reconcileAmbiguousRuntimeStart(ctx, ssh, nil, protocol, context.Canceled)
 	if !errors.Is(err, ErrAmbiguous) || readCount(t, state, "stop") != 1 {

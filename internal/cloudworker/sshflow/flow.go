@@ -68,11 +68,14 @@ type Artifact struct {
 }
 
 type Result struct {
-	Summary         string
-	ExitCode        int
-	WorkerID        string
-	Artifacts       []Artifact
-	AppliedSteerIDs []string
+	Summary             string
+	Report              string
+	ServiceVerification string
+	ServiceURL          string
+	ExitCode            int
+	WorkerID            string
+	Artifacts           []Artifact
+	AppliedSteerIDs     []string
 }
 
 type Executor interface {

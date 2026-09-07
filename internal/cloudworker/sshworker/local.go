@@ -22,6 +22,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"golang.org/x/sys/unix"
 )
@@ -572,15 +573,29 @@ func (executor CommandSSHExecutor) Execute(ctx context.Context, request SSHReque
 		}
 		return ExecutionResult{}, errors.Join(ErrAmbiguous, err)
 	}
-	if err := request.Sink.StoreText(ctx, logBody, nil, status.ExitCode); err != nil {
-		return ExecutionResult{}, errors.Join(errRetryableResultCollection, err)
-	}
-	// Logs and artifacts consume one execution-wide result budget.
-	artifactCount, err := executor.collectRuntimeArtifacts(ctx, sshPath, base, request, request.MaxResultBytes-int64(len(logBody)))
+	reportCommand, err := request.Runtime.Report()
 	if err != nil {
 		return ExecutionResult{}, err
 	}
-	return ExecutionResult{Summary: strings.TrimSpace(string(logBody)), ExitCode: status.ExitCode, StdoutBytes: int64(len(logBody)), ArtifactCount: artifactCount,
+	reportBody, err := retrySSHOutput(ctx, sshPath, base, reportCommand.Shell, min(int64(MaxWorkerReportBytes), request.MaxResultBytes-int64(len(logBody))))
+	if err != nil {
+		if errors.Is(err, ErrResultTooLarge) {
+			return ExecutionResult{}, err
+		}
+		return ExecutionResult{}, errors.Join(ErrAmbiguous, err)
+	}
+	if !utf8.Valid(reportBody) {
+		return ExecutionResult{}, ErrInvalid
+	}
+	if err := request.Sink.StoreText(ctx, nil, logBody, status.ExitCode); err != nil {
+		return ExecutionResult{}, errors.Join(errRetryableResultCollection, err)
+	}
+	// Private reports, diagnostics and artifacts share the authorized result budget.
+	artifactCount, err := executor.collectRuntimeArtifacts(ctx, sshPath, base, request, request.MaxResultBytes-int64(len(logBody))-int64(len(reportBody)))
+	if err != nil {
+		return ExecutionResult{}, err
+	}
+	return ExecutionResult{Summary: fmt.Sprintf("Worker execution exited with code %d", status.ExitCode), Report: strings.TrimSpace(string(reportBody)), ExitCode: status.ExitCode, StdoutBytes: int64(len(reportBody)), StderrBytes: int64(len(logBody)), ArtifactCount: artifactCount,
 		AppliedSteerIDs: append([]string(nil), appliedSteerIDs...)}, nil
 }
 

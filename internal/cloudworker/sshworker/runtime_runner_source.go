@@ -1,9 +1,20 @@
 package sshworker
 
+import (
+	"strconv"
+	"strings"
+)
+
+// MaxWorkerReportBytes bounds private final-answer evidence, independently of
+// the short public task summary. The embedded runner uses this exact limit.
+const MaxWorkerReportBytes = 32 << 10
+
+var remoteRunnerSource = strings.Replace(remoteRunnerTemplate, "{{REPORT_LIMIT}}", strconv.Itoa(MaxWorkerReportBytes), 1)
+
 // remoteRunnerSource is compiled on the official base host during bootstrap.
 // It intentionally uses only the Go standard library so there is no separate
 // runner release, registry, daemon, callback, or inbound port to manage.
-const remoteRunnerSource = `package main
+const remoteRunnerTemplate = `package main
 
 import (
 	"bufio"
@@ -25,6 +36,27 @@ import (
 )
 
 const root = "/var/lib/dirextalk-worker"
+const maxWorkerReportBytes = {{REPORT_LIMIT}}
+const reportTruncation = "\n\n[Worker report truncated; middle omitted]\n\n"
+
+// Retain both ends without retaining an unbounded stdout stream. Pi's pinned
+// text/print mode writes only its final assistant text to stdout.
+type reportWriter struct { head, tail []byte; total int64 }
+func (writer *reportWriter) Write(body []byte) (int, error) {
+	n := len(body); writer.total += int64(n)
+	headLimit := (maxWorkerReportBytes-len(reportTruncation))/2
+	if len(writer.head) < headLimit { count := min(len(body), headLimit-len(writer.head)); writer.head = append(writer.head, body[:count]...); body = body[count:] }
+	tailLimit := maxWorkerReportBytes-headLimit-len(reportTruncation)
+	if len(body) >= tailLimit { writer.tail = append(writer.tail[:0], body[len(body)-tailLimit:]...) } else {
+		if excess := len(writer.tail)+len(body)-tailLimit; excess > 0 { writer.tail = writer.tail[excess:] }
+		writer.tail = append(writer.tail, body...)
+	}
+	return n, nil
+}
+func (writer *reportWriter) Text() string {
+	if writer.total <= int64(len(writer.head)+len(writer.tail)) { return strings.TrimSpace(strings.ToValidUTF8(string(writer.head)+string(writer.tail), "")) }
+	return strings.TrimSpace(strings.ToValidUTF8(string(writer.head), "")+reportTruncation+strings.ToValidUTF8(string(writer.tail), ""))
+}
 
 type taskSpec struct {
 	TaskID string ` + "`json:\"task_id\"`" + `
@@ -72,6 +104,7 @@ func main() {
 	case "run": err = run(arg(2))
 	case "status": err = status(arg(2))
 	case "log": err = logOutput(arg(2), arg(3))
+	case "report": err = reportOutput(arg(2))
 	case "artifact": err = artifact(arg(2), optionalArg(3))
 	case "server-status": err = serverStatus()
 	case "service-status": err = serviceStatus(arg(2))
@@ -140,8 +173,8 @@ func run(taskID string) error {
 	if err := requireDirectory(workspaceRoot); err != nil { return finish(taskID, current, 1, err) }
 	if err := os.MkdirAll(artifactRoot, 0700); err != nil { return finish(taskID, current, 1, err) }
 	githubAvailable, err := githubRuntimeAvailable(taskRoot); if err != nil { return finish(taskID, current, 1, err) }
-	prompt := "Complete the supplied objective on this retained remote host. This is a " + spec.Workload + " workload. Use shell and workspace tools as needed. Put genuine user-requested file deliverables under " + artifactRoot + ". Do not create final-report.md, completion-report.md, or another generic completion report merely to transport your final response. Your final stdout response is an internal report for Central: concisely record completed work, verification, and paths of genuine requested artifacts so Central can synthesize the user-facing answer. Use parallel subagents only for independent, non-overlapping scopes. Before concurrent writes create a separate git worktree and branch per writer; revalidate repository owner, remote, and base before push; integrate and test in the parent worktree. Never expose GitHub credentials, model credentials, or hidden configuration."
-	prompt += " You have no authoritative billing measurement. Report actual billed cost as unavailable; never infer free or zero actual cost from reuse, missing data, or zero new-resource authorization. Plan estimates are not actual billing, and retained compute and storage may keep incurring charges. Do not invent prices or user download links; Central supplies verified artifact links. Follow the user's requested language."
+	prompt := "Complete the supplied objective on this retained remote host. This is a " + spec.Workload + " workload. Use shell and workspace tools as needed. Put genuine user-requested file deliverables under " + artifactRoot + ". Do not create final-report.md, completion-report.md, or another generic completion report merely to transport your final response. Write your final answer for the user in the language requested in the objective. Lead with what is ready or what was found, followed only by important limitations or a necessary next step. Normally use one short paragraph or a few short bullets, not a technical work report. Do not narrate your process or include command logs, stack traces, internal paths, configuration, or a test-by-test report unless the user requested those details. Your final answer may be delivered directly without another model rewriting it. Mention genuine requested files by name only; Central attaches their verified download links separately. Do not create or guess artifact URLs, claim follow-up actions outside this task have happened, or discuss billing. If only part of the objective succeeded, say so plainly. Use parallel subagents only for independent, non-overlapping scopes. Before concurrent writes create a separate git worktree and branch per writer; revalidate repository owner, remote, and base before push; integrate and test in the parent worktree. Never expose GitHub credentials, model credentials, or hidden configuration."
+	prompt += " You have no authoritative billing measurement: never infer free or zero actual cost from reuse, missing data, or zero new-resource authorization. Central adds the verified resource-retention and billing notice; do not repeat it. Do not invent prices or user download links. Follow the user's requested language."
 	if githubAvailable {
 		prompt += " GitHub access is available for this task: HTTPS git and gh are already authenticated for github.com. As requested, you may clone private repositories, create a branch, edit and test code, commit and push, and create or update pull requests. Never read, print, copy, encode, or expose the credential. Before every push, revalidate the repository owner, github.com remote URL, base branch, current branch, and intended commits."
 	}
@@ -170,8 +203,15 @@ func run(taskID string) error {
 	command.Env = append(withoutGitHubTokenEnv(os.Environ()), "PI_CODING_AGENT_DIR="+filepath.Join(root, "pi-config"), "PI_TELEMETRY=0", "NO_COLOR=1", "TERM=dumb", "DIREXTALK_WORKER_MODEL="+spec.Model)
 	if err := configureGitHubRuntime(taskRoot, command); err != nil { return finish(taskID, current, 1, err) }
 	pat, err := os.ReadFile(taskPath(taskID, "github-pat")); if os.IsNotExist(err) { pat = nil } else if err != nil { return finish(taskID, current, 1, err) }; defer clear(pat)
-	stdout := &redactingWriter{writer: os.Stdout, secret: pat}; stderr := &redactingWriter{writer: os.Stderr, secret: pat}; defer stdout.Flush(); defer stderr.Flush(); command.Stdout = stdout; command.Stderr = stderr
+	report := &reportWriter{}
+	stdout := &redactingWriter{writer: report, secret: pat}; stderr := &redactingWriter{writer: os.Stderr, secret: pat}
+	modelSecret := []byte(os.Getenv("DIREXTALK_MODEL_API_KEY")); defer clear(modelSecret)
+	modelStdout := &redactingWriter{writer: stdout, secret: modelSecret}; modelStderr := &redactingWriter{writer: stderr, secret: modelSecret}
+	command.Stdout = modelStdout; command.Stderr = modelStderr
 	err = command.Run(); code := 0
+	flushErr := errors.Join(modelStdout.Flush(), modelStderr.Flush(), stdout.Flush(), stderr.Flush())
+	reportErr := saveReport(taskID, report.Text())
+	if err == nil { err = errors.Join(flushErr, reportErr) }
 	if errors.Is(runContext.Err(), context.DeadlineExceeded) { code, err = 124, errors.New("maximum runtime exceeded")
 	} else if err != nil { code = 1; var exit *exec.ExitError; if errors.As(err, &exit) { code = exit.ExitCode() } }
 	if err == nil && spec.Workload == "service" { err = verifyService(spec); if err == nil && spec.Service.Hostname != "" { err = configureCaddy(spec) }; if err != nil { code = 1 } }
@@ -264,6 +304,20 @@ func logOutput(taskID, rawOffset string) error {
 	file, err := os.Open(taskPath(taskID, "runner.log")); if err != nil { return err }; defer file.Close()
 	if _, err := file.Seek(offset, io.SeekStart); err != nil { return err }
 	_, err = io.Copy(os.Stdout, io.LimitReader(file, 4<<20)); return err
+}
+
+func saveReport(taskID, text string) error {
+	file, err := os.CreateTemp(taskPath(taskID, ""), ".report-*"); if err != nil { return err }
+	defer os.Remove(file.Name())
+	_, writeErr := io.WriteString(file, text)
+	if err = errors.Join(writeErr, file.Close()); err != nil { return err }
+	return os.Rename(file.Name(), taskPath(taskID, "report.txt"))
+}
+
+func reportOutput(taskID string) error {
+	file, err := os.OpenFile(taskPath(taskID, "report.txt"), os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0); if os.IsNotExist(err) { return nil }; if err != nil { return err }; defer file.Close()
+	info, err := file.Stat(); if err != nil { return err }; if !info.Mode().IsRegular() { return errors.New("invalid Worker report") }
+	_, err = io.Copy(os.Stdout, io.LimitReader(file, maxWorkerReportBytes+1)); return err
 }
 
 func artifact(taskID, name string) error {

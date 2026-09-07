@@ -310,6 +310,9 @@ type ResultSink interface {
 type ExecutionResult struct {
 	WorkerID                 string
 	Summary                  string
+	Report                   string
+	ServiceVerification      string
+	ServiceURL               string
 	ExitCode                 int
 	StdoutBytes, StderrBytes int64
 	ArtifactCount            int

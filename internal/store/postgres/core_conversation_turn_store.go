@@ -1554,6 +1554,36 @@ func (s *CoreConversationStore) TurnEventBounds(ctx context.Context, id string) 
 	return *first, *last, nil
 }
 
+func (s *CoreConversationStore) CommitTurnWorkerReply(ctx context.Context, lease core.TurnLease, response core.ChatResponse) (core.Turn, error) {
+	response.Message.CreatedAt = response.Message.CreatedAt.UTC().Truncate(time.Microsecond)
+	if response.Message.CreatedAt.IsZero() || bindTurnResponseIdentity(&response, lease.Turn.ID) != nil {
+		return core.Turn{}, core.ErrInvalid
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return core.Turn{}, err
+	}
+	defer tx.Rollback(ctx)
+	var sequence int64
+	err = tx.QueryRow(ctx, `SELECT last_sequence FROM core_conversation_turns WHERE turn_id=$1 AND lease_id=$2 AND lease_epoch=$3 AND state='running' AND cancel_requested=false FOR UPDATE`, lease.Turn.ID, lease.LeaseID, lease.Epoch).Scan(&sequence)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return core.Turn{}, core.ErrConflict
+		}
+		return core.Turn{}, err
+	}
+	if sequence != lease.Turn.LastSequence {
+		return core.Turn{}, core.ErrConflict
+	}
+	if err = s.commitTurnTx(ctx, tx, lease, response); err != nil {
+		return core.Turn{}, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return core.Turn{}, err
+	}
+	return s.GetTurn(ctx, lease.Turn.ID)
+}
+
 func (s *CoreConversationStore) CommitTurn(ctx context.Context, lease core.TurnLease, response core.ChatResponse) (core.Turn, error) {
 	response.Message.CreatedAt = response.Message.CreatedAt.UTC().Truncate(time.Microsecond)
 	if response.Message.CreatedAt.IsZero() || bindTurnResponseIdentity(&response, lease.Turn.ID) != nil {

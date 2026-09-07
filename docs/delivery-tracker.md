@@ -9,6 +9,32 @@ contract](message-server-integration-development-contract.md), and
 
 ## Implemented at HEAD
 
+- Whole-request Worker delegation can choose `response_mode=reply_to_user`:
+  safe Pi final text is delivered once without a parent-model rewrite. Partial
+  delegation retains ordinary follow-up tools; plain chat adds no summary.
+  Pi's default reply is brief, user-facing prose rather than a technical report.
+  Stdout reports and stderr diagnostics are separated in the actual embedded
+  runner and SSH collector. Private reports retain up to 32 KiB with explicit
+  UTF-8-safe truncation, independently of short public task/error summaries,
+  and survive failed completion. Host verification and canonical links stay
+  authoritative; data no longer carries competing finalization instructions.
+  Executable runner tests, SSH consumer tests, no-extra-provider-call tests,
+  and PostgreSQL completion/restart/cancel/steer fences cover the workflow.
+  This is local code/test evidence, not a live Pi/model quality or deployment
+  acceptance claim. No public endpoint, schema migration, or dependency added.
+- Final response synthesis no longer has a second, shorter 120-second wall
+  deadline on top of the existing provider-dispatch watchdogs. It receives
+  fresh 15-second first-payload, 90-second progress-idle, and five-minute
+  absolute guards without consuming the ordinary model-active clock. A result
+  returned within those guards is not discarded merely because durable delta
+  persistence crosses the ordinary outer budget. A failed tools-disabled stream
+  preserves only visible partial text that passes the existing tool-protocol
+  quarantine; explicit cancellation, provider reasoning, and DSML/XML-style
+  markup remain private. Compact final-answer-only guidance follows the frozen
+  routing prompt without changing the model, endpoint, or admitted evidence.
+  Focused deadline, format-recovery, prompt-order, partial-output, quarantine,
+  and cancellation regressions cover the behavior; no provider, scheduler,
+  database, or public API was added.
 - Conversation history now combines its durable Execution V2 row with the
   persisted Worker lifecycle authority. Fresh login, restart, and second-device
   history loads omit every run and deleted artifact bound to a destroyed or

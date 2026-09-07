@@ -22,9 +22,9 @@ Call cloud_worker_inventory to read current status, load, current-task, public-I
 
 func cloudWorkerSystemPrompt(base string) string {
 	if strings.TrimSpace(base) == "" {
-		return cloudWorkerRoutingGuidance + "\n\n" + CloudWorkerCompletionGuidance
+		return cloudWorkerRoutingGuidance
 	}
-	return strings.TrimSpace(base) + "\n\n" + cloudWorkerRoutingGuidance + "\n\n" + CloudWorkerCompletionGuidance
+	return strings.TrimSpace(base) + "\n\n" + cloudWorkerRoutingGuidance
 }
 
 func containsCloudWorkerIntrinsic(tools []ResolvedIntrinsic) bool {

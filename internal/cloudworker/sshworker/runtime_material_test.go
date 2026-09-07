@@ -332,8 +332,12 @@ func TestEmbeddedRemoteRunnerBuilds(t *testing.T) {
 				}
 			}
 			logBody, readErr := os.ReadFile(filepath.Join(jobRoot, "runner.log"))
-			if readErr != nil || !strings.Contains(string(logBody), "internal worker report") {
-				t.Fatalf("internal Worker stdout was not retained in runner log: %q err=%v", logBody, readErr)
+			if readErr != nil || strings.Contains(string(logBody), "internal worker report") {
+				t.Fatalf("Worker stdout contaminated diagnostic log: %q err=%v", logBody, readErr)
+			}
+			reportBody, readErr := exec.Command(runner, "report", jobID).Output()
+			if readErr != nil || !strings.Contains(string(reportBody), "internal worker report") {
+				t.Fatalf("failed execution lost its report: %q err=%v", reportBody, readErr)
 			}
 			for _, name := range []string{"final-report.md", "completion-report.md"} {
 				if _, statErr := os.Stat(filepath.Join(jobRoot, "artifacts", name)); !os.IsNotExist(statErr) {
@@ -372,8 +376,8 @@ func TestEmbeddedRemoteRunnerKeepsTerminalStdoutInternalAndRequestedArtifactsExp
 	for _, expected := range []string{
 		"Put genuine user-requested file deliverables under ",
 		"Do not create final-report.md, completion-report.md, or another generic completion report",
-		"Your final stdout response is an internal report for Central",
-		"paths of genuine requested artifacts",
+		"Your final answer may be delivered directly without another model rewriting it",
+		"Mention genuine requested files by name only",
 	} {
 		if !strings.Contains(remoteRunnerSource, expected) {
 			t.Fatalf("runner is missing internal-report contract %q", expected)
@@ -418,7 +422,7 @@ func TestCompileRuntimeDeliversBillingTruthfulWorkerPrompt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("evaluate delivered prompt: %s %v", output, err)
 	}
-	for _, required := range []string{"actual billed cost as unavailable", "zero new-resource authorization", "Plan estimates are not actual billing", "retained compute and storage", "Central supplies verified artifact links", "user's requested language"} {
+	for _, required := range []string{"no authoritative billing measurement", "zero new-resource authorization", "Central adds the verified resource-retention and billing notice; do not repeat it", "Central attaches their verified download links", "user's requested language"} {
 		if !strings.Contains(string(output), required) {
 			t.Fatalf("delivered prompt lacks %q", required)
 		}

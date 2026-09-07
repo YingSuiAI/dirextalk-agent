@@ -3,6 +3,8 @@ package coreruntime
 import (
 	"net/url"
 	"strings"
+
+	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 )
 
 const (
@@ -13,18 +15,6 @@ const (
 	modelToolFreeFormatRecoveryInstruction = `The previous response used text markup for a tool call, but tools are disabled for this final response. Return only a normal final answer. Do not put DSML, XML, or any other tool-call markup in message content. Do not describe or imitate a tool call in plain text.`
 	deepSeekStructuredToolInstruction      = `This request uses the OpenAI-compatible structured tool protocol. When a tool is needed, emit it only through message.tool_calls with a declared function name and JSON arguments. Never emit DSML, XML, or tool-call markup in message content. Ordinary message content is never interpreted as a tool call.`
 )
-
-var textToolCallEnvelopeMarkers = []string{
-	dsmlToolCallsEnvelope,
-	"<|dsml|tool_calls>",
-	"<｜dsml｜tool_calls>",
-	"<｜tool▁calls▁begin｜>",
-	"<|tool_calls_begin|>",
-	"<tool_calls>",
-	"<tool_call>",
-	"<function_calls>",
-	"<function_call>",
-}
 
 type toolCallTextGuard struct {
 	enabled        bool
@@ -60,7 +50,7 @@ func (g *toolCallTextGuard) Finish(content string, hasStructuredToolCalls bool, 
 	if !g.enabled {
 		return false, nil
 	}
-	g.suspicious = g.detectDSML && containsUnquotedToolCallEnvelope(content)
+	g.suspicious = g.detectDSML && coremodel.ContainsUnquotedToolCallEnvelope(content)
 	g.suppressPublic = g.suspicious || hasStructuredToolCalls
 	g.discardContent = g.suspicious
 	if g.suppressPublic {
@@ -78,104 +68,6 @@ func emitText(text string, emit func(string) error) error {
 		return nil
 	}
 	return emit(text)
-}
-
-// containsUnquotedToolCallEnvelope recognizes known provider text-protocol
-// shapes outside Markdown code and quote blocks. A bare envelope at a protocol
-// line is sufficient to quarantine a truncated response. Ordinary inline
-// mentions remain text, and repository examples can be preserved by quoting or
-// fencing them. The detector never parses a name or arguments.
-func containsUnquotedToolCallEnvelope(content string) bool {
-	visible := markdownProtocolText(content)
-	lowerVisible := strings.ToLower(visible)
-	for _, marker := range textToolCallEnvelopeMarkers {
-		marker = strings.ToLower(marker)
-		searchAt := 0
-		for searchAt < len(lowerVisible) {
-			relative := strings.Index(lowerVisible[searchAt:], marker)
-			if relative < 0 {
-				break
-			}
-			start := searchAt + relative
-			after := lowerVisible[start+len(marker):]
-			trimmed := strings.TrimLeft(after, " \t\r\n")
-			lineStart := strings.LastIndexByte(lowerVisible[:start], '\n') + 1
-			protocolPosition := strings.TrimSpace(lowerVisible[lineStart:start]) == ""
-			if protocolPosition || trimmed == "" || strings.HasPrefix(trimmed, strings.ToLower(dsmlInvokePrefix)) {
-				return true
-			}
-			searchAt = start + len(marker)
-		}
-	}
-	return false
-}
-
-func markdownProtocolText(content string) string {
-	lines := strings.SplitAfter(content, "\n")
-	var visible strings.Builder
-	var fence byte
-	var fenceWidth int
-	for _, line := range lines {
-		body := strings.TrimSuffix(line, "\n")
-		trimmed := strings.TrimLeft(body, " \t")
-		marker, width := markdownFenceMarker(trimmed)
-		if fence != 0 {
-			if marker == fence && width >= fenceWidth {
-				fence, fenceWidth = 0, 0
-			}
-			visible.WriteByte('\n')
-			continue
-		}
-		if marker != 0 {
-			fence, fenceWidth = marker, width
-			visible.WriteByte('\n')
-			continue
-		}
-		if strings.HasPrefix(trimmed, ">") {
-			visible.WriteByte('\n')
-			continue
-		}
-		visible.WriteString(stripMarkdownCodeSpans(body))
-		visible.WriteByte('\n')
-	}
-	return visible.String()
-}
-
-func markdownFenceMarker(line string) (byte, int) {
-	if len(line) < 3 || line[0] != '`' && line[0] != '~' {
-		return 0, 0
-	}
-	marker := line[0]
-	width := 1
-	for width < len(line) && line[width] == marker {
-		width++
-	}
-	if width < 3 {
-		return 0, 0
-	}
-	return marker, width
-}
-
-func stripMarkdownCodeSpans(line string) string {
-	var visible strings.Builder
-	for offset := 0; offset < len(line); {
-		if line[offset] != '`' {
-			visible.WriteByte(line[offset])
-			offset++
-			continue
-		}
-		width := 1
-		for offset+width < len(line) && line[offset+width] == '`' {
-			width++
-		}
-		closing := strings.Index(line[offset+width:], strings.Repeat("`", width))
-		if closing < 0 {
-			visible.WriteString(line[offset:])
-			break
-		}
-		offset += width + closing + width
-	}
-	return visible.String()
 }
 
 func isOpenAIToolProtocol(profileProvider string, requestDialect string, toolCount int, guardToolFree bool) bool {

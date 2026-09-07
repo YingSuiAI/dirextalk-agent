@@ -218,7 +218,7 @@ or stream after admission. It never cancels the accepted Turn; callers use
   tool-call fragments satisfy the first-payload deadline and renew the 90-second
   progress-idle window, but keepalives, empty deltas, and whitespace do not.
   User-visible text, a complete valid tool call, or a normal runner return is
-  meaningful and ends that progress-idle check. The
+  meaningful and ends that progress-idle check. For an ordinary dispatch, the
   admitted remaining model-active duration is the stronger outer bound; when
   it equals a local deadline, expiration remains `model_budget_exhausted`.
   Provider-adapter request and stream-idle deadlines remain internal transport
@@ -228,23 +228,29 @@ or stream after admission. It never cancels the accepted Turn; callers use
   invalid or empty terminal output, repeated no-progress tool use, and either
   ordinary budget cap first persist an immutable turn-finalization intent.
   That intent normally admits exactly one additional physical provider attempt
-  with an independent two-minute timeout; it carries no intrinsic or extension
-  tools and is not charged to the admitted ordinary clock. It cannot retry for
-  an ordinary provider, timeout, empty-output, or budget failure. The only
-  exception is a quarantined `MODEL_TOOL_CALL_FORMAT_INVALID` response from a
-  turn whose admitted runtime originally exposed structured tools: Core may
-  repeat the same tools-disabled finalization directive once with explicit
-  protocol-recovery guidance and a fresh full two-minute window. That retry never
-  restores tool authority. Expiry of the finalization window is
-  `finalization_timeout`, not ordinary `model_budget_exhausted`; earlier provider
-  or dispatch-local timeouts retain their own classification. The
+  with fresh first-payload, progress-idle, and absolute dispatch guards; it has
+  no additional finalization-only wall-clock deadline, carries no intrinsic or
+  extension tools, and is not charged to the admitted ordinary clock. It cannot
+  retry for an ordinary provider, timeout, empty-output, or budget failure. The
+  only exception is a quarantined `MODEL_TOOL_CALL_FORMAT_INVALID` response
+  from a turn whose admitted runtime originally exposed structured tools: Core
+  may repeat the same tools-disabled finalization directive once with explicit
+  protocol-recovery guidance and fresh standard dispatch guards. That retry
+  never restores tool authority. A finalization guard expiry is
+  `provider_timeout`, not ordinary `model_budget_exhausted`; earlier provider
+  failures retain their own classification. The
   total physical attempt sequence can therefore reach the admitted dispatch
   cap plus one normally (at most 53), or plus two only for that exact live
   format-recovery case (at most 54). If the final attempt returns useful text,
-  that text is
-  the normal completed Markdown response. If it fails, is empty or invalid, or
-  returns a tool call, Core returns durable partial text directly when present,
-  otherwise a concise same-language tool-result summary or retry message. Internal
+  that text is the normal completed Markdown response. If the model returned
+  before every dispatch guard and only the durable delta flush crosses the
+  ordinary model-active deadline, Core does not relabel that completed result
+  as a budget failure. If it fails, is empty or invalid, or returns a tool call,
+  Core returns durable partial text directly when present. A failed tools-disabled
+  stream may publish only buffered user-visible text that passes the same
+  tool-envelope quarantine; protocol-shaped text, provider reasoning, and text
+  from an explicitly canceled turn remain private. Without a safe partial, Core
+  returns a concise same-language tool-result summary or retry message. Internal
   terminal codes remain in turn metadata and are not exposed in the user-facing
   response. A restart before
   the final dispatch may perform it once; a started, retryable, dispatched, or
@@ -318,7 +324,11 @@ or stream after admission. It never cancels the accepted Turn; callers use
   model-authored content private until the complete provider step is known. A
   step containing structured tool calls publishes no model-authored text; only
   a completed, tool-free final answer is released as bounded coalesced public
-  text. Provider reasoning is absent from public messages, stream events, Capability JSON,
+  text. The sole failed-step exception is a tools-disabled finalization stream:
+  buffered visible text may be released only after the same protocol-envelope
+  guard accepts it; suspicious markup, structured calls, reasoning, and
+  explicitly canceled output remain private. Provider reasoning is absent from
+  public messages, stream events, Capability JSON,
   RPC projections, conversation history, failed transcripts, and every durable
   model-result envelope. A complete model step publishes the existing
   `tool_call` event only after the model step and tool identity are durable, and
@@ -1039,22 +1049,41 @@ retained Worker. Only an outcome that may have committed a provider mutation
 remains recoverable as uncertain. A same-ID retry
 of that failure remains terminal and never invokes SSH; it may only reconcile
 Worker-release bookkeeping after exact owner, account-generation, credential,
-Worker, and execution identity checks. Logs plus artifacts share the
+Worker, and execution identity checks. Reports, logs, and artifacts share the
 execution's single result-byte budget, so artifact reads cannot exceed
-the bytes remaining after logs. The proposal's estimated runtime covers
+the bytes remaining after reports and logs. The proposal's estimated runtime covers
 environment setup,
 dependencies, model execution, the full requested active run or observation
 duration, result collection, and reasonable margin rather than treating an
-explicitly requested duration as the whole execution budget. Worker terminal
-stdout is an internal report returned as tool evidence, never the user-facing
-answer. A successful Worker is intermediate evidence: Core continues outstanding
+explicitly requested duration as the whole execution budget. Pi text/print mode
+returns its last assistant answer on stdout, separately from stderr diagnostics.
+The private report is bounded to 32 KiB with UTF-8-safe head/tail retention and
+an explicit truncation marker; the short task/error summary remains separate.
+Failure preserves available report text in the existing completion tool data,
+not in public task text. Service verification and verified URLs are host-owned
+evidence. Tool data contains no `central_instruction` or `next_action` directive.
+
+`cloud_worker_propose.response_mode` selects final-answer ownership before
+execution. `reply_to_user` delegates the whole request, including response
+language and requirements in the objective. After successful completion, Core
+delivers the safe, complete Pi answer through ordinary `done.message.content`
+without another provider call. It adds only verified artifact/service links and
+a concise retained-resource/cost notice. The exact tool-call arguments, not
+Worker prose, authorize this path; unfinished tools, later user steering,
+constrained workflows, incomplete publication, empty/truncated or protocol-shaped
+reports cannot take it. Commit atomically fences the observed turn sequence,
+lease, and cancellation; restart cannot duplicate the answer.
+`continue` (also the meaning of omitted delegation) leaves the answer with Core
+for partial objectives and subsequent Agent tools. Core continues outstanding
 user-authorized work with the exact admitted tool snapshots and remaining
 ordinary budget, and requires a separate successful tool receipt before claiming
 a follow-up such as report delivery succeeded. Failed Workers or unavailable
 pinned capabilities on recovery use frozen tools-disabled finalization; recovery
 does not invent missing request grants or silently drop required tools. Answers
-use the latest user message's language unless explicitly requested otherwise and
-never paste or lightly reformat the report. If final synthesis fails, deterministic
+use the latest user message's language unless explicitly requested otherwise,
+lead with plain-language results, and avoid technical work reports unless asked.
+A valid ordinary answer is already final: no generic extra summary is added.
+If exceptional final synthesis fails, deterministic
 fallback states the verified Worker status and useful trusted artifact links;
 it does not promote raw reports or unconfirmed partial sending claims into facts.
 Completion supplies explicit billing evidence: actual charges are unavailable

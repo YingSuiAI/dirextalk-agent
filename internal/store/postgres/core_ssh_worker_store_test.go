@@ -227,7 +227,7 @@ func (executor interruptedSSHWorkerExecutor) Execute(ctx context.Context, reques
 	if err := request.ReportProgress(ctx, "connecting_worker", "Connecting to Worker"); err != nil {
 		return sshflow.Result{}, err
 	}
-	return sshflow.Result{WorkerID: request.ExecutionID}, executor.err
+	return sshflow.Result{WorkerID: request.ExecutionID, Report: "OPENING-PARTIAL-WORK " + strings.Repeat("已完成的内容", 800) + " CLOSING-VERIFIED"}, executor.err
 }
 
 func TestSSHWorkerHandlerPersistsDestroyedWorkerFailureAndResumesTurn(t *testing.T) {
@@ -290,6 +290,36 @@ func TestSSHWorkerHandlerPersistsDestroyedWorkerFailureAndResumesTurn(t *testing
 			}
 			if terminalEvents != 1 || toolResults != 1 {
 				t.Fatalf("terminal events=%d conversation tool results=%d", terminalEvents, toolResults)
+			}
+			// Reload the actual durable event after handler failure, rather than
+			// testing only the completion-JSON helper.
+			events, err := h.conversation.LoadTurnEvents(h.ctx, turn.ID, 0, 256)
+			if err != nil {
+				t.Fatal(err)
+			}
+			found := false
+			for _, event := range events {
+				if event.ToolResult == nil {
+					continue
+				}
+				var body struct {
+					Report  string `json:"worker_report"`
+					Summary string `json:"terminal_summary"`
+				}
+				if err := json.Unmarshal([]byte(event.ToolResult.Content), &body); err != nil {
+					t.Fatal(err)
+				}
+				if !strings.HasPrefix(body.Report, "OPENING-PARTIAL-WORK") || !strings.HasSuffix(body.Report, "CLOSING-VERIFIED") || len(body.Report) < 3000 || body.Summary != test.err.Error() {
+					t.Fatal("failed report was replaced by status or tail-truncated")
+				}
+				modelData, err := event.ToolResult.ModelObservationJSON()
+				if err != nil || !strings.Contains(modelData, "OPENING-PARTIAL-WORK") {
+					t.Fatal("parent model lost the persisted report")
+				}
+				found = true
+			}
+			if !found || failed.Result != nil && strings.Contains(failed.Result.Text, "OPENING-PARTIAL-WORK") {
+				t.Fatal("private report missing or promoted into public task text")
 			}
 		})
 	}
@@ -709,21 +739,11 @@ func TestSSHWorkerContinuationPersistsRetainedWorkerNextAction(t *testing.T) {
 			Kind string `json:"kind"`
 			Name string `json:"name"`
 		} `json:"artifacts"`
-		NextAction struct {
-			Kind      string `json:"kind"`
-			Operation string `json:"operation"`
-			WorkerID  string `json:"worker_id"`
-			Default   string `json:"default"`
-			Question  string `json:"question"`
-		} `json:"next_action"`
 	}
 	if err = json.Unmarshal([]byte(result.Content), &completion); err != nil ||
 		completion.WorkerID != "worker-one" || !completion.PersistentWorker ||
 		!reflect.DeepEqual(completion.AppliedSteerIDs, []string{steerID}) ||
-		len(completion.Artifacts) != 1 || completion.Artifacts[0].Kind != "execution_artifact" || completion.Artifacts[0].Name != "requested-result.html" ||
-		completion.NextAction.Kind != "confirm_destroy_worker" || completion.NextAction.Operation != "destroy_worker" ||
-		completion.NextAction.WorkerID != completion.WorkerID || completion.NextAction.Default != "retain" ||
-		!strings.Contains(completion.NextAction.Question, "whether to destroy") {
+		len(completion.Artifacts) != 1 || completion.Artifacts[0].Kind != "execution_artifact" || completion.Artifacts[0].Name != "requested-result.html" {
 		t.Fatalf("completion=%+v err=%v", completion, err)
 	}
 	if len(result.References) != 3 || result.References[0].Kind != "execution_plan" ||

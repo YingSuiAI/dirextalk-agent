@@ -323,6 +323,7 @@ func (p *ProposeIntrinsic) EnableRetainedWorkerManagement(manager RetainedWorker
 type proposeIntrinsicArguments struct {
 	AttachmentIDs           []string `json:"attachment_ids,omitempty"`
 	Intent                  string   `json:"intent"`
+	ResponseMode            string   `json:"response_mode,omitempty"`
 	Objective               string   `json:"objective"`
 	ServerName              string   `json:"server_name,omitempty"`
 	WorkspaceMode           string   `json:"workspace_mode"`
@@ -355,6 +356,7 @@ func (p *ProposeIntrinsic) ResolveIntrinsicTools(ctx context.Context, lease core
 		workspaceModes = []any{string(WorkspaceNone), string(WorkspaceReadOnly), string(WorkspaceWrite)}
 	}
 	properties := map[string]any{
+		"response_mode":              map[string]any{"type": "string", "enum": []any{"reply_to_user", "continue"}, "default": "continue", "description": "Set reply_to_user when this Worker objective covers the entire user request: its concise final answer will be delivered directly without another model call. Use continue (or omit) for a subtask needing subsequent Agent tools, recipient lookup, message sending, or combining other work. Include the requested response language and essential user requirements in objective. Never delegate final reply for a partial objective."},
 		"intent":                     map[string]any{"type": "string", "enum": []any{"execute", "proposal_only"}, "description": "Use execute only when the user wants the workload to run. Use proposal_only when the user explicitly asks for a plan without starting or authorizing Worker work; it returns a non-executing summary and creates no offer, task, confirmation, or execution."},
 		"objective":                  map[string]any{"type": "string", "minLength": 1, "maxLength": coretask.MaxGoalBytes, "description": "Describe only the workload to run on the Worker."},
 		"server_name":                map[string]any{"type": "string", "minLength": 1, "maxLength": 80, "description": "A short user-facing name for a newly created server. Reused servers keep their existing name."},
@@ -781,6 +783,9 @@ func parseProposeIntrinsicArguments(raw json.RawMessage) (proposeIntrinsicArgume
 		return proposeIntrinsicArguments{}, ErrInvalid
 	}
 	arguments.Objective = strings.TrimSpace(arguments.Objective)
+	if arguments.ResponseMode != "" && arguments.ResponseMode != "reply_to_user" && arguments.ResponseMode != "continue" {
+		return proposeIntrinsicArguments{}, ErrInvalid
+	}
 	arguments.ServerName = strings.TrimSpace(arguments.ServerName)
 	arguments.AcceleratorType = strings.ToLower(strings.TrimSpace(arguments.AcceleratorType))
 	if arguments.Intent != "execute" && arguments.Intent != "proposal_only" {

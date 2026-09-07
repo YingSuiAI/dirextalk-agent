@@ -384,6 +384,12 @@ type TurnDispatchStore interface {
 	MarkTurnModelUncertain(context.Context, TurnLease, string, string) error
 }
 
+// TurnWorkerReplyStore commits delegated output only while the exact observed
+// turn event sequence still holds. Concurrent cancellation or steering wins.
+type TurnWorkerReplyStore interface {
+	CommitTurnWorkerReply(context.Context, TurnLease, ChatResponse) (Turn, error)
+}
+
 const TurnFinalizationIntentVersion = 1
 
 type TurnFinalizationReason string
