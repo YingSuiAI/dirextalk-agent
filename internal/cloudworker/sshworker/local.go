@@ -348,8 +348,14 @@ type CommandStatusSource struct {
 }
 
 type remoteRuntimeStatus struct {
-	Phase    string `json:"phase"`
-	ExitCode int    `json:"exit_code"`
+	Phase       string `json:"phase"`
+	ExitCode    int    `json:"exit_code"`
+	FailureCode string `json:"failure_code"`
+	HTTPStatus  int    `json:"http_status"`
+	Activities  []struct {
+		Sequence uint64 `json:"sequence"`
+		Phase    string `json:"phase"`
+	} `json:"activities"`
 }
 
 var errRuntimeNotStarted = errors.New("remote runtime is not started")
@@ -595,7 +601,7 @@ func (executor CommandSSHExecutor) Execute(ctx context.Context, request SSHReque
 	if err != nil {
 		return ExecutionResult{}, err
 	}
-	return ExecutionResult{Summary: fmt.Sprintf("Worker execution exited with code %d", status.ExitCode), Report: strings.TrimSpace(string(reportBody)), ExitCode: status.ExitCode, StdoutBytes: int64(len(reportBody)), StderrBytes: int64(len(logBody)), ArtifactCount: artifactCount,
+	return ExecutionResult{Summary: fmt.Sprintf("Worker execution exited with code %d", status.ExitCode), Report: strings.TrimSpace(string(reportBody)), ExitCode: status.ExitCode, FailureCode: status.FailureCode, HTTPStatus: status.HTTPStatus, StdoutBytes: int64(len(reportBody)), StderrBytes: int64(len(logBody)), ArtifactCount: artifactCount,
 		AppliedSteerIDs: append([]string(nil), appliedSteerIDs...)}, nil
 }
 
@@ -656,6 +662,7 @@ func applyRuntimeGuidance(ctx context.Context, sshPath string, base []string, ta
 
 func (executor CommandSSHExecutor) waitRuntime(ctx context.Context, sshPath string, base []string, protocol RuntimeProtocol, report func(context.Context, string, string) error) (remoteRuntimeStatus, error) {
 	lastProgress := time.Now()
+	var cursor uint64
 	for {
 		command, err := protocol.Status()
 		if err != nil {
@@ -668,6 +675,20 @@ func (executor CommandSSHExecutor) waitRuntime(ctx context.Context, sshPath stri
 		var status remoteRuntimeStatus
 		if json.Unmarshal(body, &status) != nil {
 			return remoteRuntimeStatus{}, ErrInvalid
+		}
+		if report != nil {
+			for _, activity := range status.Activities {
+				if activity.Sequence <= cursor {
+					continue
+				}
+				if validWorkerActivityPhase(activity.Phase) {
+					if err := report(ctx, activity.Phase, activity.Phase); err != nil {
+						return remoteRuntimeStatus{}, err
+					}
+					lastProgress = time.Now()
+				}
+				cursor = activity.Sequence
+			}
 		}
 		switch status.Phase {
 		case "completed", "failed":
@@ -690,6 +711,14 @@ func (executor CommandSSHExecutor) waitRuntime(ctx context.Context, sshPath stri
 		case <-timeAfter(2):
 		}
 	}
+}
+
+func validWorkerActivityPhase(phase string) bool {
+	switch phase {
+	case "worker_waiting_model", "worker_thinking", "worker_responding", "worker_reading", "worker_editing", "worker_command", "worker_searching", "worker_delegating", "worker_running_tool", "worker_tool_complete", "worker_tool_failed", "worker_model_failed":
+		return true
+	}
+	return false
 }
 
 func (executor CommandSSHExecutor) collectRuntimeArtifacts(ctx context.Context, sshPath string, base []string, request SSHRequest, maxArtifactBytes int64) (int, error) {

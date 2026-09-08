@@ -39,7 +39,10 @@ func TestEmbeddedWorkerReportSeparatesFinalReplyAndDiagnostics(t *testing.T) {
 		t.Fatalf("build: %v %s", err, out)
 	}
 	write(filepath.Join(bin, "systemd-run"), "#!/bin/sh\nwhile [ \"$#\" -gt 0 ]; do\n case \"$1\" in */pi) exec \"$@\" ;; esac\n shift\ndone\nexit 64\n", 0700)
-	write(pi, "#!/bin/sh\nprintf '网站已经完成 OPENING '\nprintf '%s' \"$DIREXTALK_MODEL_API_KEY\"\nprintf ' 末尾验证 CLOSING'\nprintf 'PRIVATE-DIAGNOSTIC %s' \"$DIREXTALK_MODEL_API_KEY\" >&2\n", 0700)
+	eventScript := func(text string) string {
+		body, _ := json.Marshal(map[string]any{"type": "message_end", "message": map[string]any{"role": "assistant", "stopReason": "stop", "content": []any{map[string]any{"type": "text", "text": text}}}})
+		return "#!/bin/sh\nprintf '%s\\n' " + shellQuote(`{"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","delta":"PRIVATE-THOUGHT"}}`) + " " + shellQuote(`{"type":"tool_execution_start","toolName":"read","args":{"path":"PRIVATE-ARGUMENT"}}`) + " " + shellQuote(`{"type":"tool_execution_end","toolName":"read","result":{"content":"PRIVATE-OUTPUT"},"isError":false}`) + " " + shellQuote(string(body)) + "\nprintf 'PRIVATE-DIAGNOSTIC %s' \"$DIREXTALK_MODEL_API_KEY\" >&2\n"
+	}
 	env := append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"))
 	run := func(args ...string) []byte {
 		t.Helper()
@@ -55,7 +58,7 @@ func TestEmbeddedWorkerReportSeparatesFinalReplyAndDiagnostics(t *testing.T) {
 		}
 		return out
 	}
-	for _, taskID := range []string{"ordinary", "bounded"} {
+	for _, taskID := range []string{"ordinary", "bounded", "balance"} {
 		t.Run(taskID, func(t *testing.T) {
 			taskRoot := filepath.Join(root, "tasks", taskID)
 			if err := os.MkdirAll(filepath.Join(taskRoot, "workspace"), 0700); err != nil {
@@ -63,8 +66,13 @@ func TestEmbeddedWorkerReportSeparatesFinalReplyAndDiagnostics(t *testing.T) {
 			}
 			write(filepath.Join(taskRoot, "spec.json"), `{"task_id":"`+taskID+`","workload":"job","model":"test","max_runtime_seconds":5}`, 0600)
 			write(filepath.Join(taskRoot, "objective.txt"), "make a website", 0600)
+			text := "网站已经完成 OPENING private-model-key 末尾验证 CLOSING"
 			if taskID == "bounded" {
-				write(pi, "#!/bin/sh\nprintf 'OPENING'\ni=0; while [ \"$i\" -lt 7000 ]; do printf '中间'; i=$((i+1)); done\nprintf 'CLOSING'\n", 0700)
+				text = "OPENING" + strings.Repeat("中间", 7000) + "CLOSING"
+			}
+			write(pi, eventScript(text), 0700)
+			if taskID == "balance" {
+				write(pi, "#!/bin/sh\nprintf '%s\\n' "+shellQuote(`{"type":"message_end","message":{"role":"assistant","stopReason":"error","errorMessage":"402: Insufficient Balance","content":[]}}`)+"\n", 0700)
 			}
 			run("start", taskID)
 			deadline := time.Now().Add(8 * time.Second)
@@ -76,7 +84,7 @@ func TestEmbeddedWorkerReportSeparatesFinalReplyAndDiagnostics(t *testing.T) {
 					t.Fatal(err)
 				}
 				if status.Phase != "running" {
-					if status.Phase != "completed" {
+					if taskID != "balance" && status.Phase != "completed" || taskID == "balance" && status.Phase != "failed" {
 						t.Fatalf("phase=%s", status.Phase)
 					}
 					break
@@ -88,6 +96,25 @@ func TestEmbeddedWorkerReportSeparatesFinalReplyAndDiagnostics(t *testing.T) {
 			}
 			report := string(run("report", taskID))
 			log := string(run("log", taskID, "0"))
+			statusBody := run("status", taskID)
+			for _, secret := range []string{"PRIVATE-THOUGHT", "PRIVATE-ARGUMENT", "PRIVATE-OUTPUT"} {
+				if strings.Contains(report+log+string(statusBody), secret) {
+					t.Fatalf("private event content persisted: %s", secret)
+				}
+			}
+			if taskID == "balance" {
+				var status struct {
+					Code string `json:"failure_code"`
+					HTTP int    `json:"http_status"`
+				}
+				if json.Unmarshal(statusBody, &status) != nil || status.Code != "provider_request_failed" || status.HTTP != 402 || report != "" {
+					t.Fatalf("balance classification lost: %s", statusBody)
+				}
+				return
+			}
+			if !strings.Contains(string(statusBody), "worker_thinking") || !strings.Contains(string(statusBody), "worker_reading") || !strings.Contains(string(statusBody), "worker_tool_complete") {
+				t.Fatalf("activity history lost: %s", statusBody)
+			}
 			if strings.Contains(report, "PRIVATE-DIAGNOSTIC") || strings.Contains(report+log, "private-model-key") || strings.Contains(log, "OPENING") {
 				t.Fatalf("channels/secrets mixed: report=%q log=%q", report, log)
 			}

@@ -308,6 +308,8 @@ type ResultSink interface {
 	StoreArtifact(context.Context, string, io.Reader, int64) error
 }
 type ExecutionResult struct {
+	FailureCode              string
+	HTTPStatus               int
 	WorkerID                 string
 	Summary                  string
 	Report                   string

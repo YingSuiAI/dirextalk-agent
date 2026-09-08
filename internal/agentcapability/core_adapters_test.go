@@ -1132,6 +1132,26 @@ func TestDurableWorkerProgressProjectsPhaseOnExistingStatusEvent(t *testing.T) {
 	}
 }
 
+func TestPublicModelAndWorkerActivityNeverContainsProviderText(t *testing.T) {
+	turn := coreconversation.Turn{ID: uuid.NewString(), RequestID: uuid.NewString(), ConversationID: uuid.NewString()}
+	for _, kind := range []coreconversation.TurnEventKind{coreconversation.TurnEventModelStatus, coreconversation.TurnEventWorkerStatus} {
+		event := coreconversation.TurnEvent{Kind: kind, Revision: 1, CreatedAt: time.Now().UTC(), Phase: "model_thinking"}
+		if kind == coreconversation.TurnEventWorkerStatus {
+			event.Phase = "worker_reading"
+			event.Status = "running"
+			event.ExecutionID = uuid.NewString()
+		}
+		body, err := ProjectDurableTurnEventJSON(turn, event)
+		if err != nil || !strings.Contains(string(body), event.Phase) {
+			t.Fatalf("activity=%s err=%v", body, err)
+		}
+		event.Text = "PRIVATE REASONING OR COMMAND"
+		if _, err := ProjectDurableTurnEventJSON(turn, event); err == nil {
+			t.Fatal("arbitrary text was accepted as activity")
+		}
+	}
+}
+
 func TestDurableMemoryWarningProjectsClosedSafeProgress(t *testing.T) {
 	turn := coreconversation.Turn{ID: uuid.NewString(), RequestID: uuid.NewString(), ConversationID: uuid.NewString()}
 	event := coreconversation.NewMemoryRecallDegradedTurnEvent()

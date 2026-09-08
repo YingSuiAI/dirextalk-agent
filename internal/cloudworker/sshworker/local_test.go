@@ -89,6 +89,25 @@ esac
 	}
 }
 
+func TestCommandSSHExecutorPreservesFailureAndActivityFromRealStatusConsumer(t *testing.T) {
+	state := t.TempDir()
+	ssh := writeFakeSSH(t, state, `
+case "$remote" in
+ *"'status'"*) printf '%s\n' '{"phase":"failed","exit_code":1,"failure_code":"provider_request_failed","http_status":402,"activities":[{"sequence":1,"phase":"worker_thinking"},{"sequence":2,"phase":"worker_reading"},{"sequence":3,"phase":"SECRET UNTRUSTED TEXT"},{"sequence":4,"phase":"worker_model_failed"}]}' ;;
+ *"'log'"*) printf 'private diagnostic' ;;
+ *"'report'"*|*"'artifact'"*) exit 0 ;;
+ *) exit 64 ;;
+esac
+`)
+	request := sshRequestFixture(t, &recordingResultSink{artifacts: make(map[string][]byte)})
+	var phases []string
+	request.ReportProgress = func(_ context.Context, phase, _ string) error { phases = append(phases, phase); return nil }
+	result, err := (CommandSSHExecutor{SSHPath: ssh}).Execute(context.Background(), request)
+	if err != nil || result.FailureCode != "provider_request_failed" || result.HTTPStatus != 402 || result.ExitCode != 1 || !strings.Contains(strings.Join(phases, ","), "worker_reading") || strings.Contains(strings.Join(phases, ","), "SECRET") {
+		t.Fatalf("result=%+v phases=%v err=%v", result, phases, err)
+	}
+}
+
 func TestCommandSSHExecutorNeverRestartsAfterRemoteCompletionReceipt(t *testing.T) {
 	state := t.TempDir()
 	ssh := writeFakeSSH(t, state, `

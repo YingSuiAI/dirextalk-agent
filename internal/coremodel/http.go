@@ -45,7 +45,9 @@ type providerHTTPStatusError struct {
 	retryAfter time.Duration
 }
 
-func (e *providerHTTPStatusError) Error() string { return ErrProviderUnavailable.Error() }
+func (e *providerHTTPStatusError) Error() string {
+	return HTTPFailureDetails(e.statusCode).Message("en")
+}
 func (e *providerHTTPStatusError) Unwrap() []error {
 	var kind error
 	switch {
@@ -133,7 +135,7 @@ func SafeFailureClass(err error) string {
 	}
 	var statusErr *providerHTTPStatusError
 	if errors.As(err, &statusErr) {
-		return fmt.Sprintf("provider_http_%dxx", statusErr.statusCode/100)
+		return fmt.Sprintf("provider_http_%d", statusErr.statusCode)
 	}
 	switch {
 	case errors.Is(err, ErrProviderTimeout), errors.Is(err, ErrStreamIdleTimeout), errors.Is(err, context.DeadlineExceeded):

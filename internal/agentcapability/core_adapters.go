@@ -992,6 +992,12 @@ func ProjectDurableTurnEventJSON(turn coreconversation.Turn, event coreconversat
 	var projected durableChatStreamEvent
 	var err error
 	switch event.Kind {
+	case coreconversation.TurnEventModelStatus:
+		if event.ValidateModelStatusAuthority() != nil {
+			return nil, coreconversation.ErrChatFailed
+		}
+		projected, err = projectDurableChatStreamEvent(turn, event.Revision, coreconversation.StreamEvent{Kind: coreconversation.StreamEventKind(event.Kind), RequestID: turn.RequestID, ConversationID: turn.ConversationID, Phase: event.Phase})
+		projected.CreatedAt = event.CreatedAt.UTC().Format(time.RFC3339Nano)
 	case coreconversation.TurnEventWaitingConfirmation:
 		projected, err = projectDurableWaitingConfirmationEvent(turn, event)
 	case coreconversation.TurnEventWorkerStatus:

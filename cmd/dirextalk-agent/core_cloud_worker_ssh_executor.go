@@ -233,6 +233,7 @@ func (executor *sshWorkerExecutor) Execute(ctx context.Context, request sshflow.
 			return executor.resolveDeferredWorkerGuidance(guidanceCtx, request)
 		}, ReportProgress: request.ReportProgress, Finalize: finalize})
 	workerResult := sshflow.Result{ExitCode: result.ExitCode, WorkerID: result.WorkerID}
+	workerResult.FailureCode, workerResult.HTTPStatus = result.FailureCode, result.HTTPStatus
 	workerResult.Report, workerResult.ServiceVerification = result.Report, result.ServiceVerification
 	workerResult.ServiceURL = result.ServiceURL
 	workerResult.AppliedSteerIDs = append([]string(nil), result.AppliedSteerIDs...)
@@ -254,6 +255,9 @@ func (executor *sshWorkerExecutor) Execute(ctx context.Context, request sshflow.
 		return workerResult, err
 	}
 	if result.ExitCode != 0 {
+		if workerResult.FailureCode == "" {
+			workerResult.FailureCode = "worker_execution_failed"
+		}
 		return workerResult, fmt.Errorf("remote Worker exited with code %d", result.ExitCode)
 	}
 	return workerResult, nil

@@ -101,9 +101,10 @@ func TestSafeFailureClassDistinguishesProviderFailureKinds(t *testing.T) {
 		class  string
 		kind   error
 	}{
-		{name: "rejected", status: http.StatusBadRequest, class: "provider_http_4xx", kind: ErrProviderRejected},
-		{name: "rate limited", status: http.StatusTooManyRequests, class: "provider_http_4xx", kind: ErrProviderRateLimited},
-		{name: "server", status: http.StatusServiceUnavailable, class: "provider_http_5xx", kind: ErrProviderServerFailure},
+		{name: "rejected", status: http.StatusBadRequest, class: "provider_http_400", kind: ErrProviderRejected},
+		{name: "balance", status: http.StatusPaymentRequired, class: "provider_http_402", kind: ErrProviderRejected},
+		{name: "rate limited", status: http.StatusTooManyRequests, class: "provider_http_429", kind: ErrProviderRateLimited},
+		{name: "server", status: http.StatusServiceUnavailable, class: "provider_http_503", kind: ErrProviderServerFailure},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			profile := validProfile(ProviderOpenAICompatible, "https://example.test", "private-key")

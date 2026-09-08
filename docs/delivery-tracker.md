@@ -9,6 +9,16 @@ contract](message-server-integration-development-contract.md), and
 
 ## Implemented at HEAD
 
+- Public errors retain semantic type and HTTP status instead of `4xx`/exit-code
+  collapse; balance, auth, permissions, request/context limits, rate limits,
+  timeout and service failures remain actionable without another model call.
+  Ordinary model progress and Worker Pi activity share replayable turn events,
+  with no raw reasoning/tool input/output in public progress. Pi JSON events
+  are parsed by the real embedded runner into bounded activity and terminal
+  report/error fields, including error messages with a zero process exit code.
+  Focused runner, status consumer, conversation, projection and PostgreSQL
+  handler/restart tests cover the data path; real-provider quality and production
+  deployment are not claimed by these local tests.
 - Worker maintenance is separated from machine creation: `cloud_worker_run`
   resolves an existing target from context/inventory (or a unique owned Worker),
   runs without a creation confirmation, and never falls through to new-machine

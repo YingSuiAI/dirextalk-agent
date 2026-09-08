@@ -1008,12 +1008,22 @@ retained intent failed and destroyable instead of retrying provisioning.
 The first accepted SSH host key is retained beside the Worker private key in an
 owner-owned 0600 `known_hosts` file; subsequent status, execution, and
 observation connections use that same pin, and key deletion removes both.
+Ordinary Native conversations expose `model_status` activity from observed
+provider payload categories; tools keep their existing public call/result
+events. Clients render activity separately from final text and never use it as
+execution authority. Raw model reasoning remains private.
 The existing Task event stream and originating turn `worker_status` event
 report environment preparation, Worker selection/provisioning, connection,
 remote execution (including periodic durable updates while it remains
 running), result collection, and service verification before the
 terminal event. The turn event keeps coarse status as authority and carries
-only an optional phase enum for client localization. Remote finite execution runs
+only an optional phase enum for client localization. The Pi runner consumes
+JSON-mode events to add waiting/model/file-read/file-edit/command/tool-completion
+and tool/model-failure activity, bounded to 64 transitions in the status read.
+Specific provider error codes and exact HTTP status survive the Worker result,
+task failure, and final answer even when a model cannot generate an explanation.
+Balance/auth/configuration failures requiring user action are not retried merely
+to summarize the error. Remote finite execution runs
 inside a task-named systemd scope; timeout cancellation stops that scope so
 session-changing descendants cannot continue after the task is terminal.
 

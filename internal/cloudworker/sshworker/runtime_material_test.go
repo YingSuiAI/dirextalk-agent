@@ -310,7 +310,7 @@ func TestEmbeddedRemoteRunnerBuilds(t *testing.T) {
 		t.Fatal(err)
 	}
 	escaped := filepath.Join(root, "escaped-after-timeout")
-	piScript := "#!/bin/sh\nprintf 'internal worker report\\n'\nsetsid sh -c 'sleep 2; touch " + escaped + "' >/dev/null 2>&1 &\nsleep 5\n"
+	piScript := "#!/bin/sh\nprintf '%s\\n' " + shellQuote(`{"type":"message_end","message":{"role":"assistant","stopReason":"stop","content":[{"type":"text","text":"internal worker report"}]}}`) + "\nsetsid sh -c 'sleep 2; touch " + escaped + "' >/dev/null 2>&1 &\nsleep 5\n"
 	if err = os.WriteFile(filepath.Join(runtimeRoot, "pi"), []byte(piScript), 0o700); err != nil {
 		t.Fatal(err)
 	}

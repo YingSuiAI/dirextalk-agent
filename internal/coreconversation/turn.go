@@ -20,6 +20,15 @@ import (
 
 type TurnState string
 
+const TurnEventModelStatus TurnEventKind = "model_status"
+
+func (e TurnEvent) ValidateModelStatusAuthority() error {
+	if e.Kind != TurnEventModelStatus || (e.Phase != "model_thinking" && e.Phase != "model_generating" && e.Phase != "model_planning_tool") || e.Text != "" || e.ToolCall != nil || e.ToolResult != nil || e.Message != nil || e.Response != nil || e.ErrorCode != "" || e.ErrorSummary != "" || e.ExecutionID != "" {
+		return ErrInvalid
+	}
+	return nil
+}
+
 const (
 	TurnAccepted            TurnState = "accepted"
 	TurnRunning             TurnState = "running"
@@ -182,6 +191,8 @@ func (e TurnEvent) ValidateWorkerStatusAuthority() error {
 	if e.Status == "running" {
 		switch e.Phase {
 		case "", "preparing_environment", "provisioning_worker", "connecting_worker", "executing_remote_task", "collecting_result", "verifying_service":
+			validPhase = true
+		case "worker_waiting_model", "worker_thinking", "worker_responding", "worker_reading", "worker_editing", "worker_command", "worker_searching", "worker_delegating", "worker_running_tool", "worker_tool_complete", "worker_tool_failed", "worker_model_failed":
 			validPhase = true
 		}
 	}

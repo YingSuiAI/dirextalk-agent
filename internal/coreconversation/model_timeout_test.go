@@ -659,7 +659,7 @@ func TestModelDispatchFailureClassification(t *testing.T) {
 	}
 	_, failure := client.Stream(context.Background(), coremodel.CompletionRequest{Messages: []coremodel.Message{{Role: coremodel.RoleUser, Content: "hello"}}})
 	code, summary = classifyModelDispatchFailure(failure)
-	if code != modelProviderRejectedCode || summary != modelProviderRejectedSummary {
+	if code != "model_request_invalid" || !strings.Contains(summary, "HTTP 400") {
 		t.Fatalf("4xx code=%q summary=%q failure=%v", code, summary, failure)
 	}
 }

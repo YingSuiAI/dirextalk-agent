@@ -9,7 +9,7 @@ import (
 // the short public task summary. The embedded runner uses this exact limit.
 const MaxWorkerReportBytes = 32 << 10
 
-var remoteRunnerSource = strings.Replace(remoteRunnerTemplate, "{{REPORT_LIMIT}}", strconv.Itoa(MaxWorkerReportBytes), 1)
+var remoteRunnerSource = strings.Replace(remoteRunnerTemplate, "{{REPORT_LIMIT}}", strconv.Itoa(MaxWorkerReportBytes), 1) + remotePiSource
 
 // remoteRunnerSource is compiled on the official base host during bootstrap.
 // It intentionally uses only the Go standard library so there is no separate
@@ -29,6 +29,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -86,6 +87,9 @@ type serviceRuntimeStatus struct {
 }
 
 type taskStatus struct {
+	FailureCode string ` + "`json:\"failure_code,omitempty\"`" + `
+	HTTPStatus int ` + "`json:\"http_status,omitempty\"`" + `
+	Activities []runtimeActivity ` + "`json:\"activities,omitempty\"`" + `
 	TaskID string ` + "`json:\"task_id\"`" + `
 	Workload string ` + "`json:\"workload\"`" + `
 	Phase string ` + "`json:\"phase\"`" + `
@@ -187,7 +191,7 @@ func run(taskID string) error {
 	}
 	tools := "read,bash,edit,write,grep,find,ls"
 	if spec.EnableSubagent { tools += ",subagent" }
-	piArguments := []string{"--mode", "text", "--print", "--no-session", "--provider", "dirextalk-worker", "--model", spec.Model, "--thinking", "medium", "--tools", tools, "--no-extensions"}
+	piArguments := []string{"--mode", "json", "--print", "--no-session", "--provider", "dirextalk-worker", "--model", spec.Model, "--thinking", "medium", "--tools", tools, "--no-extensions"}
 	if spec.EnableSubagent { piArguments = append(piArguments, "-e", filepath.Join(root, "pi-config", "extensions", "dirextalk-subagent", "extension.ts")) }
 	piArguments = append(piArguments, "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-approve", "--system-prompt", prompt)
 	unit := "dirextalk-worker-" + taskID + ".scope"
@@ -203,14 +207,18 @@ func run(taskID string) error {
 	command.Env = append(withoutGitHubTokenEnv(os.Environ()), "PI_CODING_AGENT_DIR="+filepath.Join(root, "pi-config"), "PI_TELEMETRY=0", "NO_COLOR=1", "TERM=dumb", "DIREXTALK_WORKER_MODEL="+spec.Model)
 	if err := configureGitHubRuntime(taskRoot, command); err != nil { return finish(taskID, current, 1, err) }
 	pat, err := os.ReadFile(taskPath(taskID, "github-pat")); if os.IsNotExist(err) { pat = nil } else if err != nil { return finish(taskID, current, 1, err) }; defer clear(pat)
-	report := &reportWriter{}
-	stdout := &redactingWriter{writer: report, secret: pat}; stderr := &redactingWriter{writer: os.Stderr, secret: pat}
+	progress := &piEventWriter{taskID:taskID}
+	progress.activity("worker_waiting_model")
+	stdout := &redactingWriter{writer: progress, secret: pat}; stderr := &redactingWriter{writer: os.Stderr, secret: pat}
 	modelSecret := []byte(os.Getenv("DIREXTALK_MODEL_API_KEY")); defer clear(modelSecret)
 	modelStdout := &redactingWriter{writer: stdout, secret: modelSecret}; modelStderr := &redactingWriter{writer: stderr, secret: modelSecret}
 	command.Stdout = modelStdout; command.Stderr = modelStderr
 	err = command.Run(); code := 0
 	flushErr := errors.Join(modelStdout.Flush(), modelStderr.Flush(), stdout.Flush(), stderr.Flush())
-	reportErr := saveReport(taskID, report.Text())
+	protocolErr := progress.finish()
+	current.FailureCode,current.HTTPStatus=progress.failureCode,progress.httpStatus
+	if protocolErr!=nil && err==nil {err=protocolErr}
+	reportErr := saveReport(taskID, progress.report.Text())
 	if err == nil { err = errors.Join(flushErr, reportErr) }
 	if errors.Is(runContext.Err(), context.DeadlineExceeded) { code, err = 124, errors.New("maximum runtime exceeded")
 	} else if err != nil { code = 1; var exit *exec.ExitError; if errors.As(err, &exit) { code = exit.ExitCode() } }
@@ -259,6 +267,8 @@ func serviceStatus(taskID string) error {
 }
 
 func finish(taskID string, current taskStatus, code int, runErr error) error {
+	if code==124 { current.FailureCode="worker_runtime_timeout" }
+	if code!=0 && current.FailureCode=="" {current.FailureCode="worker_execution_failed"}
 	current.ExitCode, current.FinishedAt = code, time.Now().UTC().Format(time.RFC3339)
 	if code == 0 { current.Phase = "completed" } else { current.Phase = "failed" }
 	if err := saveStatus(taskID, current); err != nil { return err }
@@ -296,6 +306,8 @@ func status(taskID string) error {
 	if os.IsNotExist(err) { return json.NewEncoder(os.Stdout).Encode(taskStatus{TaskID: taskID, Phase: "not_started"}) }
 	if err != nil { return err }
 	if value.Phase == "running" && !alive(value.PID) { value.Phase = "failed"; value.ExitCode = 1; value.FinishedAt = time.Now().UTC().Format(time.RFC3339); _ = saveStatus(taskID, value) }
+	var activities []runtimeActivity
+	if body,readErr:=os.ReadFile(taskPath(taskID,"activity.json"));readErr==nil && len(body)<=64<<10 && json.Unmarshal(body,&activities)==nil {value.Activities=activities}
 	return json.NewEncoder(os.Stdout).Encode(value)
 }
 

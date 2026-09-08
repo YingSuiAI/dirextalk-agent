@@ -6,6 +6,7 @@ package sshflow
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -68,6 +69,8 @@ type Artifact struct {
 }
 
 type Result struct {
+	FailureCode         string
+	HTTPStatus          int
 	Summary             string
 	Report              string
 	ServiceVerification string
@@ -151,6 +154,15 @@ func (handler *Handler) Handle(ctx context.Context, task coretask.Task) corerunt
 		}
 		code := "ssh_worker_failed"
 		summary := boundedSummary(executeErr.Error())
+		if details, ok := coremodel.FailureFromCode(result.FailureCode); ok {
+			if result.HTTPStatus >= 400 && result.HTTPStatus <= 599 {
+				details = coremodel.HTTPFailureDetails(result.HTTPStatus)
+			}
+			code, summary = details.Code, details.Message("en")
+			if code == "worker_execution_failed" {
+				summary += fmt.Sprintf(" Exit code: %d.", result.ExitCode)
+			}
+		}
 		var quotaFailure *sshworker.QuotaError
 		if errors.As(executeErr, &quotaFailure) {
 			code = quotaFailure.FailureCode()

@@ -444,6 +444,7 @@ func sshWorkerContinuation(dispatch *core.ModelRunResult, plan cloudworker.Plan,
 		"execution_id": plan.ExecutionID, "status": terminal, "worker_id": result.WorkerID,
 		"persistent_worker": true, "worker_report": result.Report, "artifacts": deliverables,
 		"terminal_summary": summary, "exit_code": result.ExitCode,
+		"failure_code": result.FailureCode, "http_status": result.HTTPStatus,
 		"service_verification": result.ServiceVerification,
 		"service_url":          result.ServiceURL,
 		"cost_evidence":        sshWorkerCostEvidence(plan), "artifacts_omitted": omitted}

@@ -1426,6 +1426,13 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			_, _ = s.turns.FailTurn(ctx, lease, "turn_commit_failed", "conversation final response could not be committed")
 		}
 	}
+	if finalizing {
+		_, _, _, _, results := turnToolMetadata(conv.Messages[persistedMessageCount:])
+		if details, ok := workerModelFailure(results); ok && details.RequiresUserAction() {
+			commitFallback(finalization, details.Code, details.Message(ResponseLanguage(turn.Prompt)))
+			return
+		}
+	}
 	if finalizing && (turn.DispatchState == "dispatched" || turn.DispatchState == "uncertain") {
 		code, summary := turn.TerminalCode, turn.TerminalSummary
 		if turn.DispatchState == "dispatched" && !turn.ModelDispatchStartedAt.IsZero() {
@@ -1774,8 +1781,22 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			var callbackErr error
 			modelRequest := frozenModelRequest
 			modelRequest.ToolCallFormatRecovery = formatRecovery
+			seenModelPhases := map[string]bool{}
 			result, runErr := s.runModel(dispatchCtx, modelRequest, func(delta ModelDelta) error {
 				deadlineGuard.observe(delta)
+				phase := ""
+				switch {
+				case delta.ToolCall != nil || delta.ProviderProgress:
+					phase = "model_planning_tool"
+				case delta.Text != "" || delta.PrivateProgress:
+					phase = "model_generating"
+				case strings.TrimSpace(delta.ReasoningContent) != "":
+					phase = "model_thinking"
+				}
+				if phase != "" && !seenModelPhases[phase] && child.Err() == nil {
+					seenModelPhases[phase] = true
+					_, _ = s.turns.AppendTurnEvent(ctx, id, TurnEvent{Kind: TurnEventModelStatus, Phase: phase})
+				}
 				if nonemptyProviderPayload(delta) {
 					providerPayload = true
 				}
@@ -1876,6 +1897,10 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 						return
 					}
 					if !wasFinalizing {
+						if details, ok := coremodel.ProviderFailureDetails(out.err); ok && details.RequiresUserAction() {
+							commitFallback(finalization, code, summary)
+							return
+						}
 						s.executeTurn(ctx, id)
 						return
 					}
@@ -2488,6 +2513,9 @@ func (s *Service) commitTurnFinalizationFallback(ctx context.Context, lease Turn
 	}
 	historyTasks, historyPlans, historyReferences, historySummaries, historyResults := turnToolMetadata(conv.Messages[persistedMessageCount:])
 	content := terminalFallbackMarkdown(partial, lease.Turn.Prompt, historySummaries)
+	if details, ok := coremodel.FailureFromSummary(code, summary); ok && strings.TrimSpace(partial) == "" {
+		content = details.Message(ResponseLanguage(lease.Turn.Prompt))
+	}
 	if strings.TrimSpace(partial) == "" && len(historyResults) > 0 {
 		last := historyResults[len(historyResults)-1]
 		if last.IsError && strings.TrimSpace(last.Summary) != "" {
@@ -2658,6 +2686,9 @@ const (
 )
 
 func classifyModelDispatchFailure(err error) (string, string) {
+	if details, ok := coremodel.ProviderFailureDetails(err); ok && details.HTTPStatus > 0 {
+		return details.Code, details.Message("en")
+	}
 	if errors.Is(err, coremodel.ErrModelToolCallFormatInvalid) {
 		return modelToolCallFormatInvalidCode, modelToolCallFormatInvalidSummary
 	}

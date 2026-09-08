@@ -1448,6 +1448,8 @@ func (s *CoreConversationStore) MarkTurnModelAttemptUncertain(ctx context.Contex
 
 func validateDurableTurnEventAuthority(event core.TurnEvent) error {
 	switch event.Kind {
+	case core.TurnEventModelStatus:
+		return event.ValidateModelStatusAuthority()
 	case core.TurnEventWaitingConfirmation:
 		return event.ValidateWaitingConfirmationAuthority()
 	case core.TurnEventWorkerStatus:

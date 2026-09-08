@@ -7,6 +7,29 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 )
 
+func workerModelFailure(results []ToolResult) (coremodel.FailureDetails, bool) {
+	for i := len(results) - 1; i >= 0; i-- {
+		r := results[i]
+		if !coremodel.IsCloudWorkerExecutionTool(r.ToolName) || r.Validate() != nil {
+			continue
+		}
+		var body struct {
+			Schema string `json:"schema"`
+			Status string `json:"status"`
+			Code   string `json:"failure_code"`
+			HTTP   int    `json:"http_status"`
+		}
+		if json.Unmarshal([]byte(r.Content), &body) != nil || body.Schema != "dirextalk.ssh-worker-completion/v1" || body.Status != "failed" {
+			return coremodel.FailureDetails{}, false
+		}
+		if body.HTTP >= 400 && body.HTTP <= 599 {
+			return coremodel.HTTPFailureDetails(body.HTTP), true
+		}
+		return coremodel.FailureFromCode(body.Code)
+	}
+	return coremodel.FailureDetails{}, false
+}
+
 // A Worker outcome proves the remote execution, not the rest of the user's
 // request. Deterministic fallback never promotes partial model prose or the
 // internal Worker report into evidence that a follow-up mutation succeeded.
@@ -20,12 +43,30 @@ func workerOutcomeFallback(results []ToolResult, prompt string) (string, bool) {
 			Schema      string `json:"schema"`
 			Status      string `json:"status"`
 			ExecutionID string `json:"execution_id"`
+			FailureCode string `json:"failure_code"`
+			HTTPStatus  int    `json:"http_status"`
 		}
 		if json.Unmarshal([]byte(result.Content), &outcome) != nil || outcome.Schema != "dirextalk.ssh-worker-completion/v1" ||
 			!validUUID(outcome.ExecutionID) || (outcome.Status != "succeeded" && outcome.Status != "failed") {
 			continue
 		}
 		language := ResponseLanguage(prompt)
+		if outcome.Status == "failed" {
+			details, ok := coremodel.FailureFromCode(outcome.FailureCode)
+			if outcome.HTTPStatus >= 400 && outcome.HTTPStatus <= 599 {
+				details = coremodel.HTTPFailureDetails(outcome.HTTPStatus)
+				ok = true
+			}
+			if ok {
+				content := details.Message(language)
+				if language == "zh" {
+					content += "\n\n任务未完成；原 Worker 已保留，运行资源可能继续计费。"
+				} else {
+					content += "\n\nThe task is incomplete. The original Worker is retained and may keep incurring charges."
+				}
+				return content, true
+			}
+		}
 		completed := "Worker execution " + outcome.Status + "."
 		if language == "zh" {
 			if outcome.Status == "succeeded" {

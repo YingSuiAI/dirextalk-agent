@@ -1172,12 +1172,12 @@ func TestExecuteTurnDurableUsesStreamingPathBeyondLegacyTotalWindow(t *testing.T
 	if elapsed < model.delay || elapsed <= simulatedLegacyTotalWindow {
 		t.Fatalf("durable streaming elapsed=%s delay=%s legacy_window=%s", elapsed, model.delay, simulatedLegacyTotalWindow)
 	}
-	if len(store.events) != 4 || store.events[0].Kind != TurnEventAccepted || store.events[1].Kind != TurnEventStarted ||
-		store.events[2].Kind != TurnEventDelta || store.events[2].Text != "intermediate-only delta" || store.events[3].Kind != TurnEventDone {
+	if len(store.events) != 5 || store.events[0].Kind != TurnEventAccepted || store.events[1].Kind != TurnEventStarted || store.events[2].Kind != TurnEventModelStatus ||
+		store.events[3].Kind != TurnEventDelta || store.events[3].Text != "intermediate-only delta" || store.events[4].Kind != TurnEventDone {
 		t.Fatalf("durable events=%+v", store.events)
 	}
 	replayed, err := store.LoadTurnEvents(context.Background(), turn.ID, 0, 1000)
-	if err != nil || len(replayed) != 4 || replayed[2].Kind != TurnEventDelta || replayed[2].Text != "intermediate-only delta" || replayed[3].Kind != TurnEventDone {
+	if err != nil || len(replayed) != 5 || replayed[3].Kind != TurnEventDelta || replayed[3].Text != "intermediate-only delta" || replayed[4].Kind != TurnEventDone {
 		t.Fatalf("replayed durable events=%+v err=%v", replayed, err)
 	}
 	if strings.Contains(terminal.Response.Message.Content, "intermediate-only delta") {

@@ -209,6 +209,23 @@ or stream after admission. It never cancels the accepted Turn; callers use
   exhausts the existing correction ledger and enters the ordinary
   tools-disabled finalization path, whose client result is useful Markdown in
   `done.message.content`, never an internal directive or configuration JSON.
+- Public progress is separate from final answer content. Ordinary conversations
+  emit bounded `model_status` frames with `phase=model_thinking`,
+  `model_generating`, or `model_planning_tool` when actual provider activity is
+  observed (at most once per phase per dispatch). Existing `tool_call` and
+  `tool_result` frames describe tool execution. These frames retain normal turn
+  identity, revision, sequence and timestamp, but no reasoning, arguments,
+  provider bodies, or transcript content. Clients may replay them into a bounded
+  expandable activity history for both ordinary and Worker conversations.
+- Provider HTTP failures preserve exact status and a public semantic code:
+  authentication (401), balance/payment (402), permission (403), missing model
+  (404), invalid request (400/422), context/input limit (413), rate limit (429),
+  timeout (408/504), and service unavailability (5xx). Logs retain the exact
+  status rather than a coarse `4xx` group. Safe localized fallback text retains
+  the code/status when model-authored explanation is unavailable. Failures
+  requiring changed credentials, balance, permissions or request configuration
+  do not spend another model call merely to explain the rejection. Worker task
+  failure codes and completion evidence carry the same classification.
 - Only ordinary provider execution consumes the admitted model-active time
   budget; tool, sandbox, Worker, and user-confirmation execution or waiting do
   not. Each physical provider dispatch also has three dispatch-local deadlines:
@@ -715,7 +732,13 @@ or stream after admission. It never cancels the accepted Turn; callers use
   `status`. New execution offers still use the separate
   `waiting_confirmation` event. The Worker projection is written in the same
   transaction as `queued`, `provisioning`, `running`, and terminal execution
-  changes; it is not synthesized by polling.
+  changes; it is not synthesized by polling. Runtime activity uses the same
+  event kind with additional closed phases: `worker_waiting_model`,
+  `worker_thinking`, `worker_responding`, `worker_reading`, `worker_editing`,
+  `worker_command`, `worker_searching`, `worker_delegating`,
+  `worker_running_tool`, `worker_tool_complete`, `worker_tool_failed`, and
+  `worker_model_failed`. They come from the actual Pi event stream and are
+  collected through the existing status read, not guessed from elapsed time.
 - Accepting the first turn of an untitled conversation immediately persists a
   deterministic, normalized, bounded prompt-prefix title. Successful first-turn
   title generation may replace that provisional value; later user titles are
@@ -1079,8 +1102,13 @@ the bytes remaining after reports and logs. The proposal's estimated runtime cov
 environment setup,
 dependencies, model execution, the full requested active run or observation
 duration, result collection, and reasonable margin rather than treating an
-explicitly requested duration as the whole execution budget. Pi text/print mode
-returns its last assistant answer on stdout, separately from stderr diagnostics.
+explicitly requested duration as the whole execution budget. Pi JSON/print mode
+returns typed events; the runner extracts only the terminal assistant text,
+safe activity categories, and classified failure/status. Raw events, provider
+reasoning, tool arguments and outputs are not persisted as public progress.
+The runner retains the latest 64 activity transitions; terminal report and
+diagnostic stderr remain separate. A failed model message is a failure even
+when Pi's JSON-mode process exits zero.
 The private report is bounded to 32 KiB with UTF-8-safe head/tail retention and
 an explicit truncation marker; the short task/error summary remains separate.
 Failure preserves available report text in the existing completion tool data,

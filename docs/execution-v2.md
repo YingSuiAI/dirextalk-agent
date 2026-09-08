@@ -152,8 +152,16 @@ Candidate validation and rollback protect the existing config on exposure errors
 
 ## Results and artifacts
 
-Pi's pinned text/print mode produces its final assistant answer only. The runner
-captures redacted stdout separately from diagnostic stderr, with a 32 KiB
+Pi's pinned JSON/print mode provides typed model/tool activity and terminal
+messages. The runner extracts only final assistant text, closed progress phase
+names, and a safe failure code/HTTP status. It never persists thinking text,
+tool arguments, raw tool results or arbitrary activity text into public progress.
+The latest 64 activity transitions are returned through the existing `status`
+SSH command and persisted into normal Task/turn events. A model error message
+fails the task even if the process exit code is zero. Balance, authentication,
+permission, rate limit, context, timeout and unavailable-service failures remain
+distinct through task failure, restart, and final chat presentation. The runner
+captures redacted final text separately from diagnostic stderr, with a 32 KiB
 UTF-8-safe head/tail bound and explicit truncation marker. Its internal `report`
 SSH action reads that private text; logs never become a substitute report.
 The Agent's normal task bootstrap compiles this embedded runner; no independent
