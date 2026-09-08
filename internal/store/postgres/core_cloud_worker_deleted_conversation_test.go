@@ -85,7 +85,7 @@ func newPGCloudWorkerHarnessWithResponseMode(t *testing.T, mode string) *pgCloud
 	return newPGCloudWorkerHarnessForTool(t, mode, coremodel.IntrinsicCloudWorkerProposeToolName)
 }
 
-func newPGCloudWorkerHarnessForTool(t *testing.T, mode, toolName string) *pgCloudWorkerHarness {
+func newPGCloudWorkerHarnessForTool(t *testing.T, mode, toolName string, prepare ...func(context.Context, *CoreConversationStore, *core.TurnStartCommand)) *pgCloudWorkerHarness {
 	t.Helper()
 	ctx, store, profileID, cleanup := corePG18Fixture(t)
 	now := time.Now().UTC().Truncate(time.Microsecond)
@@ -102,6 +102,9 @@ func newPGCloudWorkerHarnessForTool(t *testing.T, mode, toolName string) *pgClou
 	turnCommand := core.TurnStartCommand{RequestID: uuid.NewString(), OwnerID: owner,
 		AccountGeneration: generation, ConversationID: conversationID, Prompt: "Run this heavy task on AWS.",
 		ProfileID: profileID, ExpectedProfileRevision: 1, ExpectedCredentialVersion: 1, ProfileSnapshot: snapshot}
+	for _, prepareTurn := range prepare {
+		prepareTurn(ctx, conversation, &turnCommand)
+	}
 	turn := startPGCloudWorkerTurn(t, conversation, ctx, turnCommand, cleanup)
 	lease, err := conversation.ClaimTurn(ctx, turn.ID, now, 30*time.Minute)
 	if err != nil {

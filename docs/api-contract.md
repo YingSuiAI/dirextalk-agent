@@ -215,8 +215,8 @@ or stream after admission. It never cancels the accepted Turn; callers use
   observed (at most once per phase per dispatch). Existing `tool_call` and
   `tool_result` frames describe tool execution. These frames retain normal turn
   identity, revision, sequence and timestamp, but no reasoning, arguments,
-  provider bodies, or transcript content. Clients may replay them into a bounded
-  expandable activity history for both ordinary and Worker conversations.
+  provider bodies, or transcript content. Clients may use them for a compact
+  current-progress indication for ordinary and Worker conversations.
 - Provider HTTP failures preserve exact status and a public semantic code:
   authentication (401), balance/payment (402), permission (403), missing model
   (404), invalid request (400/422), context/input limit (413), rate limit (429),
@@ -1179,10 +1179,16 @@ most four sources, at most one workspace archive, and at most 8 MiB combined;
 each source remains immutably bound to owner, account generation, turn request,
 revision, size, and SHA-256. Workspace archives use the single constrained
 tar+gzip media type and are never exposed as arbitrary local paths.
-Conversation model input supports JPEG, PNG, WebP, UTF-8 `text/plain`, and
-UTF-8 `text/markdown`. Text is framed as untrusted attachment content. PDF and
-other document formats are explicitly unsupported in Core v1 and are not sent
-to a provider.
+Conversation model input supports JPEG, PNG, WebP, and valid UTF-8 text files.
+The text path includes all admitted `text/*` types such as CSV/TSV and source
+files, plus JSON/JSON-derived, YAML, and XML/XML-derived media types. NUL bytes
+are rejected and text is framed as untrusted attachment content. PDF, Office,
+archive, WASM, and other binary document formats are not sent directly to a
+provider. Their presence never authorizes an automatic paid Worker fallback.
+When a turn creates a Worker quote, its authoritative user-message projection
+copies the same attachment presentation as ordinary completion/failure paths;
+quote replay, cancellation, and restart therefore cannot erase the attachment
+card while its source remains retained.
 
 `agent.execution.v2.artifacts.get/download/delete` manage Cloud Worker and
 local sandbox artifacts in one Agent-owned local repository. Their closed

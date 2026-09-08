@@ -228,12 +228,15 @@ func (s *CloudWorkerStore) CreateOffer(ctx context.Context, command cloudworker.
 		LeaseExpiresAt                                                        *time.Time
 		CancelRequested                                                       bool
 		DispatchResult                                                        []byte
+		AttachmentJSON                                                        []byte
+		AttachmentDigest                                                      string
 	}
 	err = tx.QueryRow(ctx, `SELECT request_id::text,owner_id,account_generation,conversation_id::text,prompt,profile_id::text,
-		state,COALESCE(lease_id::text,''),lease_epoch,lease_expires_at,cancel_requested,revision,last_sequence,dispatch_result_json
+		state,COALESCE(lease_id::text,''),lease_epoch,lease_expires_at,cancel_requested,revision,last_sequence,dispatch_result_json,attachment_snapshot_json,attachment_snapshot_digest
 		FROM core_conversation_turns WHERE turn_id=$1 FOR UPDATE`, plan.TurnID).Scan(
 		&turn.RequestID, &turn.OwnerID, &turn.AccountGeneration, &turn.ConversationID, &turn.Prompt, &turn.ProfileID,
-		&turn.State, &turn.LeaseID, &turn.LeaseEpoch, &turn.LeaseExpiresAt, &turn.CancelRequested, &turn.Revision, &turn.LastSequence, &turn.DispatchResult)
+		&turn.State, &turn.LeaseID, &turn.LeaseEpoch, &turn.LeaseExpiresAt, &turn.CancelRequested, &turn.Revision, &turn.LastSequence, &turn.DispatchResult,
+		&turn.AttachmentJSON, &turn.AttachmentDigest)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return cloudworker.Offer{}, cloudworker.ErrNotFound
 	}
@@ -367,8 +370,14 @@ func (s *CloudWorkerStore) CreateOffer(ctx context.Context, command cloudworker.
 
 	confirmationProjection := confirmationState
 	references := cloudWorkerReferences(plan, execution, 1, confirmationProjection)
+	var attachments []core.TurnAttachment
+	if json.Unmarshal(turn.AttachmentJSON, &attachments) != nil ||
+		core.ValidateAcceptedTurnAttachments(turn.RequestID, attachmentSourceIDs(attachments), attachments) != nil ||
+		core.TurnAttachmentSnapshotDigest(attachments) != turn.AttachmentDigest {
+		return cloudworker.Offer{}, cloudworker.ErrConflict
+	}
 	userMessage := core.Message{ID: deterministicCloudWorkerUUID("conversation-turn-user", turn.RequestID), TurnID: plan.TurnID, Role: core.RoleUser,
-		Content: turn.Prompt, ModelProfileID: turn.ProfileID, CreatedAt: plan.CreatedAt.Add(-time.Microsecond)}
+		Content: turn.Prompt, ModelProfileID: turn.ProfileID, CreatedAt: plan.CreatedAt.Add(-time.Microsecond), Attachments: core.PresentTurnAttachments(attachments)}
 	offerSummary := "Cloud Worker quote is ready for confirmation. Selected configuration: " + cloudworker.PublicComputeSummary(plan.Compute) + "."
 	if plan.GitHubBinding != nil {
 		offerSummary += " GitHub repository access will be available."

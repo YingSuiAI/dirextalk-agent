@@ -1,6 +1,7 @@
 package coreconversation
 
 import (
+	"bytes"
 	"context"
 	"mime"
 	"path"
@@ -234,15 +235,23 @@ func ValidTurnAttachmentMediaType(kind, value string) bool {
 }
 
 func IsTurnModelReadableAttachment(attachment TurnAttachment) bool {
-	return attachment.Kind == TurnAttachmentKindImage ||
-		(attachment.Kind == TurnAttachmentKindFile && (attachment.MediaType == "text/plain" || attachment.MediaType == "text/markdown"))
+	if attachment.Kind == TurnAttachmentKindImage {
+		return true
+	}
+	if attachment.Kind != TurnAttachmentKindFile {
+		return false
+	}
+	mediaType := attachment.MediaType
+	return strings.HasPrefix(mediaType, "text/") ||
+		mediaType == "application/json" || mediaType == "application/yaml" || mediaType == "application/xml" ||
+		strings.HasSuffix(mediaType, "+json") || strings.HasSuffix(mediaType, "+xml")
 }
 
 func ValidateTurnModelAttachmentContent(attachment TurnAttachment, content []byte) error {
 	if !IsTurnModelReadableAttachment(attachment) {
 		return ErrInvalid
 	}
-	if attachment.Kind == TurnAttachmentKindFile && !utf8.Valid(content) {
+	if attachment.Kind == TurnAttachmentKindFile && (!utf8.Valid(content) || bytes.IndexByte(content, 0) >= 0) {
 		return ErrInvalid
 	}
 	return nil
