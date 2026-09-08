@@ -14,6 +14,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
 	core "github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -226,12 +227,13 @@ func (s *CloudWorkerStore) CreateOffer(ctx context.Context, command cloudworker.
 		AccountGeneration, LeaseEpoch, Revision, LastSequence                 uint64
 		LeaseExpiresAt                                                        *time.Time
 		CancelRequested                                                       bool
+		DispatchResult                                                        []byte
 	}
 	err = tx.QueryRow(ctx, `SELECT request_id::text,owner_id,account_generation,conversation_id::text,prompt,profile_id::text,
-		state,COALESCE(lease_id::text,''),lease_epoch,lease_expires_at,cancel_requested,revision,last_sequence
+		state,COALESCE(lease_id::text,''),lease_epoch,lease_expires_at,cancel_requested,revision,last_sequence,dispatch_result_json
 		FROM core_conversation_turns WHERE turn_id=$1 FOR UPDATE`, plan.TurnID).Scan(
 		&turn.RequestID, &turn.OwnerID, &turn.AccountGeneration, &turn.ConversationID, &turn.Prompt, &turn.ProfileID,
-		&turn.State, &turn.LeaseID, &turn.LeaseEpoch, &turn.LeaseExpiresAt, &turn.CancelRequested, &turn.Revision, &turn.LastSequence)
+		&turn.State, &turn.LeaseID, &turn.LeaseEpoch, &turn.LeaseExpiresAt, &turn.CancelRequested, &turn.Revision, &turn.LastSequence, &turn.DispatchResult)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return cloudworker.Offer{}, cloudworker.ErrNotFound
 	}
@@ -248,6 +250,23 @@ func (s *CloudWorkerStore) CreateOffer(ctx context.Context, command cloudworker.
 	}
 	if plan.CreatedAt.After(now.Add(time.Second)) || !plan.Quote.ExpiresAt.After(now) {
 		return cloudworker.Offer{}, cloudworker.ErrQuoteExpired
+	}
+	if len(turn.DispatchResult) > 0 {
+		envelope, decodeErr := loadDurableTurnDispatchEnvelope(turn.DispatchResult)
+		if decodeErr != nil {
+			return cloudworker.Offer{}, decodeErr
+		}
+		for _, call := range durableTurnModelCalls(envelope.Result) {
+			if call.Name != coremodel.IntrinsicCloudWorkerRunToolName {
+				continue
+			}
+			var target struct {
+				WorkerID string `json:"worker_id"`
+			}
+			if json.Unmarshal([]byte(call.Arguments), &target) != nil || !plan.PersistentWorkerReuse || plan.ReuseWorkerID == "" || target.WorkerID != "" && target.WorkerID != plan.ReuseWorkerID {
+				return cloudworker.Offer{}, cloudworker.ErrInvalid
+			}
+		}
 	}
 
 	taskTimeout, err := cloudWorkerTaskTimeout(plan.Limits)

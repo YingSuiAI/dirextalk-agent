@@ -36,9 +36,13 @@ type capacityReuseResolver struct {
 	found        bool
 }
 
-func (resolver *capacityReuseResolver) ResolveIdleWorker(context.Context, string, uint64, AWSBinding, ComputeRequirements, *ServiceSpec) (WorkerReuseSelection, bool, error) {
+func (resolver *capacityReuseResolver) ResolveIdleWorker(_ context.Context, _ string, _ uint64, _ string, binding AWSBinding, _ ComputeRequirements, _ *ServiceSpec) (WorkerReuseSelection, bool, error) {
 	resolver.resolveCalls++
-	return resolver.selection, resolver.found, nil
+	selection := resolver.selection
+	if resolver.found {
+		selection.Binding = binding
+	}
+	return selection, resolver.found, nil
 }
 
 func (resolver *capacityReuseResolver) CheckCreateWorkerCapacity(context.Context, string, uint64, AWSBinding) error {
@@ -181,6 +185,7 @@ func TestServiceRetainedWorkerQuoteMatchesWorkloadLifetime(t *testing.T) {
 			}}}
 			enableCredentialProposalDependencies(t, service, reuse)
 			command := credentialProposalCommand()
+			command.WorkerID = reuse.selection.WorkerID
 			command.WorkloadKind, command.Service = test.workloadKind, test.service
 			offer, err := service.Propose(context.Background(), command)
 			if err != nil {
@@ -209,6 +214,7 @@ func TestServiceRejectsRetainedGPUBelowRequiredAcceleratorMemory(t *testing.T) {
 	}}}
 	enableCredentialProposalDependencies(t, service, reuse)
 	command := credentialProposalCommand()
+	command.WorkerID = reuse.selection.WorkerID
 	command.ComputeRequirements = ComputeRequirements{MinVCPU: 2, MinMemoryGiB: 16, MinAcceleratorMemoryGiB: 20,
 		DiskGiB: 100, EstimatedRuntimeMinutes: 60, AcceleratorType: AcceleratorGPU}
 	if _, err = service.Propose(context.Background(), command); !errors.Is(err, ErrInvalid) {

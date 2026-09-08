@@ -956,18 +956,27 @@ queued, running, and waiting-user task snapshots pin an installed artifact;
 terminal task snapshots remain audit records and do not block a
 revision-fenced uninstall.
 
-Cloud Worker offers are created only by the Core intrinsic
-`cloud_worker_propose` during an authoritative conversation turn. Public
+Cloud Worker execution uses two separate Core tools during an authoritative
+conversation turn: `cloud_worker_propose` requests a new machine, while
+`cloud_worker_run` operates only on an existing machine. Public
 clients use `agent.execution.v2.plans.get/list`,
 `agent.execution.v2.runs.get/list/cancel/events`, and
 `agent.execution.v2.artifacts.get/download/delete`; they use
 `agent.core.confirmations.get/list/confirm/reject` for authorization. Every
-tool call declares `intent=execute` or `intent=proposal_only`. Execute preserves
-normal retained-Worker reuse and new-Worker confirmation behavior. Proposal-only
+new-machine call declares `intent=execute` or `intent=proposal_only`. New execution
+requires creation confirmation and never silently selects another existing host. Proposal-only
 commits a non-executing plan summary before pricing or offer persistence and
 creates no plan, execution, Task, confirmation, or Worker action. Every executing
-proposal carries minimum vCPU, system memory, disk, estimated runtime, and an optional
+new-machine proposal carries minimum vCPU, system memory, disk, estimated runtime, and an optional
 closed provider-neutral accelerator class rather than an AWS instance type.
+`cloud_worker_run` instead accepts the objective, optional existing `worker_id`,
+runtime budget, response mode and attachment/workspace inputs. Routine work is
+`job` by default; an explicit service declaration supports deployment on that
+same machine. Agent resolves the target from context/inventory, and the server
+can infer an omitted ID only for one uniquely owned Worker. Run never selects a
+new machine or requires creation confirmation; its original Region and exact
+target remain bound through execution and recovery. The detailed target and
+failure contract is in [Execution V2](execution-v2.md#cloud-worker-authority).
 The accelerator class is GPU, Neuron, FPGA, media, or any accelerator; omission
 leaves compute unconstrained. GPU proposals additionally carry a verified non-zero
 minimum accelerator-memory working set; named model artifacts must be resolved
@@ -1078,7 +1087,7 @@ Failure preserves available report text in the existing completion tool data,
 not in public task text. Service verification and verified URLs are host-owned
 evidence. Tool data contains no `central_instruction` or `next_action` directive.
 
-`cloud_worker_propose.response_mode` selects final-answer ownership before
+The `response_mode` on either `cloud_worker_propose` or `cloud_worker_run` selects final-answer ownership before
 execution. `reply_to_user` delegates the whole request, including response
 language and requirements in the objective. After successful completion, Core
 delivers the safe, complete Pi answer through ordinary `done.message.content`

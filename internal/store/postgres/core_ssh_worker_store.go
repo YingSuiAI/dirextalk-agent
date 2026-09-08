@@ -402,7 +402,7 @@ func sshWorkerContinuation(dispatch *core.ModelRunResult, plan cloudworker.Plan,
 	if len(calls) == 0 {
 		calls = dispatch.Message.ToolCalls
 	}
-	if len(calls) != 1 || calls[0].Name != coremodel.IntrinsicCloudWorkerProposeToolName || calls[0].Validate() != nil {
+	if len(calls) != 1 || !coremodel.IsCloudWorkerExecutionTool(calls[0].Name) || calls[0].Validate() != nil {
 		return core.ToolCall{}, core.ToolResult{}, cloudworker.ErrConflict
 	}
 	terminal := execution.State
@@ -451,7 +451,7 @@ func sshWorkerContinuation(dispatch *core.ModelRunResult, plan cloudworker.Plan,
 		completion["applied_steer_ids"] = append([]string(nil), result.AppliedSteerIDs...)
 	}
 	payload, _ := json.Marshal(completion)
-	toolResult := core.ToolResult{CallID: calls[0].ID, ToolName: coremodel.IntrinsicCloudWorkerProposeToolName,
+	toolResult := core.ToolResult{CallID: calls[0].ID, ToolName: calls[0].Name,
 		Content: string(payload), IsError: terminal != cloudworker.StateSucceeded,
 		StateChanged: true, MutationState: core.ToolMutationChanged,
 		RelatedTaskIDs: []string{plan.TaskID}, RelatedPlanIDs: []string{plan.PlanID}, Summary: "Cloud Worker result returned",

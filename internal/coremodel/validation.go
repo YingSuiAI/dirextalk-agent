@@ -27,6 +27,7 @@ var toolNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
 
 const (
 	IntrinsicCloudWorkerProposeToolName      = "cloud_worker_propose"
+	IntrinsicCloudWorkerRunToolName          = "cloud_worker_run"
 	IntrinsicCloudWorkerInventoryToolName    = "cloud_worker_inventory"
 	IntrinsicCloudWorkerDestroyToolName      = "cloud_worker_destroy"
 	IntrinsicCloudWorkerDomainBindToolName   = "cloud_worker_domain_bind"
@@ -39,11 +40,15 @@ const (
 
 func IsIntrinsicToolName(value string) bool {
 	switch value {
-	case IntrinsicCloudWorkerProposeToolName, IntrinsicCloudWorkerInventoryToolName, IntrinsicCloudWorkerDestroyToolName, IntrinsicCloudWorkerDomainBindToolName, IntrinsicCloudWorkerDomainUnbindToolName, IntrinsicScheduleCreateToolName, IntrinsicStaticSiteReadToolName, IntrinsicStaticSitePublishToolName:
+	case IntrinsicCloudWorkerProposeToolName, IntrinsicCloudWorkerRunToolName, IntrinsicCloudWorkerInventoryToolName, IntrinsicCloudWorkerDestroyToolName, IntrinsicCloudWorkerDomainBindToolName, IntrinsicCloudWorkerDomainUnbindToolName, IntrinsicScheduleCreateToolName, IntrinsicStaticSiteReadToolName, IntrinsicStaticSitePublishToolName:
 		return true
 	default:
 		return false
 	}
+}
+
+func IsCloudWorkerExecutionTool(value string) bool {
+	return value == IntrinsicCloudWorkerProposeToolName || value == IntrinsicCloudWorkerRunToolName
 }
 
 // Core intrinsics and extension tools share the same conservative provider-

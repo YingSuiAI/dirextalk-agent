@@ -501,7 +501,7 @@ func TestRetainedWorkerReuseAcceptsOnlyTheSameLogicalCredentialAcrossRevision(t 
 
 	rotated := createdWith
 	rotated.CredentialRevision++
-	resolved, found, err := provider.ResolveIdleWorker(context.Background(), authorityFixture(), rotated, 2, 2, 16, "")
+	resolved, found, err := provider.ResolveIdleWorker(context.Background(), authorityFixture(), rotated, worker.WorkerID, 2, 2, 16, "")
 	if err != nil || !found || resolved.WorkerID != worker.WorkerID {
 		t.Fatalf("resolved=%+v found=%t err=%v", resolved, found, err)
 	}
@@ -517,7 +517,7 @@ func TestRetainedWorkerReuseAcceptsOnlyTheSameLogicalCredentialAcrossRevision(t 
 		"region":     {CredentialID: createdWith.CredentialID, CredentialRevision: 2, AccountID: createdWith.AccountID, Region: "us-east-1"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, found, resolveErr := provider.ResolveIdleWorker(context.Background(), authorityFixture(), changed, 2, 2, 16, "")
+			_, found, resolveErr := provider.ResolveIdleWorker(context.Background(), authorityFixture(), changed, worker.WorkerID, 2, 2, 16, "")
 			if resolveErr != nil || found {
 				t.Fatalf("found=%t err=%v", found, resolveErr)
 			}
@@ -536,7 +536,7 @@ func TestRetainedWorkerReuseRejectsWorkerWithoutVerifiedImageContract(t *testing
 	cloud.instances[worker.WorkerID] = worker.Instance
 	provider, _ := New(cloud, &fakeKeys{}, &fakeSSH{}, store)
 
-	if resolved, found, err := provider.ResolveIdleWorker(context.Background(), authorityFixture(), credentialFixture(), 2, 2, 16, ""); err != nil || found {
+	if resolved, found, err := provider.ResolveIdleWorker(context.Background(), authorityFixture(), credentialFixture(), worker.WorkerID, 2, 2, 16, ""); err != nil || found {
 		t.Fatalf("resolved=%+v found=%t err=%v", resolved, found, err)
 	}
 }
@@ -557,11 +557,15 @@ func TestRetainedWorkerReuseRejectsUnknownOrIncompatibleAccelerator(t *testing.T
 		cloud.instances[worker.WorkerID] = worker.Instance
 	}
 	provider, _ := New(cloud, &fakeKeys{}, &fakeSSH{}, store)
-	resolved, found, err := provider.ResolveIdleWorker(context.Background(), authorityFixture(), credentialFixture(), 2, 2, 16, "gpu")
+	resolved, found, err := provider.ResolveIdleWorker(context.Background(), authorityFixture(), credentialFixture(), "worker-gpu", 2, 2, 16, "gpu")
 	if err != nil || !found || resolved.WorkerID != "worker-gpu" {
 		t.Fatalf("resolved=%+v found=%t err=%v", resolved, found, err)
 	}
-	resolved, found, err = provider.ResolveIdleWorker(context.Background(), authorityFixture(), credentialFixture(), 2, 2, 16, "any")
+	resolved, found, err = provider.ResolveIdleWorker(context.Background(), authorityFixture(), credentialFixture(), "worker-neuron", 2, 2, 16, "any")
+	if err != nil || found {
+		t.Fatal("incompatible requested Worker was replaced by another accelerator")
+	}
+	resolved, found, err = provider.ResolveIdleWorker(context.Background(), authorityFixture(), credentialFixture(), "worker-gpu", 2, 2, 16, "any")
 	if err != nil || !found || resolved.AcceleratorType == "" {
 		t.Fatalf("any accelerator resolved=%+v found=%t err=%v", resolved, found, err)
 	}

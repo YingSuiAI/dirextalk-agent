@@ -37,7 +37,7 @@ func (selector intrinsicComputeSelector) SelectCompute(context.Context, AWSBindi
 
 type intrinsicNoWorkerReuse struct{}
 
-func (intrinsicNoWorkerReuse) ResolveIdleWorker(context.Context, string, uint64, AWSBinding, ComputeRequirements, *ServiceSpec) (WorkerReuseSelection, bool, error) {
+func (intrinsicNoWorkerReuse) ResolveIdleWorker(context.Context, string, uint64, string, AWSBinding, ComputeRequirements, *ServiceSpec) (WorkerReuseSelection, bool, error) {
 	return WorkerReuseSelection{}, false, nil
 }
 
@@ -229,9 +229,9 @@ func executeIntrinsic(t *testing.T, intrinsic *ProposeIntrinsic, lease coreconve
 	if err != nil || len(tools) != 1 || tools[0].Tool.Name != coremodel.IntrinsicCloudWorkerProposeToolName {
 		t.Fatalf("intrinsic catalog: tools=%+v err=%v", tools, err)
 	}
-	if !strings.Contains(tools[0].Tool.Description, "retained execution environment") ||
-		!strings.Contains(tools[0].Tool.Description, "Only creating a new Worker requires owner confirmation") ||
-		!strings.Contains(tools[0].Tool.Description, "retained Worker reuse executes directly, including persistent services and hostname publication") ||
+	if !strings.Contains(tools[0].Tool.Description, "Request a NEW Worker machine") ||
+		!strings.Contains(tools[0].Tool.Description, "New Worker creation requires owner confirmation") ||
+		!strings.Contains(tools[0].Tool.Description, "Existing Worker tasks use cloud_worker_run directly") ||
 		strings.Contains(tools[0].Tool.Description, "ephemeral") {
 		t.Fatalf("stale Worker lifecycle description: %q", tools[0].Tool.Description)
 	}
@@ -376,7 +376,7 @@ func TestProposeOnlyCommitsSummaryWithoutCreatingOrStartingRetainedWorkerWork(t 
 		t.Fatal(err)
 	}
 	tools, err := intrinsic.ResolveIntrinsicTools(context.Background(), lease)
-	if err != nil || len(tools) != 3 {
+	if err != nil || len(tools) != 4 {
 		t.Fatalf("tools=%+v err=%v", tools, err)
 	}
 	propose := resolvedIntrinsicByName(t, tools, coremodel.IntrinsicCloudWorkerProposeToolName)
@@ -439,7 +439,7 @@ func TestIntrinsicInventoryReturnsLiveOwnerScopedSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	tools, err := intrinsic.ResolveIntrinsicTools(context.Background(), lease)
-	if err != nil || len(tools) != 2 {
+	if err != nil || len(tools) != 3 {
 		t.Fatalf("tools=%+v err=%v", tools, err)
 	}
 	if resolver.owner != "" || resolver.gen != 0 {
@@ -519,15 +519,15 @@ func TestIntrinsicDefinitionsAreStaticAndInventoryResultIsBounded(t *testing.T) 
 		t.Fatal(err)
 	}
 	first, err := intrinsic.ResolveIntrinsicTools(context.Background(), lease)
-	if err != nil || len(first) != 3 {
+	if err != nil || len(first) != 4 {
 		t.Fatalf("first tools=%+v err=%v", first, err)
 	}
 	manager.value = RetainedWorkerInventory{ObservedAt: lease.Turn.CreatedAt.Add(time.Minute)}
 	second, err := intrinsic.ResolveIntrinsicTools(context.Background(), lease)
-	if err != nil || len(second) != 3 || manager.owner != "" || manager.gen != 0 {
+	if err != nil || len(second) != 4 || manager.owner != "" || manager.gen != 0 {
 		t.Fatalf("second tools=%+v inventory authority=%q/%d err=%v", second, manager.owner, manager.gen, err)
 	}
-	for _, name := range []string{coremodel.IntrinsicCloudWorkerProposeToolName, coremodel.IntrinsicCloudWorkerInventoryToolName, coremodel.IntrinsicCloudWorkerDestroyToolName} {
+	for _, name := range []string{coremodel.IntrinsicCloudWorkerProposeToolName, coremodel.IntrinsicCloudWorkerRunToolName, coremodel.IntrinsicCloudWorkerInventoryToolName, coremodel.IntrinsicCloudWorkerDestroyToolName} {
 		firstTool := resolvedIntrinsicByName(t, first, name).Tool
 		secondTool := resolvedIntrinsicByName(t, second, name).Tool
 		if !reflect.DeepEqual(firstTool, secondTool) {
@@ -572,7 +572,7 @@ func TestIntrinsicDestroysExactRetainedWorkerFromConversation(t *testing.T) {
 		t.Fatal(err)
 	}
 	tools, err := intrinsic.ResolveIntrinsicTools(context.Background(), lease)
-	if err != nil || len(tools) != 3 {
+	if err != nil || len(tools) != 4 {
 		t.Fatalf("tools=%+v err=%v", tools, err)
 	}
 	destroy := resolvedIntrinsicByName(t, tools, coremodel.IntrinsicCloudWorkerDestroyToolName)
@@ -626,7 +626,7 @@ func TestIntrinsicDomainToolsExecuteDirectlyWithoutConfirmationWait(t *testing.T
 		t.Fatal(err)
 	}
 	tools, err := intrinsic.ResolveIntrinsicTools(context.Background(), lease)
-	if err != nil || len(tools) != 4 {
+	if err != nil || len(tools) != 5 {
 		t.Fatalf("tools=%+v err=%v", tools, err)
 	}
 	bind := resolvedIntrinsicByName(t, tools, coremodel.IntrinsicCloudWorkerDomainBindToolName)
@@ -993,7 +993,7 @@ func TestIntrinsicSchemaEnumeratesOnlyFrozenTurnAttachments(t *testing.T) {
 		workloadID["pattern"] != "^[a-z0-9-]+$" ||
 		healthPath["pattern"] != `^/(?:$|[^/\s#][^\s#]*)$` || !strings.Contains(fmt.Sprint(hostname["description"]), "Agent owns Caddy and DNS") ||
 		!strings.Contains(workspaceDescription, "read_only with one or more attachment_ids") ||
-		!strings.Contains(tools[0].Tool.Description, "invoke this tool immediately") || !strings.Contains(tools[0].Tool.Description, "Only creating a new Worker requires owner confirmation") {
+		!strings.Contains(tools[0].Tool.Description, "invoke this tool immediately") || !strings.Contains(tools[0].Tool.Description, "New Worker creation requires owner confirmation") {
 		t.Fatalf("workload guidance schema=%q service=%q tool=%q", workloadDescription, serviceDescription, tools[0].Tool.Description)
 	}
 	attachments, ok := properties["attachment_ids"].(map[string]any)

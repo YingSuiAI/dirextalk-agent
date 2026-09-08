@@ -51,8 +51,9 @@ func TestCloudWorkerRoutingGuidanceSeparatesLightweightGitHubMCPFromCodeWork(t *
 		"changing or deleting files",
 		"editing, testing, committing, pushing",
 		"creating or updating a code pull request",
-		"must use cloud_worker_propose",
-		"behind owner confirmation",
+		"must execute on a Worker",
+		"cloud_worker_run for an existing target",
+		"Only new machine creation waits for owner confirmation",
 		"Do not claim that GitHub code changes are unavailable",
 	} {
 		if !strings.Contains(cloudWorkerRoutingGuidance, required) {

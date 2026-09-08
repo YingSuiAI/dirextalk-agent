@@ -9,6 +9,16 @@ contract](message-server-integration-development-contract.md), and
 
 ## Implemented at HEAD
 
+- Worker maintenance is separated from machine creation: `cloud_worker_run`
+  resolves an existing target from context/inventory (or a unique owned Worker),
+  runs without a creation confirmation, and never falls through to new-machine
+  selection on failure. Routine maintenance defaults to job execution instead
+  of redeclaring an existing service's domain/health contract. Explicit service
+  deployment on the same Worker remains supported. Target ID, owner/generation,
+  credential and retained Region remain fenced; PostgreSQL rejects creation
+  plans for the run tool and preserves run completion/reply identity. Focused
+  tests cover the omitted-hostname regression, target inference, multiple
+  candidates, no-create fields, region preservation, persistence and restart.
 - Domain bind/unbind now return durable tool observations so the same request
   can continue to homepage search and one final answer. Phase-specific safe
   errors survive into model evidence; argument correction, unchanged transient

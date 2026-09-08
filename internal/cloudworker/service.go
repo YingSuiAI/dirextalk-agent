@@ -24,19 +24,18 @@ type Store interface {
 // Worker or create a replacement.
 type WorkerReuseSelection struct {
 	WorkerID string
+	Binding  AWSBinding
 	Compute  ComputeSpec
 }
 
-// WorkerReuseResolver reports one matching idle Worker for the original
-// provider-neutral requirements, before a new instance shape is selected.
-// It is read-only; a later lease race must fail instead of falling through to
-// Worker creation.
+// WorkerReuseResolver resolves the requested existing Worker with live read-back.
+// It never selects another machine; creation is a separate command path.
 type WorkerReuseResolver interface {
-	ResolveIdleWorker(context.Context, string, uint64, AWSBinding, ComputeRequirements, *ServiceSpec) (WorkerReuseSelection, bool, error)
+	ResolveIdleWorker(context.Context, string, uint64, string, AWSBinding, ComputeRequirements, *ServiceSpec) (WorkerReuseSelection, bool, error)
 }
 
 // WorkerCapacityPreflighter performs the provider's exact read-only pool
-// count after reuse has failed, before pricing can create an unusable offer.
+// count for a new-machine request, never as a fallback from failed reuse.
 type WorkerCapacityPreflighter interface {
 	CheckCreateWorkerCapacity(context.Context, string, uint64, AWSBinding) error
 }
@@ -177,6 +176,9 @@ func NewServiceWithAWSBindingResolver(store Store, defaults Defaults, quoter Quo
 }
 
 type ProposeCommand struct {
+	// WorkerID binds existing execution. Empty means the explicit creation
+	// entrypoint; cloud_worker_run must resolve its target before this call.
+	WorkerID             string
 	OwnerID              string
 	AccountGeneration    uint64
 	IdempotencyKey       string
@@ -238,6 +240,9 @@ func (s *Service) Propose(ctx context.Context, command ProposeCommand) (Offer, e
 	if s == nil || s.store == nil || s.awsBindings == nil || s.workerReuse == nil || s.capacity == nil || s.selector == nil || strings.TrimSpace(command.OwnerID) == "" || len(strings.TrimSpace(command.OwnerID)) > 512 || command.AccountGeneration == 0 || !validUUID(command.IdempotencyKey) || !validUUID(command.ConversationID) || !validUUID(command.TurnID) || !validUUID(command.TurnLeaseID) || command.TurnLeaseEpoch == 0 || command.ExpectedTurnRevision == 0 || strings.TrimSpace(command.Objective) == "" || len(command.Objective) > coretask.MaxGoalBytes || !validDigest(command.UserPromptDigest) || !validateWorkspaceMode(command.WorkspaceMode) || command.ComputeRequirements.validate() != nil {
 		return Offer{}, ErrInvalid
 	}
+	if command.WorkerID != "" && !validUUID(command.WorkerID) {
+		return Offer{}, ErrInvalid
+	}
 	manifestDigest, err := command.InputManifest.Seal()
 	if err != nil {
 		return Offer{}, ErrInvalid
@@ -256,12 +261,28 @@ func (s *Service) Propose(ctx context.Context, command ProposeCommand) (Offer, e
 	if err != nil || validateAWS(awsBinding) != nil {
 		return Offer{}, errors.Join(ErrStaleAuthorization, err)
 	}
-	selection, reuse, err := s.workerReuse.ResolveIdleWorker(ctx, strings.TrimSpace(command.OwnerID), command.AccountGeneration, awsBinding, command.ComputeRequirements, command.Service)
+	var selection WorkerReuseSelection
+	reuse := false
+	if command.WorkerID != "" {
+		selection, reuse, err = s.workerReuse.ResolveIdleWorker(ctx, strings.TrimSpace(command.OwnerID), command.AccountGeneration, command.WorkerID, awsBinding, command.ComputeRequirements, command.Service)
+	}
 	if err != nil {
-		return Offer{}, err
+		return Offer{}, markProposalPreMutation(err)
+	}
+	if command.WorkerID != "" && !reuse {
+		return Offer{}, markProposalPreMutation(ErrTargetWorkerUnavailable)
 	}
 	compute := selection.Compute
 	if reuse {
+		if command.WorkerID == "" || selection.WorkerID != command.WorkerID {
+			return Offer{}, ErrStaleAuthorization
+		}
+		if validateAWS(selection.Binding) != nil || selection.Binding.CredentialID != awsBinding.CredentialID || selection.Binding.CredentialRevision != awsBinding.CredentialRevision || selection.Binding.AccountID != awsBinding.AccountID {
+			return Offer{}, ErrStaleAuthorization
+		}
+		// Placement belongs to the chosen existing resource, not the new-host
+		// region selection. Never relocate a maintenance task implicitly.
+		awsBinding = selection.Binding
 		if !validUUID(selection.WorkerID) || validateCompute(compute) != nil || compute.VCPU < command.ComputeRequirements.MinVCPU ||
 			compute.MemoryGiB < command.ComputeRequirements.MinMemoryGiB || compute.VolumeGiB < command.ComputeRequirements.DiskGiB ||
 			!acceleratorSatisfies(command.ComputeRequirements.AcceleratorType, compute.AcceleratorType) ||

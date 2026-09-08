@@ -2526,7 +2526,7 @@ func TestExecuteTurnPreservesCloudWorkerIntrinsicAndLocalExtensionTools(t *testi
 		model.request.Intrinsics[0].Tool.Name != coremodel.IntrinsicCloudWorkerProposeToolName ||
 		len(model.request.Extensions) != 1 || model.request.Extensions[0].Selection.ID != selection.ID ||
 		!strings.HasPrefix(model.request.Profile.SystemPrompt, compilePlatformSystemPrompt(profile.SystemPrompt)) ||
-		!strings.Contains(model.request.Profile.SystemPrompt, "Use cloud_worker_propose only for required network or execution") ||
+		!strings.Contains(model.request.Profile.SystemPrompt, "Use cloud_worker_run on an existing Worker for required network or execution") ||
 		!strings.Contains(model.request.Profile.SystemPrompt, "cannot access the Worker filesystem") ||
 		!strings.Contains(model.request.Profile.SystemPrompt, "never create another Worker quote for that change") ||
 		!strings.Contains(model.request.Profile.SystemPrompt, "infer the workload from the full conversation") ||

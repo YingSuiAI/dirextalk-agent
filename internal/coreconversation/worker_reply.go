@@ -25,7 +25,7 @@ func delegatedWorkerReply(authorities map[string]turnToolCallAuthority, prompt s
 			latest = &copy
 		}
 	}
-	if latest == nil || latest.call.Name != coremodel.IntrinsicCloudWorkerProposeToolName || latest.result.CallID != latest.call.ID || latest.result.ToolName != latest.call.Name || latest.result.Validate() != nil || latest.result.Outcome != ToolOutcomeSuccess {
+	if latest == nil || !coremodel.IsCloudWorkerExecutionTool(latest.call.Name) || latest.result.CallID != latest.call.ID || latest.result.ToolName != latest.call.Name || latest.result.Validate() != nil || latest.result.Outcome != ToolOutcomeSuccess {
 		return "", false
 	}
 	var args struct {

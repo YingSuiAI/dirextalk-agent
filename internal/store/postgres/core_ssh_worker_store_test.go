@@ -342,6 +342,7 @@ func TestSSHWorkerDestroyFencesLateResultCatalogCommit(t *testing.T) {
 			defer h.cleanup()
 			workerID := uuid.NewString()
 			if test.reuse {
+				h.command.WorkerID = workerID
 				if err := h.service.EnablePersistentWorkerReuse(pgCloudRetainedReuseResolver{workerID: workerID}); err != nil {
 					t.Fatal(err)
 				}

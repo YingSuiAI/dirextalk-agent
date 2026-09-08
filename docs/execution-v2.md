@@ -4,7 +4,31 @@
 
 ## Cloud Worker authority
 
-Cloud Worker plans are created only inside an authoritative Native Agent turn by `cloud_worker_propose`. A client cannot create a Worker run directly. The proposal atomically creates the plan, execution, `CLOUD_WORKER` CoreTask, and pending CoreConfirmation.
+Cloud Worker plans are created only inside an authoritative Native Agent turn.
+`cloud_worker_propose` requests a new machine and creates a pending creation
+confirmation. `cloud_worker_run` starts work on an existing Worker without a
+new-machine confirmation. Both share the same durable plan, execution,
+`CLOUD_WORKER` Task and confirmation-receipt ledger; no parallel execution system
+or inbound Worker MCP server is introduced.
+
+For `cloud_worker_run`, Agent resolves `worker_id` from the user's server,
+domain, service or recent task and current inventory; users need not supply
+internal IDs or repeat authorization when the target is clear. If omitted,
+exactly one owned Worker may be inferred. Multiple ambiguous targets or no
+existing Worker require clarification, never creation. Before pricing or task
+creation, the exact Worker ID, owner/generation, current credential and instance
+identity are revalidated. The Worker's stored Region is retained even if the
+preferred Region for new machines differs. Unavailable/busy/incompatible targets
+never fall through to selecting or allocating another machine. The store also
+rejects creation plans carrying a recorded `cloud_worker_run` authority.
+
+Run defaults to a finite maintenance `job`; optimizing config or restarting an
+existing application does not redeclare its service port, health path or domain.
+It has no machine-sizing fields. Explicit `workload_kind=service` plus a service
+spec remains available for deploying/registering a service on the same Worker.
+This cannot allocate a new Worker, and conflicting existing service contracts
+return a correctable observation. A prohibition on creating a new cloud machine
+does not block existing execution; a prohibition on cloud execution still does.
 
 The intrinsic input has one explicit intent. `execute` enters the normal offer
 and retained-Worker path. `proposal_only` commits a non-executing plan summary
@@ -137,7 +161,7 @@ runner or base-image release is introduced. The short status/error summary,
 report, and host service verification remain distinct through persistence,
 including failures. Reports, logs, and artifacts share the admitted byte budget.
 
-The parent selects `response_mode=reply_to_user` on `cloud_worker_propose` only
+The parent selects `response_mode=reply_to_user` on `cloud_worker_propose` or `cloud_worker_run` only
 for a whole-request delegation. Successful, complete, safe Pi output then becomes
 the final reply directly, without a second model rewrite. Central adds verified
 links and a short resource-retention notice. `continue` or an omitted selection

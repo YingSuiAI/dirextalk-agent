@@ -104,8 +104,8 @@ func (provider *Provider) discover(ctx context.Context, credential CredentialIde
 
 // ResolveIdleWorker performs the same instance read-back used by lease,
 // without reserving or mutating either AWS or the local pool.
-func (provider *Provider) ResolveIdleWorker(ctx context.Context, authority OwnerAuthority, credential CredentialIdentity, minVCPU, minMemoryGiB uint32, minVolumeGiB int32, acceleratorType string) (WorkerRecord, bool, error) {
-	if provider == nil || ctx == nil || authority.validate() != nil || credential.validate() != nil || minVCPU == 0 || minMemoryGiB == 0 || minVolumeGiB < 8 || !validAcceleratorRequirement(acceleratorType) {
+func (provider *Provider) ResolveIdleWorker(ctx context.Context, authority OwnerAuthority, credential CredentialIdentity, workerID string, minVCPU, minMemoryGiB uint32, minVolumeGiB int32, acceleratorType string) (WorkerRecord, bool, error) {
+	if provider == nil || ctx == nil || authority.validate() != nil || credential.validate() != nil || !validID(workerID) || minVCPU == 0 || minMemoryGiB == 0 || minVolumeGiB < 8 || !validAcceleratorRequirement(acceleratorType) {
 		return WorkerRecord{}, false, ErrInvalid
 	}
 	workers, err := provider.store.ListWorkers(ctx)
@@ -113,7 +113,7 @@ func (provider *Provider) ResolveIdleWorker(ctx context.Context, authority Owner
 		return WorkerRecord{}, false, err
 	}
 	for _, worker := range workers {
-		if worker.authority() != authority || !sameLogicalCredential(worker.Credential, credential) || worker.Phase != WorkerIdle || worker.VCPU < minVCPU || worker.MemoryGiB < minMemoryGiB || worker.VolumeGiB < minVolumeGiB ||
+		if worker.WorkerID != workerID || worker.authority() != authority || !sameLogicalCredential(worker.Credential, credential) || worker.Phase != WorkerIdle || worker.VCPU < minVCPU || worker.MemoryGiB < minMemoryGiB || worker.VolumeGiB < minVolumeGiB ||
 			!workerAcceleratorSatisfies(acceleratorType, worker.AcceleratorType) || !worker.hasVerifiedImageContract() {
 			continue
 		}

@@ -658,21 +658,38 @@ func verifyPublicServiceHTTPS(ctx context.Context, hostname, publicIPv4, healthP
 	return fmt.Errorf("public HTTPS health verification failed for %s: %w", hostname, lastErr)
 }
 
-func (executor *sshWorkerExecutor) ResolveIdleWorker(ctx context.Context, ownerID string, accountGeneration uint64, binding cloudworker.AWSBinding, requirements cloudworker.ComputeRequirements, service *cloudworker.ServiceSpec) (cloudworker.WorkerReuseSelection, bool, error) {
+func (executor *sshWorkerExecutor) ResolveIdleWorker(ctx context.Context, ownerID string, accountGeneration uint64, workerID string, binding cloudworker.AWSBinding, requirements cloudworker.ComputeRequirements, service *cloudworker.ServiceSpec) (cloudworker.WorkerReuseSelection, bool, error) {
+	if workerID == "" {
+		return cloudworker.WorkerReuseSelection{}, false, cloudworker.ErrTargetWorkerUnavailable
+	}
+	selected, found, err := executor.state.LoadWorker(ctx, workerID)
+	if err != nil {
+		return cloudworker.WorkerReuseSelection{}, false, err
+	}
+	if !found || selected.OwnerID != ownerID || selected.AccountGeneration != accountGeneration || selected.Credential.CredentialID != binding.CredentialID || selected.Credential.AccountID != binding.AccountID || selected.Phase == sshworker.WorkerDestroyed {
+		return cloudworker.WorkerReuseSelection{}, false, cloudworker.ErrTargetWorkerUnavailable
+	}
+	binding.Region = selected.Credential.Region
 	provider, identity, err := executor.provider(ctx, binding)
 	if err != nil {
 		return cloudworker.WorkerReuseSelection{}, false, err
 	}
-	worker, found, err := provider.ResolveIdleWorker(ctx, sshworker.OwnerAuthority{OwnerID: ownerID, AccountGeneration: accountGeneration}, identity,
+	worker, found, err := provider.ResolveIdleWorker(ctx, sshworker.OwnerAuthority{OwnerID: ownerID, AccountGeneration: accountGeneration}, identity, workerID,
 		requirements.MinVCPU, requirements.MinMemoryGiB, int32(requirements.DiskGiB), requirements.AcceleratorType)
-	if err != nil || !found {
+	if err != nil {
 		return cloudworker.WorkerReuseSelection{}, false, err
+	}
+	if !found {
+		return cloudworker.WorkerReuseSelection{}, false, cloudworker.ErrTargetWorkerUnavailable
 	}
 	compatible, err := executor.workerSupportsService(ctx, worker, service)
-	if err != nil || !compatible {
+	if err != nil {
 		return cloudworker.WorkerReuseSelection{}, false, err
 	}
-	return cloudworker.WorkerReuseSelection{WorkerID: worker.WorkerID, Compute: cloudworker.ComputeSpec{InstanceType: worker.InstanceType, Architecture: "x86_64", AcceleratorType: worker.AcceleratorType, VCPU: worker.VCPU, MemoryGiB: worker.MemoryGiB,
+	if !compatible {
+		return cloudworker.WorkerReuseSelection{}, false, cloudworker.NewWorkerServiceConflict()
+	}
+	return cloudworker.WorkerReuseSelection{WorkerID: worker.WorkerID, Binding: binding, Compute: cloudworker.ComputeSpec{InstanceType: worker.InstanceType, Architecture: "x86_64", AcceleratorType: worker.AcceleratorType, VCPU: worker.VCPU, MemoryGiB: worker.MemoryGiB,
 		RootDeviceName: "/dev/xvda", VolumeGiB: uint64(worker.VolumeGiB), VolumeType: "gp3", VolumeIOPS: 3000, VolumeThroughputMiB: 125}}, true, nil
 }
 

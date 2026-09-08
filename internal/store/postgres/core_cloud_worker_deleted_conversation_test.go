@@ -56,7 +56,7 @@ func (pgCloudComputeSelector) SelectCompute(context.Context, cloudworker.AWSBind
 
 type pgCloudReuseResolver struct{}
 
-func (pgCloudReuseResolver) ResolveIdleWorker(context.Context, string, uint64, cloudworker.AWSBinding, cloudworker.ComputeRequirements, *cloudworker.ServiceSpec) (cloudworker.WorkerReuseSelection, bool, error) {
+func (pgCloudReuseResolver) ResolveIdleWorker(context.Context, string, uint64, string, cloudworker.AWSBinding, cloudworker.ComputeRequirements, *cloudworker.ServiceSpec) (cloudworker.WorkerReuseSelection, bool, error) {
 	return cloudworker.WorkerReuseSelection{}, false, nil
 }
 
@@ -66,8 +66,8 @@ func (pgCloudReuseResolver) CheckCreateWorkerCapacity(context.Context, string, u
 
 type pgCloudRetainedReuseResolver struct{ workerID string }
 
-func (r pgCloudRetainedReuseResolver) ResolveIdleWorker(context.Context, string, uint64, cloudworker.AWSBinding, cloudworker.ComputeRequirements, *cloudworker.ServiceSpec) (cloudworker.WorkerReuseSelection, bool, error) {
-	return cloudworker.WorkerReuseSelection{WorkerID: r.workerID, Compute: cloudworker.ComputeSpec{
+func (r pgCloudRetainedReuseResolver) ResolveIdleWorker(context.Context, string, uint64, string, cloudworker.AWSBinding, cloudworker.ComputeRequirements, *cloudworker.ServiceSpec) (cloudworker.WorkerReuseSelection, bool, error) {
+	return cloudworker.WorkerReuseSelection{WorkerID: r.workerID, Binding: pgCloudAWSBinding(), Compute: cloudworker.ComputeSpec{
 		InstanceType: "c7i.large", Architecture: "x86_64", VCPU: 2, MemoryGiB: 4,
 		RootDeviceName: "/dev/xvda", VolumeGiB: 32, VolumeType: "gp3", VolumeIOPS: 3000, VolumeThroughputMiB: 125,
 	}}, true, nil
@@ -82,6 +82,10 @@ func newPGCloudWorkerHarness(t *testing.T) *pgCloudWorkerHarness {
 }
 
 func newPGCloudWorkerHarnessWithResponseMode(t *testing.T, mode string) *pgCloudWorkerHarness {
+	return newPGCloudWorkerHarnessForTool(t, mode, coremodel.IntrinsicCloudWorkerProposeToolName)
+}
+
+func newPGCloudWorkerHarnessForTool(t *testing.T, mode, toolName string) *pgCloudWorkerHarness {
 	t.Helper()
 	ctx, store, profileID, cleanup := corePG18Fixture(t)
 	now := time.Now().UTC().Truncate(time.Microsecond)
@@ -149,7 +153,7 @@ func newPGCloudWorkerHarnessWithResponseMode(t *testing.T, mode string) *pgCloud
 		WorkspaceMode: cloudworker.WorkspaceNone, ModelAuthorization: authorization,
 		ComputeRequirements: cloudworker.ComputeRequirements{MinVCPU: 2, MinMemoryGiB: 4, DiskGiB: 32, EstimatedRuntimeMinutes: 60}}
 	arguments, _ := json.Marshal(map[string]any{"objective": command.Objective, "workspace_mode": string(command.WorkspaceMode), "response_mode": mode})
-	call := core.ToolCall{ID: uuid.NewString(), Name: coremodel.IntrinsicCloudWorkerProposeToolName, Arguments: string(arguments)}
+	call := core.ToolCall{ID: uuid.NewString(), Name: toolName, Arguments: string(arguments)}
 	bindPGCloudWorkerModelAttempt(t, conversation, ctx, lease, cleanup)
 	if err = conversation.RecordTurnModelResult(ctx, lease, core.ModelRunResult{ToolCalls: []core.ToolCall{call}}); err != nil {
 		cleanup()
@@ -305,6 +309,7 @@ func TestCloudWorkerPostgresReusesRetainedWorkerTwiceInOneTurn(t *testing.T) {
 	if err := h.service.EnablePersistentWorkerReuse(pgCloudRetainedReuseResolver{workerID: workerID}); err != nil {
 		t.Fatal(err)
 	}
+	h.command.WorkerID = workerID
 	first := h.propose(t)
 	if !first.Plan.PersistentWorkerReuse || first.Plan.ReuseWorkerID != workerID {
 		t.Fatalf("first offer did not reuse retained Worker: %+v", first.Plan)
@@ -435,7 +440,8 @@ func TestCloudWorkerPostgresStopTurnCancelsRetainedServiceReuse(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			h := newPGCloudWorkerHarness(t)
 			defer h.cleanup()
-			if err := h.service.EnablePersistentWorkerReuse(pgCloudRetainedReuseResolver{workerID: uuid.NewString()}); err != nil {
+			h.command.WorkerID = uuid.NewString()
+			if err := h.service.EnablePersistentWorkerReuse(pgCloudRetainedReuseResolver{workerID: h.command.WorkerID}); err != nil {
 				t.Fatal(err)
 			}
 			h.command.WorkloadKind = cloudworker.WorkloadService

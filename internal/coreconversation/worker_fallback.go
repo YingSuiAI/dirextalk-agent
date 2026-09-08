@@ -13,7 +13,7 @@ import (
 func workerOutcomeFallback(results []ToolResult, prompt string) (string, bool) {
 	for i := len(results) - 1; i >= 0; i-- {
 		result := results[i]
-		if result.ToolName != coremodel.IntrinsicCloudWorkerProposeToolName || result.Validate() != nil {
+		if !coremodel.IsCloudWorkerExecutionTool(result.ToolName) || result.Validate() != nil {
 			continue
 		}
 		var outcome struct {

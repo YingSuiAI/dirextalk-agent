@@ -320,25 +320,28 @@ func (p *ProposeIntrinsic) EnableRetainedWorkerManagement(manager RetainedWorker
 }
 
 type proposeIntrinsicArguments struct {
-	AttachmentIDs           []string `json:"attachment_ids,omitempty"`
-	Intent                  string   `json:"intent"`
-	ResponseMode            string   `json:"response_mode,omitempty"`
-	Objective               string   `json:"objective"`
-	ServerName              string   `json:"server_name,omitempty"`
-	WorkspaceMode           string   `json:"workspace_mode"`
-	MinVCPU                 uint32   `json:"min_vcpu"`
-	MinMemoryGiB            uint32   `json:"min_memory_gib"`
-	MinAcceleratorMemoryGiB uint32   `json:"min_accelerator_memory_gib"`
-	DiskGiB                 uint64   `json:"disk_gib"`
-	EstimatedRuntimeMinutes uint64   `json:"estimated_runtime_minutes"`
-	AcceleratorType         string   `json:"accelerator_type,omitempty"`
-	WorkloadKind            string   `json:"workload_kind,omitempty"`
-	Service                 *struct {
-		WorkloadID string `json:"workload_id"`
-		Port       uint16 `json:"port"`
-		HealthPath string `json:"health_path"`
-		Hostname   string `json:"hostname,omitempty"`
-	} `json:"service,omitempty"`
+	AttachmentIDs           []string                `json:"attachment_ids,omitempty"`
+	Intent                  string                  `json:"intent"`
+	WorkerID                string                  `json:"-"`
+	ResponseMode            string                  `json:"response_mode,omitempty"`
+	Objective               string                  `json:"objective"`
+	ServerName              string                  `json:"server_name,omitempty"`
+	WorkspaceMode           string                  `json:"workspace_mode"`
+	MinVCPU                 uint32                  `json:"min_vcpu"`
+	MinMemoryGiB            uint32                  `json:"min_memory_gib"`
+	MinAcceleratorMemoryGiB uint32                  `json:"min_accelerator_memory_gib"`
+	DiskGiB                 uint64                  `json:"disk_gib"`
+	EstimatedRuntimeMinutes uint64                  `json:"estimated_runtime_minutes"`
+	AcceleratorType         string                  `json:"accelerator_type,omitempty"`
+	WorkloadKind            string                  `json:"workload_kind,omitempty"`
+	Service                 *workerServiceArguments `json:"service,omitempty"`
+}
+
+type workerServiceArguments struct {
+	WorkloadID string `json:"workload_id"`
+	Port       uint16 `json:"port"`
+	HealthPath string `json:"health_path"`
+	Hostname   string `json:"hostname,omitempty"`
 }
 
 func (p *ProposeIntrinsic) ResolveIntrinsicTools(ctx context.Context, lease coreconversation.TurnLease) ([]coreconversation.ResolvedIntrinsic, error) {
@@ -377,7 +380,7 @@ func (p *ProposeIntrinsic) ResolveIntrinsicTools(ctx context.Context, lease core
 	if attachmentSchema != nil {
 		properties["attachment_ids"] = attachmentSchema
 	}
-	description := "Run substantial project or shell work in a retained execution environment, or return a non-executing plan summary. Before proposing a named model or downloadable workload, use available read/search tools to verify the exact tag or artifact, quantization or precision, published size, runtime and accelerator/driver compatibility, context length, expected concurrency, and CPU-offload policy. Calculate independent minimum vCPU, system memory, assigned accelerator memory, and disk working set with loading peaks, KV cache or training state, runtime workspace, temporary copies, caches, outputs, and explicit headroom. Do not quote from the model name alone, count a full physical GPU for a fractional instance, silently assume CPU offload, or propose paid compute while a critical fact is unverified. Once workload_kind, verified minimum resources, and required service fields are known, invoke this tool immediately. Only creating a new Worker requires owner confirmation; retained Worker reuse executes directly, including persistent services and hostname publication. Never use this tool only to bind, change, or remove a hostname for an already deployed service: call cloud_worker_inventory, then cloud_worker_domain_bind or cloud_worker_domain_unbind with its exact IDs."
+	description := "Request a NEW Worker machine (or return a non-executing new-machine plan). Do not use this tool for maintenance, optimization, repairs or follow-up work on an existing server: use cloud_worker_run. Before proposing a named model or downloadable workload, use available read/search tools to verify the exact tag or artifact, quantization or precision, published size, runtime and accelerator/driver compatibility, context length, expected concurrency, and CPU-offload policy. Calculate independent minimum vCPU, system memory, assigned accelerator memory, and disk working set with loading peaks, KV cache or training state, runtime workspace, temporary copies, caches, outputs, and explicit headroom. Do not quote from the model name alone, count a full physical GPU for a fractional instance, silently assume CPU offload, or propose paid compute while a critical fact is unverified. Once workload_kind, verified minimum resources, and required service fields are known, invoke this tool immediately. New Worker creation requires owner confirmation. Existing Worker tasks use cloud_worker_run directly without a new-machine quote. Never use this tool only to bind, change, or remove a hostname for an already deployed service: call cloud_worker_inventory, then cloud_worker_domain_bind or cloud_worker_domain_unbind with its exact IDs."
 	tool := coremodel.Tool{
 		Name:        coremodel.IntrinsicCloudWorkerProposeToolName,
 		Description: description,
@@ -430,6 +433,7 @@ func (p *ProposeIntrinsic) ResolveIntrinsicTools(ctx context.Context, lease core
 		})
 	}
 	resolved = append(resolved, cloudWorkerDomainTools(p, bound)...)
+	resolved = append(resolved, p.runTool(bound, properties["service"], properties["response_mode"]))
 	return resolved, nil
 }
 
@@ -573,14 +577,21 @@ func (p *ProposeIntrinsic) execute(ctx context.Context, bound coreconversation.T
 		}
 		return coreconversation.IntrinsicExecutionResult{}, err
 	}
-	if hasRetainedServiceDomainMutationIntent(bound.Turn.Prompt) {
+	return p.executeArguments(ctx, bound, request, arguments)
+}
+
+func (p *ProposeIntrinsic) executeArguments(ctx context.Context, bound coreconversation.TurnLease, request coreconversation.IntrinsicExecutionRequest, arguments proposeIntrinsicArguments) (coreconversation.IntrinsicExecutionResult, error) {
+	if ctx == nil || request.Lease.Turn.ID != bound.Turn.ID || request.Lease.Turn.RequestID != bound.Turn.RequestID || request.Lease.LeaseID != bound.LeaseID || request.Lease.Epoch < bound.Epoch || !coremodel.IsCloudWorkerExecutionTool(request.Call.Name) || request.Call.Validate() != nil {
+		return coreconversation.IntrinsicExecutionResult{}, ErrInvalid
+	}
+	if request.Call.Name == coremodel.IntrinsicCloudWorkerProposeToolName && hasRetainedServiceDomainMutationIntent(bound.Turn.Prompt) {
 		return coreconversation.IntrinsicExecutionResult{}, ErrRetainedWorkerDomainToolRequired
 	}
 	if arguments.Intent == "proposal_only" {
 		return p.commitProposalOnly(ctx, bound, request, arguments)
 	}
 	mode := WorkspaceMode(arguments.WorkspaceMode)
-	if hasCloudExecutionVeto(bound.Turn.Prompt) {
+	if request.Call.Name == coremodel.IntrinsicCloudWorkerRunToolName && hasExistingWorkerExecutionVeto(bound.Turn.Prompt) || request.Call.Name != coremodel.IntrinsicCloudWorkerRunToolName && hasCloudExecutionVeto(bound.Turn.Prompt) {
 		return coreconversation.IntrinsicExecutionResult{}, ErrCloudIntentRequired
 	}
 	if p.budgets == nil {
@@ -600,6 +611,19 @@ func (p *ProposeIntrinsic) execute(ctx context.Context, bound coreconversation.T
 	owner, err := p.owners.ResolveCloudWorkerOwner(ctx, request.Lease)
 	if err != nil || strings.TrimSpace(owner.OwnerID) != strings.TrimSpace(bound.Turn.OwnerID) || owner.AccountGeneration != bound.Turn.AccountGeneration {
 		return coreconversation.IntrinsicExecutionResult{}, ErrInvalid
+	}
+	if request.Call.Name == coremodel.IntrinsicCloudWorkerRunToolName && arguments.WorkerID == "" {
+		if p.workers == nil {
+			return coreconversation.IntrinsicExecutionResult{}, ErrTargetWorkerUnavailable
+		}
+		inventory, readErr := p.workers.ResolveRetainedWorkerInventory(ctx, owner.OwnerID, owner.AccountGeneration)
+		if readErr != nil {
+			return coreconversation.IntrinsicExecutionResult{}, readErr
+		}
+		if len(inventory.Workers) != 1 || !coretask.ValidUUID(inventory.Workers[0].WorkerID) {
+			return coreconversation.IntrinsicExecutionResult{}, coreconversation.NewToolExecutionErrorWithMutation(coreconversation.ToolOutcomeUserInput, "The existing Worker could not be identified uniquely. Resolve the user's server/domain against inventory and supply worker_id; ask only if the target remains ambiguous. No Worker was created.", 0, coreconversation.ToolMutationUnchanged, ErrTargetWorkerUnavailable)
+		}
+		arguments.WorkerID = inventory.Workers[0].WorkerID
 	}
 	var githubBinding *GitHubBinding
 	if p.github != nil {
@@ -635,6 +659,7 @@ func (p *ProposeIntrinsic) execute(ctx context.Context, bound coreconversation.T
 		IdempotencyKey: idempotencyKey, ConversationID: bound.Turn.ConversationID,
 		TurnID: bound.Turn.ID, TurnLeaseID: request.Lease.LeaseID, TurnLeaseEpoch: request.Lease.Epoch,
 		ExpectedTurnRevision: bound.Turn.Revision, Objective: arguments.Objective,
+		WorkerID:         arguments.WorkerID,
 		ObjectiveSummary: arguments.Objective, ServerName: arguments.ServerName, UserPromptDigest: hex.EncodeToString(promptDigest[:]),
 		WorkloadKind: WorkloadKind(arguments.WorkloadKind), Service: func() *ServiceSpec {
 			if arguments.Service == nil {
@@ -665,6 +690,13 @@ func (p *ProposeIntrinsic) execute(ctx context.Context, bound coreconversation.T
 }
 
 func classifyProposalExecutionError(err error) error {
+	if errors.Is(err, ErrTargetWorkerUnavailable) {
+		return coreconversation.NewToolExecutionErrorWithMutation(coreconversation.ToolOutcomeUserInput, ErrTargetWorkerUnavailable.Error(), 0, coreconversation.ToolMutationUnchanged, err)
+	}
+	var correction workerTargetCorrection
+	if errors.As(err, &correction) {
+		return err
+	}
 	var beforeMutation proposalPreMutationError
 	if err == nil || !errors.As(err, &beforeMutation) {
 		return err
@@ -781,7 +813,14 @@ func parseProposeIntrinsicArguments(raw json.RawMessage) (proposeIntrinsicArgume
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		return proposeIntrinsicArguments{}, ErrInvalid
 	}
+	return validateProposeIntrinsicArguments(arguments)
+}
+
+func validateProposeIntrinsicArguments(arguments proposeIntrinsicArguments) (proposeIntrinsicArguments, error) {
 	arguments.Objective = strings.TrimSpace(arguments.Objective)
+	if arguments.WorkerID != "" && !coretask.ValidUUID(arguments.WorkerID) {
+		return proposeIntrinsicArguments{}, ErrInvalid
+	}
 	if arguments.ResponseMode != "" && arguments.ResponseMode != "reply_to_user" && arguments.ResponseMode != "continue" {
 		return proposeIntrinsicArguments{}, ErrInvalid
 	}

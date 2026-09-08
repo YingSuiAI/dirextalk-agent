@@ -1587,12 +1587,19 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 		}
 	}
 	directive := DefaultTurnDispatchDirective()
+	workerFollowUpTool := coremodel.IntrinsicCloudWorkerProposeToolName
+	for _, tool := range runtimeSnapshot.IntrinsicTools {
+		if tool.Name == coremodel.IntrinsicCloudWorkerRunToolName {
+			workerFollowUpTool = tool.Name
+			break
+		}
+	}
 	switch {
 	case finalizing:
 		directive = NewTurnDispatchDirective(TurnDispatchGuidanceLoopSynthesis, TurnDispatchToolsNone, "")
 		directive.FinalizationReason = finalization.Reason
 	case deferredWorkerFollowUp:
-		directive = NewTurnDispatchDirective(TurnDispatchGuidanceNone, TurnDispatchToolsAdmitted, coremodel.IntrinsicCloudWorkerProposeToolName)
+		directive = NewTurnDispatchDirective(TurnDispatchGuidanceNone, TurnDispatchToolsAdmitted, workerFollowUpTool)
 	case history.forcedToolName != "":
 		directive = NewTurnDispatchDirective(TurnDispatchGuidanceNone, TurnDispatchToolsAdmitted, history.forcedToolName)
 	case history.loopRecovery == toolLoopNudge:
@@ -1684,7 +1691,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 		modelExtensionSnapshots = nil
 		modelIntrinsicTools = nil
 		for _, intrinsic := range intrinsicTools {
-			if intrinsic.Tool.Name == coremodel.IntrinsicCloudWorkerProposeToolName {
+			if intrinsic.Tool.Name == forcedToolName {
 				modelIntrinsicTools = []ResolvedIntrinsic{intrinsic}
 				break
 			}
@@ -2736,6 +2743,9 @@ func intrinsicTerminalFailure(toolName string, err error) string {
 	if toolName == coremodel.IntrinsicCloudWorkerProposeToolName {
 		return "AWS Worker proposal could not be created"
 	}
+	if toolName == coremodel.IntrinsicCloudWorkerRunToolName {
+		return "The task could not start on the selected existing Worker; no replacement was created"
+	}
 	if toolName == coremodel.IntrinsicScheduleCreateToolName {
 		return "Schedule could not be saved"
 	}
@@ -3118,8 +3128,8 @@ func terminalCloudWorkerResult(authorities map[string]turnToolCallAuthority, sta
 	}
 	completions := make([]completion, 0, len(authorities))
 	for _, authority := range authorities {
-		if authority.state != turnToolCallTerminal || authority.call.Name != coremodel.IntrinsicCloudWorkerProposeToolName ||
-			authority.result == nil || authority.result.ToolName != coremodel.IntrinsicCloudWorkerProposeToolName {
+		if authority.state != turnToolCallTerminal || !coremodel.IsCloudWorkerExecutionTool(authority.call.Name) ||
+			authority.result == nil || authority.result.ToolName != authority.call.Name {
 			continue
 		}
 		var parsed struct {
@@ -3189,7 +3199,7 @@ func hasUnappliedDeferredWorkerSteer(steers []TurnSteer, appliedSteerIDs []strin
 			}
 			consumed := false
 			for _, authority := range authorities {
-				if authority.call.Name == coremodel.IntrinsicCloudWorkerProposeToolName && authority.callSequence > steer.Sequence {
+				if coremodel.IsCloudWorkerExecutionTool(authority.call.Name) && authority.callSequence > steer.Sequence {
 					consumed = true
 					break
 				}

@@ -277,7 +277,8 @@ An accepted same-turn steer starts a new supervisor window. Mutating Task
 failures without an immutable no-mutation receipt are always
 `unknown_mutation` and are never replayed blindly. The one narrower exception
 is unapplied user guidance deferred while a Cloud Worker call was active: after
-that Worker fails, Core may dispatch one forced `cloud_worker_propose` follow-up
+that Worker fails, Core may dispatch one forced Worker follow-up (`cloud_worker_run`
+when admitted; the original proposal tool only for older frozen tool sets)
 with every extension and other intrinsic removed; the fatal outcome never
 restores the turn's general tool authority.
 
@@ -903,13 +904,21 @@ evidence and remaining verification are recorded in the
 
 The Native Agent remains local-first and retains its local sandbox, worker
 pool, MCP, Skills, Knowledge, Conversation Tools, and Extension Runner. The
-Core intrinsic `cloud_worker_propose` creates an offer when the user explicitly
+Core intrinsic `cloud_worker_propose` requests a new Worker when the user explicitly
 requests cloud work or trusted scheduler evidence shows that the selected
 substantial task exceeds the local runtime. Model wording and a local failure
 are not authority. A cloud or local-only veto wins. The intrinsic requires an
 explicit `execute` or `proposal_only` intent. Proposal-only returns a durable
 non-executing summary without pricing, offer, Task, confirmation, or execution
 state, so an idle retained Worker cannot turn a planning-only request into work.
+Existing-server work uses the separate `cloud_worker_run` tool. Agent infers
+the target from user context and inventory without asking for internal IDs;
+the server can resolve an omitted target only when exactly one owned Worker
+exists. The selected immutable Worker ID and original Region are bound to the
+plan and execution. Failure to reuse never creates a replacement or a new
+creation confirmation. Maintenance defaults to `job` and preserves existing
+service registration; an explicit service declaration supports deployments on
+that same host. The run tool has no machine-creation or resource-sizing inputs.
 Available specialized tools remain the first choice: lightweight web research,
 small local transformations, and static HTML publication compose locally and
 do not justify a Worker offer merely because the overall request uses network
@@ -959,9 +968,10 @@ revalidates the turn owner/account generation and returns a bounded ordinary
 `ToolResult`; Core records it in ordinary tool history without terminally
 committing the turn, so the next model round can use the current instance type,
 vCPU, memory, disk, status, load, pricing, and workload summary. The model
-declares the task's actual minimums and prefers an adequate idle Worker without
-inflating or reducing those requirements. The same direct reuse applies
-to persistent services and hostname publication. A live hourly read still
+selects the existing target by immutable ID, not by machine-sizing guesses.
+New-machine sizing belongs only to `cloud_worker_propose`. The same direct run
+supports explicit persistent-service registration and hostname publication on
+the selected Worker. A live hourly read still
 reports its ongoing server cost.
 Destroying a retained Worker is a separate explicit owner action available
 from both the owner client and the Native Agent conversation. The conversation
@@ -1015,7 +1025,7 @@ omissions. Short task status, failed-task error, private report, and host servic
 verification are separate fields; failed collection/commit never substitutes
 diagnostic log tails for an answer. Public task text does not expose the report.
 
-The durable `cloud_worker_propose` call may explicitly select
+The durable `cloud_worker_propose` or `cloud_worker_run` call may explicitly select
 `response_mode=reply_to_user` when its objective covers the entire request.
 Only a successful latest tool result, no unfinished tools or later steers,
 and complete safe answer permit direct final-message commit without a provider
