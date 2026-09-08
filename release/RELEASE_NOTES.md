@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v1.0.215
+
+1. Make the owner-authorized Agent system prompt a single revision-fenced global setting, applied to new conversation and Task snapshots without changing admitted work.
+2. Accept admitted UTF-8 text attachments as untrusted model input while keeping binary documents off the direct provider path, and preserve frozen attachments on Worker-offer history across replay, cancellation, and restart.
+
 ## v1.0.214
 
 1. Preserve typed provider and Worker failures through durable execution and user-facing replies, and expose safe bounded conversation activity without raw reasoning or tool data.
