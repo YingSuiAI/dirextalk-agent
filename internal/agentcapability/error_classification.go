@@ -6,6 +6,7 @@ import (
 
 	capabilityoperation "github.com/YingSuiAI/dirextalk-agent/internal/capability/operation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreaws"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfig"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coredeprovision"
@@ -105,6 +106,7 @@ func classifyCapabilityError(err error) error {
 	}
 	switch {
 	case errors.Is(err, coreconversation.ErrInvalid),
+		errors.Is(err, coreconfig.ErrInvalid),
 		errors.Is(err, coreconversation.ErrExtensionsUnsupported),
 		errors.Is(err, coremodel.ErrInvalidIdempotencyKey),
 		errors.Is(err, coremodel.ErrInvalidCursor),
@@ -146,6 +148,7 @@ func classifyCapabilityError(err error) error {
 	case errors.Is(err, coreimagetool.ErrNotFound), errors.Is(err, coreimagetool.ErrExpired):
 		return capabilityoperation.NewFailure("NOT_FOUND", "Agent resource was not found", err)
 	case errors.Is(err, coreconversation.ErrConflict),
+		errors.Is(err, coreconfig.ErrConflict),
 		errors.Is(err, coreconversation.ErrInFlight),
 		errors.Is(err, coremodel.ErrIdempotencyConflict),
 		errors.Is(err, coremodel.ErrRevisionConflict),

@@ -60,16 +60,17 @@ type Profile struct {
 	Model                string
 	APIKey               string `json:"-"`
 	APIKeyConfigured     bool   `json:"-"`
-	SystemPrompt         string
-	Temperature          *float64
-	TopP                 *float64
-	MaxOutputTokens      int
-	ContextWindow        int
-	ReasoningEffort      string
-	Revision             int64
-	CredentialVersion    int64
-	CreatedAt            time.Time
-	UpdatedAt            time.Time
+	// SystemPrompt is resolved global runtime input, never model configuration.
+	SystemPrompt      string
+	Temperature       *float64
+	TopP              *float64
+	MaxOutputTokens   int
+	ContextWindow     int
+	ReasoningEffort   string
+	Revision          int64
+	CredentialVersion int64
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
 }
 
 // SameConfiguration reports whether two profiles resolve to the same model
@@ -86,7 +87,6 @@ func (p Profile) SameConfiguration(other Profile) bool {
 		p.BaseURL == other.BaseURL &&
 		p.Model == other.Model &&
 		p.APIKey == other.APIKey &&
-		p.SystemPrompt == other.SystemPrompt &&
 		equalFloat(p.Temperature, other.Temperature) &&
 		equalFloat(p.TopP, other.TopP) &&
 		p.MaxOutputTokens == other.MaxOutputTokens &&
@@ -203,7 +203,6 @@ type ProfileSpec struct {
 	Model              string
 	APIKey             *string
 	APIKeyClear        bool
-	SystemPrompt       string
 	Temperature        *float64
 	TopP               *float64
 	MaxOutputTokens    int
@@ -215,7 +214,6 @@ type ProfileSpec struct {
 	RequestDialectSet  bool
 	BaseURLSet         bool
 	ModelSet           bool
-	SystemPromptSet    bool
 	MaxOutputTokensSet bool
 	ContextWindowSet   bool
 	ReasoningEffortSet bool
@@ -239,7 +237,6 @@ type SyncProfileEntry struct {
 	ProviderSecrets  map[string]string `json:"provider_secrets,omitempty"`
 	BaseURL          string            `json:"base_url"`
 	Model            string            `json:"model"`
-	SystemPrompt     string            `json:"system_prompt"`
 	APIKey           *string           `json:"api_key,omitempty"`
 	Temperature      *float64          `json:"temperature,omitempty"`
 	TopP             *float64          `json:"top_p,omitempty"`
@@ -278,7 +275,6 @@ type PublicProfile struct {
 	ProviderSecretStatus map[string]bool `json:"provider_secret_status,omitempty"`
 	BaseURL              string          `json:"base_url"`
 	Model                string          `json:"model"`
-	SystemPrompt         string          `json:"system_prompt,omitempty"`
 	Temperature          *float64        `json:"temperature,omitempty"`
 	TopP                 *float64        `json:"top_p,omitempty"`
 	MaxOutputTokens      int             `json:"max_output_tokens,omitempty"`
@@ -311,7 +307,7 @@ func (p Profile) Public() PublicProfile {
 	}
 	return PublicProfile{ID: p.ID, ClientProfileID: p.ClientProfileID, DisplayName: p.DisplayName, Provider: p.Provider, RequestDialect: p.RequestDialect, ModelKind: modelKind,
 		InputModalities: append([]string(nil), p.InputModalities...), ProviderConfig: redactProviderConfig(p.ProviderConfig), ProviderSecretStatus: secretStatus,
-		BaseURL: p.BaseURL, Model: p.Model, SystemPrompt: p.SystemPrompt,
+		BaseURL: p.BaseURL, Model: p.Model,
 		Temperature: temperature, TopP: topP, MaxOutputTokens: p.MaxOutputTokens,
 		ContextWindow: p.ContextWindow, ReasoningEffort: p.ReasoningEffort,
 		APIKeyConfigured: p.APIKeyConfigured || p.APIKey != "", Revision: p.Revision, CredentialVersion: credentialVersion(p), CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt}

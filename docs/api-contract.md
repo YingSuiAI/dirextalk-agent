@@ -332,6 +332,19 @@ or stream after admission. It never cancels the accepted Turn; callers use
   the frozen request transcript, for both unary and streaming responses.
   Consecutive Anthropic tool results are emitted as one user message containing
   the complete ordered `tool_result` block batch.
+- Native Agent exposes one instance-wide user system prompt through
+  `agent.config.v1:get_system_prompt` and `update_system_prompt`, using existing
+  owner-authenticated config read/write scopes. Reads return `system_prompt`
+  and nonnegative `revision`. Updates require `system_prompt` (UTF-8, at most
+  131072 bytes), exact `expected_revision` (including zero), and a UUID
+  `idempotency_key`. Empty explicitly clears the value. PostgreSQL persists
+  the singleton and owner-bound replay receipt; model configuration is neither
+  required nor changed. Reusing a key with changed input or a stale revision
+  returns conflict. Account deprovision purges the setting and receipts.
+  Model-profile JSON and Protobuf no longer expose a per-model prompt.
+  Migration 33 seeds the global value from the former default conversation
+  profile and retires mutable per-model overrides. New conversation and Task
+  snapshots bind the global text; already admitted work/history stays exact.
 - Model profile create/sync requires an explicit `request_dialect`, and update
   requires it even when unchanged. Profile reads return the selected dialect;
   durable execution snapshots and their digests bind it so a model name never

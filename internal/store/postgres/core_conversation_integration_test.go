@@ -178,7 +178,7 @@ func TestCoreConversationPostgresIntegrationOptIn(t *testing.T) {
 	if strings.Contains(bound.String(), snapshot.APIKey) || strings.Contains(bound.GoString(), snapshot.APIKey) {
 		t.Fatal("snapshot secret leaked from lease string")
 	}
-	if _, e = pool.Exec(ctx, `UPDATE core_model_profiles SET model_name='mutated-model',system_prompt='mutated prompt',temperature=1.5,top_p=0.1 WHERE profile_id=$1`, profileID); e != nil {
+	if _, e = pool.Exec(ctx, `UPDATE core_model_profiles SET model_name='mutated-model',temperature=1.5,top_p=0.1 WHERE profile_id=$1`, profileID); e != nil {
 		t.Fatal(e)
 	}
 	// Delete through the profile repository so immutable secret-revision

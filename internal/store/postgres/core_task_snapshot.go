@@ -26,7 +26,7 @@ func resolveTaskSnapshotTx(ctx context.Context, tx pgx.Tx, spec coretask.TaskSpe
 		var provider, requestDialect, modelKind string
 		var temperature, topP *float64
 		var apiConfigured bool
-		err := tx.QueryRow(ctx, `SELECT profile_id::text,revision,credential_version,provider,request_dialect,model_kind,base_url,model_name,system_prompt,temperature,top_p,max_output_tokens,context_window,reasoning_effort,api_key_configured FROM core_model_profiles WHERE profile_id=$1 AND deleted_at IS NULL FOR SHARE`, spec.ModelProfileID).Scan(&model.ProfileID, &model.Revision, &model.CredentialVersion, &provider, &requestDialect, &modelKind, &model.BaseURL, &model.Model, &model.SystemPrompt, &temperature, &topP, &model.MaxOutputTokens, &model.ContextWindow, &model.ReasoningEffort, &apiConfigured)
+		err := tx.QueryRow(ctx, `SELECT profile_id::text,revision,credential_version,provider,request_dialect,model_kind,base_url,model_name,CASE WHEN model_kind='conversation' THEN COALESCE((SELECT system_prompt FROM agent_system_prompt WHERE singleton),'') ELSE '' END,temperature,top_p,max_output_tokens,context_window,reasoning_effort,api_key_configured FROM core_model_profiles WHERE profile_id=$1 AND deleted_at IS NULL FOR SHARE`, spec.ModelProfileID).Scan(&model.ProfileID, &model.Revision, &model.CredentialVersion, &provider, &requestDialect, &modelKind, &model.BaseURL, &model.Model, &model.SystemPrompt, &temperature, &topP, &model.MaxOutputTokens, &model.ContextWindow, &model.ReasoningEffort, &apiConfigured)
 		if err != nil || !apiConfigured {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return coretask.ExecutionSnapshot{}, coretask.ErrNotFound

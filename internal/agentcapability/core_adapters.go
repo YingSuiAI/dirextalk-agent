@@ -1143,7 +1143,6 @@ type syncProfileInput struct {
 	ProviderSecrets  map[string]string `json:"provider_secrets,omitempty"`
 	BaseURL          string            `json:"base_url"`
 	Model            string            `json:"model"`
-	SystemPrompt     string            `json:"system_prompt"`
 	APIKey           *string           `json:"api_key,omitempty"`
 	Temperature      *float64          `json:"temperature,omitempty"`
 	TopP             *float64          `json:"top_p,omitempty"`
@@ -1158,7 +1157,7 @@ func (v syncProfileInput) command() coremodel.SyncProfileEntry {
 		DisplayName: v.DisplayName, Provider: coremodel.ModelProvider(strings.ToLower(strings.TrimSpace(v.Provider))), RequestDialect: coremodel.RequestDialect(strings.ToLower(strings.TrimSpace(v.RequestDialect))),
 		ModelKind: v.ModelKind, InputModalities: append([]string(nil), v.InputModalities...),
 		ProviderConfig: v.ProviderConfig, ProviderSecrets: v.ProviderSecrets, BaseURL: v.BaseURL,
-		Model: v.Model, SystemPrompt: v.SystemPrompt, APIKey: v.APIKey, Temperature: v.Temperature,
+		Model: v.Model, APIKey: v.APIKey, Temperature: v.Temperature,
 		TopP: v.TopP, MaxOutputTokens: v.MaxOutputTokens, ContextWindow: v.ContextWindow,
 		ReasoningEffort: v.ReasoningEffort,
 	}
@@ -1187,8 +1186,12 @@ func (c *coreModelCapability) HandleOperation(ctx context.Context, operationID s
 		var entries []syncProfileInput
 		if rawEntries := in["entries"]; len(rawEntries) == 0 {
 			return nil, fmt.Errorf("entries are required")
-		} else if err := json.Unmarshal(rawEntries, &entries); err != nil {
-			return nil, coremodel.ErrInvalidProfile
+		} else {
+			decoder := json.NewDecoder(bytes.NewReader(rawEntries))
+			decoder.DisallowUnknownFields()
+			if err := decoder.Decode(&entries); err != nil {
+				return nil, coremodel.ErrInvalidProfile
+			}
 		}
 		cmd := coremodel.SyncProfileCommand{IdempotencyKey: key, Entries: make([]coremodel.SyncProfileEntry, 0, len(entries))}
 		for _, entry := range entries {

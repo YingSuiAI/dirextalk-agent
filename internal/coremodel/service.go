@@ -117,7 +117,7 @@ func (s *Service) Create(ctx context.Context, cmd CreateProfileCommand) (PublicP
 	if (cmd.Spec.APIKey == nil || *cmd.Spec.APIKey == "") && cmd.Spec.Provider != ProviderVolcVoice && cmd.Spec.ModelKind != ModelKindSpeech {
 		return PublicProfile{}, ErrAPIKeyUnavailable
 	}
-	p := Profile{ID: cmd.Spec.ID, DisplayName: cmd.Spec.DisplayName, Provider: cmd.Spec.Provider, RequestDialect: cmd.Spec.RequestDialect, ModelKind: cmd.Spec.ModelKind, InputModalities: append([]string(nil), cmd.Spec.InputModalities...), ProviderConfig: cloneMap(cmd.Spec.ProviderConfig), ProviderSecrets: cloneStringMap(cmd.Spec.ProviderSecrets), BaseURL: cmd.Spec.BaseURL, Model: cmd.Spec.Model, SystemPrompt: cmd.Spec.SystemPrompt, Temperature: cmd.Spec.Temperature, TopP: cmd.Spec.TopP, MaxOutputTokens: cmd.Spec.MaxOutputTokens, ContextWindow: cmd.Spec.ContextWindow, ReasoningEffort: cmd.Spec.ReasoningEffort}
+	p := Profile{ID: cmd.Spec.ID, DisplayName: cmd.Spec.DisplayName, Provider: cmd.Spec.Provider, RequestDialect: cmd.Spec.RequestDialect, ModelKind: cmd.Spec.ModelKind, InputModalities: append([]string(nil), cmd.Spec.InputModalities...), ProviderConfig: cloneMap(cmd.Spec.ProviderConfig), ProviderSecrets: cloneStringMap(cmd.Spec.ProviderSecrets), BaseURL: cmd.Spec.BaseURL, Model: cmd.Spec.Model, Temperature: cmd.Spec.Temperature, TopP: cmd.Spec.TopP, MaxOutputTokens: cmd.Spec.MaxOutputTokens, ContextWindow: cmd.Spec.ContextWindow, ReasoningEffort: cmd.Spec.ReasoningEffort}
 	if cmd.Spec.APIKey != nil {
 		p.APIKey = *cmd.Spec.APIKey
 	}
@@ -311,7 +311,7 @@ func (s *Service) Sync(ctx context.Context, cmd SyncProfileCommand) (SyncProfile
 		}
 		candidate := Profile{ID: SyncProfileID(e.ClientProfileID), ClientProfileID: e.ClientProfileID,
 			DisplayName: e.DisplayName, Provider: e.Provider, RequestDialect: e.RequestDialect, ModelKind: e.ModelKind, InputModalities: e.InputModalities, ProviderConfig: e.ProviderConfig, ProviderSecrets: e.ProviderSecrets, BaseURL: e.BaseURL, Model: e.Model,
-			APIKey: valueOrEmpty(e.APIKey), SystemPrompt: e.SystemPrompt, Temperature: e.Temperature,
+			APIKey: valueOrEmpty(e.APIKey), Temperature: e.Temperature,
 			TopP: e.TopP, MaxOutputTokens: e.MaxOutputTokens, ContextWindow: e.ContextWindow, ReasoningEffort: e.ReasoningEffort}
 		validated, validationErr := validateStoredProfile(candidate)
 		if validationErr != nil && (e.APIKey != nil || e.Provider != ProviderVolcVoice) {
@@ -678,7 +678,6 @@ func profileSpecDigest(op, id string, revision int64, spec ProfileSpec) (string,
 		ProviderSecrets    []secretDigest `json:"provider_secrets,omitempty"`
 		BaseURL            string         `json:"base_url"`
 		Model              string         `json:"model"`
-		SystemPrompt       string         `json:"system_prompt"`
 		APIKeyOp           string         `json:"api_key_op"`
 		APIKeyClear        bool           `json:"api_key_clear"`
 		APIKeyPresent      bool           `json:"api_key_present"`
@@ -699,9 +698,8 @@ func profileSpecDigest(op, id string, revision int64, spec ProfileSpec) (string,
 		ProviderSet        bool           `json:"provider_set"`
 		BaseURLSet         bool           `json:"base_url_set"`
 		ModelSet           bool           `json:"model_set"`
-		SystemPromptSet    bool           `json:"system_prompt_set"`
 		MaxOutputTokensSet bool           `json:"max_output_tokens_set"`
-	}{op, id, revision, spec.DisplayName, spec.Provider, spec.ModelKind, append([]string(nil), spec.InputModalities...), redactProviderConfig(spec.ProviderConfig), providerSecretDigests(spec.ProviderSecrets), spec.BaseURL, spec.Model, spec.SystemPrompt, keyOp, spec.APIKeyClear, spec.APIKey != nil, keyHash, spec.Temperature, spec.TemperatureSet, spec.TemperatureClear, spec.TopP, spec.TopPSet, spec.TopPClear, spec.MaxOutputTokens, spec.ContextWindow, spec.ContextWindowSet, spec.ReasoningEffort, spec.ReasoningEffortSet, spec.Patch, spec.DisplayNameSet, spec.ProviderSet, spec.BaseURLSet, spec.ModelSet, spec.SystemPromptSet, spec.MaxOutputTokensSet}
+	}{op, id, revision, spec.DisplayName, spec.Provider, spec.ModelKind, append([]string(nil), spec.InputModalities...), redactProviderConfig(spec.ProviderConfig), providerSecretDigests(spec.ProviderSecrets), spec.BaseURL, spec.Model, keyOp, spec.APIKeyClear, spec.APIKey != nil, keyHash, spec.Temperature, spec.TemperatureSet, spec.TemperatureClear, spec.TopP, spec.TopPSet, spec.TopPClear, spec.MaxOutputTokens, spec.ContextWindow, spec.ContextWindowSet, spec.ReasoningEffort, spec.ReasoningEffortSet, spec.Patch, spec.DisplayNameSet, spec.ProviderSet, spec.BaseURLSet, spec.ModelSet, spec.MaxOutputTokensSet}
 	b, err := json.Marshal(canonical)
 	if err != nil {
 		return "", ErrInvalidProfile
@@ -735,14 +733,13 @@ func syncProfileDigest(cmd SyncProfileCommand) (string, error) {
 			Secrets      []secretDigest `json:"provider_secrets,omitempty"`
 			BaseURL      string         `json:"base_url"`
 			Model        string         `json:"model"`
-			SystemPrompt string         `json:"system_prompt"`
 			APIKeySHA256 string         `json:"api_key_sha256,omitempty"`
 			Temperature  *float64       `json:"temperature,omitempty"`
 			TopP         *float64       `json:"top_p,omitempty"`
 			Max          int            `json:"max_output_tokens"`
 			Context      int            `json:"context_window"`
 			Reasoning    string         `json:"reasoning_effort"`
-		}{e.ClientProfileID, e.ExpectedRevision, e.DisplayName, e.Provider, e.ModelKind, append([]string(nil), e.InputModalities...), redactProviderConfig(e.ProviderConfig), providerSecretDigests(e.ProviderSecrets), e.BaseURL, e.Model, e.SystemPrompt, keyHash, e.Temperature, e.TopP, e.MaxOutputTokens, e.ContextWindow, e.ReasoningEffort})
+		}{e.ClientProfileID, e.ExpectedRevision, e.DisplayName, e.Provider, e.ModelKind, append([]string(nil), e.InputModalities...), redactProviderConfig(e.ProviderConfig), providerSecretDigests(e.ProviderSecrets), e.BaseURL, e.Model, keyHash, e.Temperature, e.TopP, e.MaxOutputTokens, e.ContextWindow, e.ReasoningEffort})
 	}
 	return profileDigest("sync", canonical)
 }
@@ -1132,7 +1129,7 @@ func (r *MemoryProfileRepository) SyncProfiles(_ context.Context, key, digest st
 				return SyncProfileResult{}, ErrRevisionConflict
 			}
 			previous := cloneProfile(p)
-			p.DisplayName, p.Provider, p.RequestDialect, p.ModelKind, p.InputModalities, p.ProviderConfig, p.BaseURL, p.Model, p.SystemPrompt = e.DisplayName, e.Provider, e.RequestDialect, e.ModelKind, append([]string(nil), e.InputModalities...), e.ProviderConfig, e.BaseURL, e.Model, e.SystemPrompt
+			p.DisplayName, p.Provider, p.RequestDialect, p.ModelKind, p.InputModalities, p.ProviderConfig, p.BaseURL, p.Model = e.DisplayName, e.Provider, e.RequestDialect, e.ModelKind, append([]string(nil), e.InputModalities...), e.ProviderConfig, e.BaseURL, e.Model
 			if e.ProviderSecrets != nil {
 				p.ProviderSecrets = cloneStringMap(e.ProviderSecrets)
 			}
@@ -1161,7 +1158,7 @@ func (r *MemoryProfileRepository) SyncProfiles(_ context.Context, key, digest st
 			if e.ExpectedRevision != nil {
 				return SyncProfileResult{}, ErrRevisionConflict
 			}
-			p := Profile{ID: SyncProfileID(e.ClientProfileID), ClientProfileID: e.ClientProfileID, DisplayName: e.DisplayName, Provider: e.Provider, RequestDialect: e.RequestDialect, ModelKind: e.ModelKind, InputModalities: append([]string(nil), e.InputModalities...), ProviderConfig: e.ProviderConfig, ProviderSecrets: e.ProviderSecrets, BaseURL: e.BaseURL, Model: e.Model, APIKey: valueOrEmpty(e.APIKey), SystemPrompt: e.SystemPrompt, Temperature: cloneFloat(e.Temperature), TopP: cloneFloat(e.TopP), MaxOutputTokens: e.MaxOutputTokens, ContextWindow: e.ContextWindow, ReasoningEffort: e.ReasoningEffort, Revision: 1, CredentialVersion: 1, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+			p := Profile{ID: SyncProfileID(e.ClientProfileID), ClientProfileID: e.ClientProfileID, DisplayName: e.DisplayName, Provider: e.Provider, RequestDialect: e.RequestDialect, ModelKind: e.ModelKind, InputModalities: append([]string(nil), e.InputModalities...), ProviderConfig: e.ProviderConfig, ProviderSecrets: e.ProviderSecrets, BaseURL: e.BaseURL, Model: e.Model, APIKey: valueOrEmpty(e.APIKey), Temperature: cloneFloat(e.Temperature), TopP: cloneFloat(e.TopP), MaxOutputTokens: e.MaxOutputTokens, ContextWindow: e.ContextWindow, ReasoningEffort: e.ReasoningEffort, Revision: 1, CredentialVersion: 1, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
 			id = p.ID
 			byClient[e.ClientProfileID] = id
 			work[id] = p

@@ -180,7 +180,6 @@ type CoreModelProfile struct {
 	Provider          CoreModelProvider      `protobuf:"varint,3,opt,name=provider,proto3,enum=dirextalk.agent.v1.CoreModelProvider" json:"provider,omitempty"`
 	BaseUrl           string                 `protobuf:"bytes,4,opt,name=base_url,json=baseUrl,proto3" json:"base_url,omitempty"`
 	Model             string                 `protobuf:"bytes,5,opt,name=model,proto3" json:"model,omitempty"`
-	SystemPrompt      string                 `protobuf:"bytes,6,opt,name=system_prompt,json=systemPrompt,proto3" json:"system_prompt,omitempty"`
 	ApiKeyConfigured  bool                   `protobuf:"varint,7,opt,name=api_key_configured,json=apiKeyConfigured,proto3" json:"api_key_configured,omitempty"`
 	Temperature       *float64               `protobuf:"fixed64,8,opt,name=temperature,proto3,oneof" json:"temperature,omitempty"`
 	TopP              *float64               `protobuf:"fixed64,9,opt,name=top_p,json=topP,proto3,oneof" json:"top_p,omitempty"`
@@ -260,13 +259,6 @@ func (x *CoreModelProfile) GetBaseUrl() string {
 func (x *CoreModelProfile) GetModel() string {
 	if x != nil {
 		return x.Model
-	}
-	return ""
-}
-
-func (x *CoreModelProfile) GetSystemPrompt() string {
-	if x != nil {
-		return x.SystemPrompt
 	}
 	return ""
 }
@@ -377,7 +369,6 @@ type CoreModelProfileSyncEntry struct {
 	Provider         CoreModelProvider      `protobuf:"varint,4,opt,name=provider,proto3,enum=dirextalk.agent.v1.CoreModelProvider" json:"provider,omitempty"`
 	BaseUrl          string                 `protobuf:"bytes,5,opt,name=base_url,json=baseUrl,proto3" json:"base_url,omitempty"`
 	Model            string                 `protobuf:"bytes,6,opt,name=model,proto3" json:"model,omitempty"`
-	SystemPrompt     string                 `protobuf:"bytes,7,opt,name=system_prompt,json=systemPrompt,proto3" json:"system_prompt,omitempty"`
 	ApiKey           *string                `protobuf:"bytes,8,opt,name=api_key,json=apiKey,proto3,oneof" json:"api_key,omitempty"`
 	Temperature      *float64               `protobuf:"fixed64,9,opt,name=temperature,proto3,oneof" json:"temperature,omitempty"`
 	TopP             *float64               `protobuf:"fixed64,10,opt,name=top_p,json=topP,proto3,oneof" json:"top_p,omitempty"`
@@ -463,13 +454,6 @@ func (x *CoreModelProfileSyncEntry) GetModel() string {
 	return ""
 }
 
-func (x *CoreModelProfileSyncEntry) GetSystemPrompt() string {
-	if x != nil {
-		return x.SystemPrompt
-	}
-	return ""
-}
-
 func (x *CoreModelProfileSyncEntry) GetApiKey() string {
 	if x != nil && x.ApiKey != nil {
 		return *x.ApiKey
@@ -540,7 +524,6 @@ type ModelProfileServiceCreateRequest struct {
 	Provider        CoreModelProvider      `protobuf:"varint,3,opt,name=provider,proto3,enum=dirextalk.agent.v1.CoreModelProvider" json:"provider,omitempty"`
 	BaseUrl         string                 `protobuf:"bytes,4,opt,name=base_url,json=baseUrl,proto3" json:"base_url,omitempty"`
 	Model           string                 `protobuf:"bytes,5,opt,name=model,proto3" json:"model,omitempty"`
-	SystemPrompt    string                 `protobuf:"bytes,6,opt,name=system_prompt,json=systemPrompt,proto3" json:"system_prompt,omitempty"`
 	ApiKey          string                 `protobuf:"bytes,7,opt,name=api_key,json=apiKey,proto3" json:"api_key,omitempty"`
 	Temperature     *float64               `protobuf:"fixed64,8,opt,name=temperature,proto3,oneof" json:"temperature,omitempty"`
 	TopP            *float64               `protobuf:"fixed64,9,opt,name=top_p,json=topP,proto3,oneof" json:"top_p,omitempty"`
@@ -613,13 +596,6 @@ func (x *ModelProfileServiceCreateRequest) GetBaseUrl() string {
 func (x *ModelProfileServiceCreateRequest) GetModel() string {
 	if x != nil {
 		return x.Model
-	}
-	return ""
-}
-
-func (x *ModelProfileServiceCreateRequest) GetSystemPrompt() string {
-	if x != nil {
-		return x.SystemPrompt
 	}
 	return ""
 }
@@ -950,7 +926,6 @@ type ModelProfileServiceUpdateRequest struct {
 	Provider         *CoreModelProvider     `protobuf:"varint,5,opt,name=provider,proto3,enum=dirextalk.agent.v1.CoreModelProvider,oneof" json:"provider,omitempty"`
 	BaseUrl          *string                `protobuf:"bytes,6,opt,name=base_url,json=baseUrl,proto3,oneof" json:"base_url,omitempty"`
 	Model            *string                `protobuf:"bytes,7,opt,name=model,proto3,oneof" json:"model,omitempty"`
-	SystemPrompt     *string                `protobuf:"bytes,8,opt,name=system_prompt,json=systemPrompt,proto3,oneof" json:"system_prompt,omitempty"`
 	// Types that are valid to be assigned to ApiKeyUpdate:
 	//
 	//	*ModelProfileServiceUpdateRequest_ReplacementApiKey
@@ -1041,13 +1016,6 @@ func (x *ModelProfileServiceUpdateRequest) GetBaseUrl() string {
 func (x *ModelProfileServiceUpdateRequest) GetModel() string {
 	if x != nil && x.Model != nil {
 		return *x.Model
-	}
-	return ""
-}
-
-func (x *ModelProfileServiceUpdateRequest) GetSystemPrompt() string {
-	if x != nil && x.SystemPrompt != nil {
-		return *x.SystemPrompt
 	}
 	return ""
 }
@@ -1550,15 +1518,14 @@ const file_dirextalk_agent_v1_core_model_proto_rawDesc = "" +
 	"\bpreserve\x18\x01 \x01(\v2\x16.google.protobuf.EmptyH\x00R\bpreserve\x12\x12\n" +
 	"\x03set\x18\x02 \x01(\x01H\x00R\x03set\x12\x16\n" +
 	"\x05clear\x18\x03 \x01(\bH\x00R\x05clearB\a\n" +
-	"\x05value\"\xd4\x06\n" +
+	"\x05value\"\xc4\x06\n" +
 	"\x10CoreModelProfile\x12\x1d\n" +
 	"\n" +
 	"profile_id\x18\x01 \x01(\tR\tprofileId\x12!\n" +
 	"\fdisplay_name\x18\x02 \x01(\tR\vdisplayName\x12A\n" +
 	"\bprovider\x18\x03 \x01(\x0e2%.dirextalk.agent.v1.CoreModelProviderR\bprovider\x12\x19\n" +
 	"\bbase_url\x18\x04 \x01(\tR\abaseUrl\x12\x14\n" +
-	"\x05model\x18\x05 \x01(\tR\x05model\x12#\n" +
-	"\rsystem_prompt\x18\x06 \x01(\tR\fsystemPrompt\x12,\n" +
+	"\x05model\x18\x05 \x01(\tR\x05model\x12,\n" +
 	"\x12api_key_configured\x18\a \x01(\bR\x10apiKeyConfigured\x12%\n" +
 	"\vtemperature\x18\b \x01(\x01H\x00R\vtemperature\x88\x01\x01\x12\x18\n" +
 	"\x05top_p\x18\t \x01(\x01H\x01R\x04topP\x88\x01\x01\x12*\n" +
@@ -1578,15 +1545,14 @@ const file_dirextalk_agent_v1_core_model_proto_rawDesc = "" +
 	"\x10input_modalities\x18\x13 \x03(\tR\x0finputModalities\x12'\n" +
 	"\x0frequest_dialect\x18\x14 \x01(\tR\x0erequestDialectB\x0e\n" +
 	"\f_temperatureB\b\n" +
-	"\x06_top_p\"\xc1\x05\n" +
+	"\x06_top_pJ\x04\b\x06\x10\aR\rsystem_prompt\"\xb1\x05\n" +
 	"\x19CoreModelProfileSyncEntry\x12*\n" +
 	"\x11client_profile_id\x18\x01 \x01(\tR\x0fclientProfileId\x120\n" +
 	"\x11expected_revision\x18\x02 \x01(\x03H\x00R\x10expectedRevision\x88\x01\x01\x12!\n" +
 	"\fdisplay_name\x18\x03 \x01(\tR\vdisplayName\x12A\n" +
 	"\bprovider\x18\x04 \x01(\x0e2%.dirextalk.agent.v1.CoreModelProviderR\bprovider\x12\x19\n" +
 	"\bbase_url\x18\x05 \x01(\tR\abaseUrl\x12\x14\n" +
-	"\x05model\x18\x06 \x01(\tR\x05model\x12#\n" +
-	"\rsystem_prompt\x18\a \x01(\tR\fsystemPrompt\x12\x1c\n" +
+	"\x05model\x18\x06 \x01(\tR\x05model\x12\x1c\n" +
 	"\aapi_key\x18\b \x01(\tH\x01R\x06apiKey\x88\x01\x01\x12%\n" +
 	"\vtemperature\x18\t \x01(\x01H\x02R\vtemperature\x88\x01\x01\x12\x18\n" +
 	"\x05top_p\x18\n" +
@@ -1602,14 +1568,13 @@ const file_dirextalk_agent_v1_core_model_proto_rawDesc = "" +
 	"\n" +
 	"\b_api_keyB\x0e\n" +
 	"\f_temperatureB\b\n" +
-	"\x06_top_p\"\xa2\x04\n" +
+	"\x06_top_pJ\x04\b\a\x10\bR\rsystem_prompt\"\x92\x04\n" +
 	" ModelProfileServiceCreateRequest\x12'\n" +
 	"\x0fidempotency_key\x18\x01 \x01(\tR\x0eidempotencyKey\x12!\n" +
 	"\fdisplay_name\x18\x02 \x01(\tR\vdisplayName\x12A\n" +
 	"\bprovider\x18\x03 \x01(\x0e2%.dirextalk.agent.v1.CoreModelProviderR\bprovider\x12\x19\n" +
 	"\bbase_url\x18\x04 \x01(\tR\abaseUrl\x12\x14\n" +
-	"\x05model\x18\x05 \x01(\tR\x05model\x12#\n" +
-	"\rsystem_prompt\x18\x06 \x01(\tR\fsystemPrompt\x12\x17\n" +
+	"\x05model\x18\x05 \x01(\tR\x05model\x12\x17\n" +
 	"\aapi_key\x18\a \x01(\tR\x06apiKey\x12%\n" +
 	"\vtemperature\x18\b \x01(\x01H\x00R\vtemperature\x88\x01\x01\x12\x18\n" +
 	"\x05top_p\x18\t \x01(\x01H\x01R\x04topP\x88\x01\x01\x12*\n" +
@@ -1619,7 +1584,7 @@ const file_dirextalk_agent_v1_core_model_proto_rawDesc = "" +
 	"\x10reasoning_effort\x18\f \x01(\tR\x0freasoningEffort\x12'\n" +
 	"\x0frequest_dialect\x18\r \x01(\tR\x0erequestDialectB\x0e\n" +
 	"\f_temperatureB\b\n" +
-	"\x06_top_p\"c\n" +
+	"\x06_top_pJ\x04\b\x06\x10\aR\rsystem_prompt\"c\n" +
 	"!ModelProfileServiceCreateResponse\x12>\n" +
 	"\aprofile\x18\x01 \x01(\v2$.dirextalk.agent.v1.CoreModelProfileR\aprofile\">\n" +
 	"\x1dModelProfileServiceGetRequest\x12\x1d\n" +
@@ -1637,7 +1602,7 @@ const file_dirextalk_agent_v1_core_model_proto_rawDesc = "" +
 	"&default_conversation_client_profile_id\x18\x04 \x01(\tR\"defaultConversationClientProfileId\x12B\n" +
 	"\x1edefault_tool_client_profile_id\x18\x05 \x01(\tR\x1adefaultToolClientProfileId\x12L\n" +
 	"#default_embedding_client_profile_id\x18\x06 \x01(\tR\x1fdefaultEmbeddingClientProfileId\x12F\n" +
-	" default_speech_client_profile_id\x18\a \x01(\tR\x1cdefaultSpeechClientProfileId\"\xb1\a\n" +
+	" default_speech_client_profile_id\x18\a \x01(\tR\x1cdefaultSpeechClientProfileId\"\x8a\a\n" +
 	" ModelProfileServiceUpdateRequest\x12'\n" +
 	"\x0fidempotency_key\x18\x01 \x01(\tR\x0eidempotencyKey\x12\x1d\n" +
 	"\n" +
@@ -1646,27 +1611,25 @@ const file_dirextalk_agent_v1_core_model_proto_rawDesc = "" +
 	"\fdisplay_name\x18\x04 \x01(\tH\x01R\vdisplayName\x88\x01\x01\x12F\n" +
 	"\bprovider\x18\x05 \x01(\x0e2%.dirextalk.agent.v1.CoreModelProviderH\x02R\bprovider\x88\x01\x01\x12\x1e\n" +
 	"\bbase_url\x18\x06 \x01(\tH\x03R\abaseUrl\x88\x01\x01\x12\x19\n" +
-	"\x05model\x18\a \x01(\tH\x04R\x05model\x88\x01\x01\x12(\n" +
-	"\rsystem_prompt\x18\b \x01(\tH\x05R\fsystemPrompt\x88\x01\x01\x120\n" +
+	"\x05model\x18\a \x01(\tH\x04R\x05model\x88\x01\x01\x120\n" +
 	"\x13replacement_api_key\x18\t \x01(\tH\x00R\x11replacementApiKey\x12$\n" +
 	"\rclear_api_key\x18\n" +
 	" \x01(\bH\x00R\vclearApiKey\x12H\n" +
 	"\vtemperature\x18\v \x01(\v2&.dirextalk.agent.v1.CoreSamplingUpdateR\vtemperature\x12;\n" +
 	"\x05top_p\x18\f \x01(\v2&.dirextalk.agent.v1.CoreSamplingUpdateR\x04topP\x12/\n" +
-	"\x11max_output_tokens\x18\r \x01(\x05H\x06R\x0fmaxOutputTokens\x88\x01\x01\x12*\n" +
-	"\x0econtext_window\x18\x0e \x01(\x05H\aR\rcontextWindow\x88\x01\x01\x12.\n" +
-	"\x10reasoning_effort\x18\x0f \x01(\tH\bR\x0freasoningEffort\x88\x01\x01\x12,\n" +
-	"\x0frequest_dialect\x18\x10 \x01(\tH\tR\x0erequestDialect\x88\x01\x01B\x10\n" +
+	"\x11max_output_tokens\x18\r \x01(\x05H\x05R\x0fmaxOutputTokens\x88\x01\x01\x12*\n" +
+	"\x0econtext_window\x18\x0e \x01(\x05H\x06R\rcontextWindow\x88\x01\x01\x12.\n" +
+	"\x10reasoning_effort\x18\x0f \x01(\tH\aR\x0freasoningEffort\x88\x01\x01\x12,\n" +
+	"\x0frequest_dialect\x18\x10 \x01(\tH\bR\x0erequestDialect\x88\x01\x01B\x10\n" +
 	"\x0eapi_key_updateB\x0f\n" +
 	"\r_display_nameB\v\n" +
 	"\t_providerB\v\n" +
 	"\t_base_urlB\b\n" +
-	"\x06_modelB\x10\n" +
-	"\x0e_system_promptB\x14\n" +
+	"\x06_modelB\x14\n" +
 	"\x12_max_output_tokensB\x11\n" +
 	"\x0f_context_windowB\x13\n" +
 	"\x11_reasoning_effortB\x12\n" +
-	"\x10_request_dialect\"c\n" +
+	"\x10_request_dialectJ\x04\b\b\x10\tR\rsystem_prompt\"c\n" +
 	"!ModelProfileServiceUpdateResponse\x12>\n" +
 	"\aprofile\x18\x01 \x01(\v2$.dirextalk.agent.v1.CoreModelProfileR\aprofile\"\x97\x01\n" +
 	" ModelProfileServiceDeleteRequest\x12'\n" +

@@ -41,6 +41,7 @@ func TestBundleContainsCoreV1Migrations(t *testing.T) {
 	wantEntries = append(wantEntries, "000030_turn_execution_budget.up.sql")
 	wantEntries = append(wantEntries, "000031_turn_steer_supersedes_model.up.sql")
 	wantEntries = append(wantEntries, "000032_deepseek_dsml_dialect.up.sql")
+	wantEntries = append(wantEntries, "000033_global_system_prompt.up.sql")
 	if !reflect.DeepEqual(entries, wantEntries) {
 		t.Fatalf("entries=%v, want the immutable baseline plus provenance, AWS claim, and Cloud Worker migrations", entries)
 	}

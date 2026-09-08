@@ -1,5 +1,13 @@
 # Core v1 delivery tracker
 
+- Global system prompt: implemented as an independent PostgreSQL singleton and
+  owner-authenticated `agent.config.v1` operations. Migration 33 preserves the
+  former default conversation prompt and retires per-model prompt APIs/storage.
+  Focused PostgreSQL tests cover migration, capability save, readback after
+  reconstruction, clear, first-write races, owner-bound idempotency replay,
+  stale revisions, two-model execution, and immutable queued Task/Turn inputs.
+  This is local implementation evidence; no production deployment is claimed.
+
 This is the single detailed record of Agent implementation status, verification
 evidence, and remaining release gates. Contract details live in the
 [architecture](architecture.md), [API contract](api-contract.md), [Core v1

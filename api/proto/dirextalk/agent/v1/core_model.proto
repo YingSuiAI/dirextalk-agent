@@ -28,7 +28,8 @@ message CoreModelProfile {
   CoreModelProvider provider = 3;
   string base_url = 4;
   string model = 5;
-  string system_prompt = 6;
+  reserved 6;
+  reserved "system_prompt";
   bool api_key_configured = 7;
   optional double temperature = 8;
   optional double top_p = 9;
@@ -52,7 +53,8 @@ message CoreModelProfileSyncEntry {
   CoreModelProvider provider = 4;
   string base_url = 5;
   string model = 6;
-  string system_prompt = 7;
+  reserved 7;
+  reserved "system_prompt";
   optional string api_key = 8;
   optional double temperature = 9;
   optional double top_p = 10;
@@ -70,7 +72,8 @@ message ModelProfileServiceCreateRequest {
   CoreModelProvider provider = 3;
   string base_url = 4;
   string model = 5;
-  string system_prompt = 6;
+  reserved 6;
+  reserved "system_prompt";
   string api_key = 7;
   optional double temperature = 8;
   optional double top_p = 9;
@@ -105,7 +108,8 @@ message ModelProfileServiceUpdateRequest {
   optional CoreModelProvider provider = 5;
   optional string base_url = 6;
   optional string model = 7;
-  optional string system_prompt = 8;
+  reserved 8;
+  reserved "system_prompt";
   oneof api_key_update {
     string replacement_api_key = 9;
     bool clear_api_key = 10;

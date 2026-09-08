@@ -154,7 +154,7 @@ The Core v1 acceptance set covers these ten observable scenarios:
 
 ### Conversations and models
 
-Model profiles are Agent-owned records with provider/model settings, prompts,
+Model profiles are Agent-owned records with provider/model settings,
 sampling limits, and a protected API-key revision. Conversations provide unary
 and streaming chat. Provider-neutral model calls pass through Eino's
 `ToolCallingChatModel` boundary. Background work uses a Task execution snapshot
@@ -162,6 +162,15 @@ so profile, extension, Knowledge, attachment, and secret bindings cannot drift
 while a request is running. Agent and Cloud Worker task creation rejects
 non-conversation profiles, and execution verifies the exact protected-secret
 reference plus the digest of every snapshotted provider parameter.
+The user system prompt is a separate, instance-wide PostgreSQL setting shared
+by conversation models. Saving it requires no configured model and never
+updates model revisions or credentials. New conversation and Task admissions
+resolve the current global value into immutable execution snapshots; updates,
+clearing, profile sync and model switching never rewrite accepted work.
+`agent.config.v1` provides the dedicated revision-fenced, durably idempotent
+read/update operations. Migration 33 seeds the former default conversation
+prompt once and removes mutable per-model overrides; historical snapshot
+fields remain required for replay, not as runtime configuration fallbacks.
 Conversation profiles also persist an explicit versioned request dialect.
 `openai_compatible_chat_v1` retains the compatible `max_tokens` projection,
 while `openai_reasoning_chat_v1` uses `max_completion_tokens` and rejects

@@ -669,7 +669,19 @@ func TestOpenAIReasoningRoundTripsThroughMessagesAndResponses(t *testing.T) {
 	}
 }
 
-func TestUpdateProfileFullReplacementAndMultilinePrompt(t *testing.T) {
+func TestRuntimePromptAllowsPlatformInstructionsBeyondGlobalSettingLimit(t *testing.T) {
+	p := validProfile(ProviderOpenAICompatible, "https://example.invalid/v1", "key")
+	p.SystemPrompt = strings.Repeat("x", 128<<10) + "\nFixed platform instructions."
+	if _, err := ValidateProfile(p); err != nil {
+		t.Fatalf("valid global setting cannot compile: %v", err)
+	}
+	p.SystemPrompt = strings.Repeat("x", maxRequestBytes+1)
+	if _, err := ValidateProfile(p); err == nil {
+		t.Fatal("runtime prompt exceeded transport bound")
+	}
+}
+
+func TestUpdateProfileFullReplacementPreservesRuntimePrompt(t *testing.T) {
 	key := "k"
 	old := validProfile(ProviderOpenAICompatible, "https://custom.example/v1", key)
 	old.DisplayName = "Old"
@@ -679,11 +691,11 @@ func TestUpdateProfileFullReplacementAndMultilinePrompt(t *testing.T) {
 	old.MaxOutputTokens = 99
 	old.ContextWindow = 8192
 	old.ReasoningEffort = "high"
-	updated, err := UpdateProfile(old, ProfileSpec{ID: old.ID, DisplayName: "New", Provider: ProviderAnthropic, Model: "claude-test", APIKey: nil, SystemPrompt: "line one\n\tline two", TemperatureClear: true, TopPClear: true})
+	updated, err := UpdateProfile(old, ProfileSpec{ID: old.ID, DisplayName: "New", Provider: ProviderAnthropic, Model: "claude-test", APIKey: nil, TemperatureClear: true, TopPClear: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.BaseURL != "https://api.anthropic.com" || updated.SystemPrompt != "line one\n\tline two" || updated.Temperature != nil || updated.TopP != nil || updated.MaxOutputTokens != DefaultConversationMaxOutputTokens || updated.ContextWindow != 8192 || updated.ReasoningEffort != "high" || updated.APIKey != key {
+	if updated.BaseURL != "https://api.anthropic.com" || updated.SystemPrompt != "old" || updated.Temperature != nil || updated.TopP != nil || updated.MaxOutputTokens != DefaultConversationMaxOutputTokens || updated.ContextWindow != 8192 || updated.ReasoningEffort != "high" || updated.APIKey != key {
 		t.Fatalf("replacement mismatch: %#v", updated)
 	}
 	updated, err = UpdateProfile(updated, ProfileSpec{ID: old.ID, DisplayName: "New", Provider: ProviderAnthropic, Model: "claude-test", ContextWindow: 16384, ContextWindowSet: true, ReasoningEffort: "low", ReasoningEffortSet: true})

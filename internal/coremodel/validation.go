@@ -399,7 +399,10 @@ func validateProfile(p Profile, requireAPIKey bool) (Profile, error) {
 	if isSpeech && p.Model == "" {
 		p.Model = "volc_voice"
 	}
-	if !validText(p.DisplayName, 128, true, false) || (!isSpeech && !validText(p.Model, 256, true, false)) || !validText(p.APIKey, 4096, requireAPIKey && !isSpeech, false) || !validText(p.SystemPrompt, 128<<10, false, true) {
+	// This is the compiled runtime prompt, not editable model configuration.
+	// The global setting has its own 128 KiB limit; platform instructions may
+	// extend it, still subject to the complete provider request byte limit.
+	if !validText(p.DisplayName, 128, true, false) || (!isSpeech && !validText(p.Model, 256, true, false)) || !validText(p.APIKey, 4096, requireAPIKey && !isSpeech, false) || !validText(p.SystemPrompt, maxRequestBytes, false, true) {
 		return Profile{}, fmt.Errorf("%w: invalid text field", ErrInvalidProfile)
 	}
 	if p.Provider == ProviderGemini && !geminiModelPattern.MatchString(p.Model) {
@@ -491,7 +494,7 @@ func NewProfile(spec ProfileSpec) (Profile, error) {
 	}
 	p := Profile{ID: spec.ID, DisplayName: spec.DisplayName, Provider: spec.Provider, RequestDialect: spec.RequestDialect,
 		ModelKind: spec.ModelKind, InputModalities: append([]string(nil), spec.InputModalities...), ProviderConfig: cloneMap(spec.ProviderConfig), ProviderSecrets: cloneStringMap(spec.ProviderSecrets), BaseURL: spec.BaseURL, Model: spec.Model,
-		SystemPrompt: spec.SystemPrompt, Temperature: spec.Temperature, TopP: spec.TopP,
+		Temperature: spec.Temperature, TopP: spec.TopP,
 		MaxOutputTokens: spec.MaxOutputTokens, ContextWindow: spec.ContextWindow,
 		ReasoningEffort: spec.ReasoningEffort}
 	if spec.APIKey != nil {
@@ -502,7 +505,7 @@ func NewProfile(spec ProfileSpec) (Profile, error) {
 
 func UpdateProfile(existing Profile, spec ProfileSpec) (Profile, error) {
 	p := existing
-	patchMode := spec.Patch || spec.DisplayNameSet || spec.ProviderSet || spec.RequestDialectSet || spec.BaseURLSet || spec.ModelSet || spec.SystemPromptSet || spec.MaxOutputTokensSet || spec.ContextWindowSet || spec.ReasoningEffortSet || spec.ModelKind != "" || spec.InputModalities != nil || spec.ProviderConfig != nil || spec.ProviderSecrets != nil
+	patchMode := spec.Patch || spec.DisplayNameSet || spec.ProviderSet || spec.RequestDialectSet || spec.BaseURLSet || spec.ModelSet || spec.MaxOutputTokensSet || spec.ContextWindowSet || spec.ReasoningEffortSet || spec.ModelKind != "" || spec.InputModalities != nil || spec.ProviderConfig != nil || spec.ProviderSecrets != nil
 	if spec.ID == "" || strings.TrimSpace(spec.ID) != existing.ID {
 		return Profile{}, fmt.Errorf("%w: profile id is immutable", ErrInvalidProfile)
 	}
@@ -549,9 +552,6 @@ func UpdateProfile(existing Profile, spec ProfileSpec) (Profile, error) {
 			return Profile{}, ErrAPIKeyUnavailable
 		}
 		p.APIKey = *spec.APIKey
-	}
-	if !patchMode || spec.SystemPromptSet {
-		p.SystemPrompt = spec.SystemPrompt
 	}
 	if spec.ContextWindowSet {
 		p.ContextWindow = spec.ContextWindow

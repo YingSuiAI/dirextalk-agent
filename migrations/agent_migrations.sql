@@ -2943,3 +2943,23 @@ ALTER TABLE core_model_profiles
         (provider = 'volc_voice' AND request_dialect = 'volc_voice_v1')
     );
 -- dirextalk-agent migration end 000032_deepseek_dsml_dialect.up.sql
+-- dirextalk-agent migration begin 000033_global_system_prompt.up.sql
+CREATE TABLE agent_system_prompt (
+    singleton boolean PRIMARY KEY DEFAULT true CHECK (singleton),
+    system_prompt text NOT NULL DEFAULT '' CHECK (octet_length(system_prompt) <= 131072),
+    revision bigint NOT NULL CHECK (revision > 0)
+);
+
+-- Preserve the prompt the existing editor applied to the default model.
+-- Non-default per-model overrides are retired; immutable execution snapshots
+-- are deliberately left unchanged for queued work and history.
+INSERT INTO agent_system_prompt (singleton,system_prompt,revision)
+SELECT true,profile.system_prompt,1
+FROM core_model_profile_defaults defaults
+JOIN core_model_profiles profile
+  ON profile.client_profile_id=defaults.default_conversation_client_profile_id
+WHERE defaults.singleton AND profile.deleted_at IS NULL
+  AND profile.system_prompt<>'';
+
+ALTER TABLE core_model_profiles DROP COLUMN system_prompt;
+-- dirextalk-agent migration end 000033_global_system_prompt.up.sql

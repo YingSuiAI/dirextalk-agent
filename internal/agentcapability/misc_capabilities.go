@@ -391,12 +391,23 @@ func (c *configCapability) Descriptor() *capv1.CapabilityDescriptor {
 			capabilityOperation{ID: "update", DisplayName: "Update Native Agent config", Description: "Update owner-scoped Native Agent configuration with an idempotency key.", Type: capv1.OperationType_OPERATION_TYPE_MUTATION, Scope: "agent:config:write", Risk: capv1.RiskLevel_RISK_LEVEL_MEDIUM, InputSchema: nativeConfigUpdateSchema, ResultSchema: nativeConfigResultSchema},
 		)
 	}
+	if c != nil {
+		if _, ok := c.store.(coreconfig.SystemPromptStore); ok {
+			operations = append(operations,
+				capabilityOperation{ID: "get_system_prompt", DisplayName: "Get global system prompt", Description: "Read the single server-owned prompt shared by conversation models.", Type: capv1.OperationType_OPERATION_TYPE_READ, Scope: "agent:config:read", InputSchema: nativeConfigGetSchema, ResultSchema: systemPromptResultSchema},
+				capabilityOperation{ID: "update_system_prompt", DisplayName: "Update global system prompt", Description: "Save the prompt for future requests independently of model configuration.", Type: capv1.OperationType_OPERATION_TYPE_MUTATION, Scope: "agent:config:write", Risk: capv1.RiskLevel_RISK_LEVEL_MEDIUM, InputSchema: systemPromptUpdateSchema, ResultSchema: systemPromptResultSchema},
+			)
+		}
+	}
 	return capabilityDescriptor(configCapabilityID, "Agent Config", "Owner-scoped Native Agent configuration", operations)
 }
 
 func (c *configCapability) HandleOperation(ctx context.Context, operationID string, raw []byte) ([]byte, error) {
 	if err := requireCapabilityIdentity(ctx); err != nil {
 		return nil, err
+	}
+	if operationID == "get_system_prompt" || operationID == "update_system_prompt" {
+		return c.handleSystemPrompt(ctx, operationID, raw)
 	}
 	if operationID == "get" {
 		if c == nil || c.store == nil || requireEmptyObject(raw) != nil {
