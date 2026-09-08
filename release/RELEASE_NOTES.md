@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v1.0.214
+
+1. Preserve typed provider and Worker failures through durable execution and user-facing replies, and expose safe bounded conversation activity without raw reasoning or tool data.
+2. Reuse the selected Docker Buildx builder between release verification and publication so unchanged intermediate layers and Go compiler output remain warm.
+
 ## v1.0.213
 
 1. Separate execution on an existing Cloud Worker from new-machine creation and confirmation flow while retaining the exact durable Worker authority.

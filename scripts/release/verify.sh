@@ -8,13 +8,16 @@ release_init "$@"
 release_preflight
 release_require_json "$RELEASE_CONTEXT" prepared
 release_require_tools go buf docker
+release_require_buildx
 cd "$RELEASE_REPO_ROOT"
 
 release_with_test_postgres go test -p 1 -parallel 1 ./... -count=1
 go build ./cmd/...
 buf lint
 
-docker build --pull \
+docker buildx build --pull \
+  --platform linux/amd64 \
+  --load \
   --build-arg "VERSION=$RELEASE_VERSION" \
   --build-arg "REVISION=$RELEASE_COMMIT" \
   --build-arg "BUILD_TIME=$RELEASE_BUILD_TIME" \

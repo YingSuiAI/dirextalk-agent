@@ -44,6 +44,11 @@ release_require_tools() {
   done
 }
 
+release_require_buildx() {
+  release_require_tools docker
+  docker buildx version >/dev/null 2>&1 || release_die 'required Docker Buildx is unavailable'
+}
+
 release_remote_main() {
   local root=$1 line
   line=$(git -C "$root" ls-remote --exit-code origin refs/heads/main)

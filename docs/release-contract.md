@@ -30,12 +30,15 @@ bash scripts/release/publish.sh vX.Y.Z
 Prepare requires a clean Agent `main` whose `HEAD` exactly equals
 `origin/main`, matching current metadata, and matching notes. Verify runs the
 Agent Go suite against a script-owned, digest-pinned `pgvector/pgvector:pg18`
-container on an ephemeral loopback port, builds all commands,
-builds the unified image, checks its version/revision/created labels, and
-requires all three production binaries to print the requested version. It then
-runs the Agent against an isolated, ephemeral PostgreSQL instance and requires
-the unauthenticated HTTP health response to report that same `release_version`.
-Canonical local evidence is bound to the commit and version tag.
+container on an ephemeral loopback port, builds all commands, then uses Docker
+Buildx to build and load the unified image. Using Buildx for both verification
+and publication retains the selected builder's Go compiler cache and unchanged
+intermediate layers between those two stages. Verify checks the image's
+version/revision/created labels and requires all three production binaries to
+print the requested version. It then runs the Agent against an isolated,
+ephemeral PostgreSQL instance and requires the unauthenticated HTTP health
+response to report that same `release_version`. Canonical local evidence is
+bound to the commit and version tag.
 
 Publish revalidates the clean, synchronized `main` source and its prepare and
 verify evidence. Buildx publishes the requested `linux/amd64` version tag, then

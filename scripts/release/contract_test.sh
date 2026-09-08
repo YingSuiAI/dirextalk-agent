@@ -275,7 +275,8 @@ grep -F 'docker run --detach --name agent-release-tests-' "$fixture/commands.log
   fail 'verify did not provision the pinned pgvector PostgreSQL baseline'
 grep -F 'docker exec agent-release-tests-' "$fixture/commands.log" | grep -F 'pg_available_extensions' >/dev/null || \
   fail 'verify omitted the vector capability probe'
-grep -F 'docker build --pull' "$fixture/commands.log" >/dev/null || fail 'verify omitted the local image build'
+grep -F 'docker buildx build --pull --platform linux/amd64 --load' "$fixture/commands.log" >/dev/null || \
+  fail 'verify omitted the Buildx image build and local load'
 for binary in dirextalk-agent dirextalk-extension-runner dirextalk-core-runner; do
   grep -F -- "--entrypoint /usr/local/bin/$binary" "$fixture/commands.log" >/dev/null || \
     fail "verify omitted the $binary version probe"
