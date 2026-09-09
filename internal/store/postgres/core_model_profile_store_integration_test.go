@@ -428,6 +428,50 @@ func TestCoreModelProfileStoreSyncIntegration(t *testing.T) {
 	if strings.Contains(fmt.Sprint(created), "one-secret") || strings.Contains(fmt.Sprint(created), "two-secret") {
 		t.Fatal("sync response leaked API key")
 	}
+	cloned, err := store.SyncProfiles(ctx, uuid.NewString(), strings.Repeat("9", 64), coremodel.SyncProfileCommand{
+		Entries: []coremodel.SyncProfileEntry{{
+			ClientProfileID: "three", CredentialSourceClientProfileID: "one", DisplayName: "Three",
+			Provider: coremodel.ProviderOpenAICompatible, RequestDialect: coremodel.DialectOpenAICompatibleChatV1,
+			BaseURL: "https://api.openai.com/v1/", Model: "other",
+		}},
+	})
+	if err != nil || len(cloned.Profiles) != 1 || !cloned.Profiles[0].APIKeyConfigured || cloned.Profiles[0].Revision != 1 || cloned.Profiles[0].CredentialVersion != 1 {
+		t.Fatalf("credential-source sync=%+v err=%v", cloned, err)
+	}
+	resolvedClone, err := store.ResolveProfile(ctx, cloned.Profiles[0].ID)
+	if err != nil || resolvedClone.APIKey != "one-secret" {
+		t.Fatalf("credential-source resolved=%+v err=%v", resolvedClone, err)
+	}
+	var sourceCiphertext, targetCiphertext []byte
+	if err = pool.QueryRow(ctx, `SELECT api_key_ciphertext FROM core_model_profiles WHERE client_profile_id='one'`).Scan(&sourceCiphertext); err != nil {
+		t.Fatal(err)
+	}
+	if err = pool.QueryRow(ctx, `SELECT api_key_ciphertext FROM core_model_profiles WHERE client_profile_id='three'`).Scan(&targetCiphertext); err != nil {
+		t.Fatal(err)
+	}
+	if len(sourceCiphertext) == 0 || len(targetCiphertext) == 0 || bytes.Equal(sourceCiphertext, targetCiphertext) {
+		t.Fatal("credential was not independently sealed for the target profile")
+	}
+	_, err = store.SyncProfiles(ctx, uuid.NewString(), strings.Repeat("8", 64), coremodel.SyncProfileCommand{
+		Entries: []coremodel.SyncProfileEntry{{
+			ClientProfileID: "wrong-origin", CredentialSourceClientProfileID: "one", DisplayName: "Wrong origin",
+			Provider: coremodel.ProviderOpenAICompatible, RequestDialect: coremodel.DialectOpenAICompatibleChatV1,
+			BaseURL: "https://other.example/v1", Model: "model",
+		}},
+	})
+	if !errors.Is(err, coremodel.ErrInvalidProfile) {
+		t.Fatalf("incompatible credential source err=%v", err)
+	}
+	_, err = store.SyncProfiles(ctx, uuid.NewString(), strings.Repeat("7", 64), coremodel.SyncProfileCommand{
+		Entries: []coremodel.SyncProfileEntry{{
+			ClientProfileID: "missing-source-target", CredentialSourceClientProfileID: "missing", DisplayName: "Missing source",
+			Provider: coremodel.ProviderOpenAICompatible, RequestDialect: coremodel.DialectOpenAICompatibleChatV1,
+			Model: "model",
+		}},
+	})
+	if !errors.Is(err, coremodel.ErrAPIKeyUnavailable) {
+		t.Fatalf("missing credential source err=%v", err)
+	}
 	defaults, err := store.GetProfileDefaults(ctx)
 	if err != nil || defaults.ToolClientProfileID != "two" {
 		t.Fatalf("durable tool default=%+v err=%v", defaults, err)

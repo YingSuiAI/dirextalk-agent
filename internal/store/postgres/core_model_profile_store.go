@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"sort"
 	"strings"
 	"time"
 
@@ -479,6 +480,70 @@ func (s *Store) SyncProfiles(ctx context.Context, key, digest string, cmd coremo
 	if err = lockModelDefaultConvergenceTx(ctx, tx); err != nil {
 		return coremodel.SyncProfileResult{}, ErrProfileStoreUnavailable
 	}
+	// Lock every active target and credential source in a stable order, then
+	// hydrate an immutable pre-batch snapshot. Credential reuse must not depend
+	// on entry ordering, and concurrent rotations cannot race the source read.
+	touchedSet := make(map[string]struct{}, len(cmd.Entries)*2)
+	targetSet := make(map[string]struct{}, len(cmd.Entries))
+	for _, entry := range cmd.Entries {
+		touchedSet[entry.ClientProfileID] = struct{}{}
+		targetSet[entry.ClientProfileID] = struct{}{}
+		if entry.CredentialSourceClientProfileID != "" {
+			if entry.CredentialSourceClientProfileID == entry.ClientProfileID || entry.APIKey != nil {
+				return coremodel.SyncProfileResult{}, coremodel.ErrInvalidProfile
+			}
+			touchedSet[entry.CredentialSourceClientProfileID] = struct{}{}
+		}
+	}
+	touched := make([]string, 0, len(touchedSet))
+	for clientID := range touchedSet {
+		touched = append(touched, clientID)
+	}
+	sort.Strings(touched)
+	activeByClient := make(map[string]coremodel.Profile, len(touched))
+	if len(touched) > 0 {
+		rows, queryErr := tx.Query(ctx, profileSelectColumns+` FROM core_model_profiles WHERE client_profile_id=ANY($1::text[]) AND deleted_at IS NULL ORDER BY client_profile_id FOR UPDATE`, touched)
+		if queryErr != nil {
+			return coremodel.SyncProfileResult{}, ErrProfileStoreUnavailable
+		}
+		for rows.Next() {
+			profile, scanErr := scanProfile(rows)
+			if scanErr != nil {
+				rows.Close()
+				return coremodel.SyncProfileResult{}, ErrProfileStoreUnavailable
+			}
+			activeByClient[profile.ClientProfileID] = profile
+		}
+		if rowsErr := rows.Err(); rowsErr != nil {
+			rows.Close()
+			return coremodel.SyncProfileResult{}, ErrProfileStoreUnavailable
+		}
+		rows.Close()
+		for _, entry := range cmd.Entries {
+			if entry.CredentialSourceClientProfileID != "" {
+				if _, exists := activeByClient[entry.ClientProfileID]; exists {
+					return coremodel.SyncProfileResult{}, coremodel.ErrInvalidProfile
+				}
+			}
+		}
+		for _, clientID := range touched {
+			profile, ok := activeByClient[clientID]
+			if !ok {
+				continue
+			}
+			if profile.APIKeyConfigured {
+				if err = s.hydrateProfileSecret(ctx, tx, &profile); err != nil {
+					return coremodel.SyncProfileResult{}, ErrProfileStoreUnavailable
+				}
+			}
+			if _, isTarget := targetSet[clientID]; isTarget {
+				if err = s.hydrateProviderSecrets(ctx, tx, &profile); err != nil {
+					return coremodel.SyncProfileResult{}, ErrProfileStoreUnavailable
+				}
+			}
+			activeByClient[clientID] = profile
+		}
+	}
 	seen := make(map[string]struct{}, len(cmd.Entries))
 	out := coremodel.SyncProfileResult{DefaultConversationProfileID: cmd.DefaultConversationProfileID, DefaultToolProfileID: cmd.DefaultToolProfileID, DefaultEmbeddingProfileID: cmd.DefaultEmbeddingProfileID, DefaultSpeechProfileID: cmd.DefaultSpeechProfileID, Profiles: make([]coremodel.PublicProfile, 0, len(cmd.Entries))}
 	for _, e := range cmd.Entries {
@@ -489,20 +554,10 @@ func (s *Store) SyncProfiles(ctx context.Context, key, digest string, cmd coremo
 			return coremodel.SyncProfileResult{}, coremodel.ErrSyncConflict
 		}
 		seen[e.ClientProfileID] = struct{}{}
-		var p coremodel.Profile
-		p, err = scanProfile(tx.QueryRow(ctx, profileSelectColumns+` FROM core_model_profiles WHERE client_profile_id=$1 AND deleted_at IS NULL FOR UPDATE`, e.ClientProfileID))
-		exists := err == nil
-		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			return coremodel.SyncProfileResult{}, ErrProfileStoreUnavailable
-		}
+		p, exists := activeByClient[e.ClientProfileID]
 		if exists {
-			if p.APIKeyConfigured {
-				if err = s.hydrateProfileSecret(ctx, tx, &p); err != nil {
-					return coremodel.SyncProfileResult{}, ErrProfileStoreUnavailable
-				}
-			}
-			if err = s.hydrateProviderSecrets(ctx, tx, &p); err != nil {
-				return coremodel.SyncProfileResult{}, ErrProfileStoreUnavailable
+			if e.CredentialSourceClientProfileID != "" {
+				return coremodel.SyncProfileResult{}, coremodel.ErrInvalidProfile
 			}
 			if e.ExpectedRevision == nil || p.Revision != *e.ExpectedRevision {
 				return coremodel.SyncProfileResult{}, coremodel.ErrRevisionConflict
@@ -566,7 +621,7 @@ func (s *Store) SyncProfiles(ctx context.Context, key, digest string, cmd coremo
 			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 				return coremodel.SyncProfileResult{}, ErrProfileStoreUnavailable
 			}
-			if retiredExists && e.APIKey == nil {
+			if retiredExists && e.APIKey == nil && e.CredentialSourceClientProfileID == "" {
 				return coremodel.SyncProfileResult{}, coremodel.ErrAPIKeyUnavailable
 			}
 			now := time.Now().UTC()
@@ -577,9 +632,32 @@ func (s *Store) SyncProfiles(ctx context.Context, key, digest string, cmd coremo
 				createdAt = retired.CreatedAt
 			}
 			p = coremodel.Profile{ID: profileID, ClientProfileID: e.ClientProfileID, DisplayName: e.DisplayName, Provider: e.Provider, RequestDialect: e.RequestDialect, ModelKind: e.ModelKind, InputModalities: append([]string(nil), e.InputModalities...), ProviderConfig: e.ProviderConfig, ProviderSecrets: e.ProviderSecrets, BaseURL: e.BaseURL, Model: e.Model, APIKey: valueOrEmpty(e.APIKey), Temperature: e.Temperature, TopP: e.TopP, MaxOutputTokens: e.MaxOutputTokens, ContextWindow: e.ContextWindow, ReasoningEffort: e.ReasoningEffort, Revision: revision, CredentialVersion: credentialVersion, CreatedAt: createdAt, UpdatedAt: now}
+			if e.CredentialSourceClientProfileID != "" {
+				source, ok := activeByClient[e.CredentialSourceClientProfileID]
+				if !ok {
+					return coremodel.SyncProfileResult{}, coremodel.ErrAPIKeyUnavailable
+				}
+				sourceKind := strings.ToLower(strings.TrimSpace(source.ModelKind))
+				if sourceKind == "" {
+					sourceKind = coremodel.ModelKindConversation
+				}
+				if source.Provider == coremodel.ProviderVolcVoice || sourceKind == coremodel.ModelKindSpeech {
+					return coremodel.SyncProfileResult{}, coremodel.ErrInvalidProfile
+				}
+				if !source.APIKeyConfigured || source.Revision <= 0 || source.CredentialVersion <= 0 || strings.TrimSpace(source.APIKey) == "" {
+					return coremodel.SyncProfileResult{}, coremodel.ErrAPIKeyUnavailable
+				}
+				p.APIKey = source.APIKey
+			}
 			p, err = coremodel.ValidateProfile(p)
 			if err != nil {
 				return coremodel.SyncProfileResult{}, err
+			}
+			if e.CredentialSourceClientProfileID != "" {
+				source := activeByClient[e.CredentialSourceClientProfileID]
+				if p.ModelKind == coremodel.ModelKindSpeech || p.Provider != source.Provider || p.BaseURL != source.BaseURL {
+					return coremodel.SyncProfileResult{}, coremodel.ErrInvalidProfile
+				}
 			}
 			modalities, providerConfig, providerSecretStatus := profileMetadataJSON(p)
 			envelope, sealErr := s.sealProfileSecret(p)

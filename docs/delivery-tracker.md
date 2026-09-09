@@ -444,6 +444,10 @@ contract](message-server-integration-development-contract.md), and
   profile binding across memory/PostgreSQL stores, Protobuf, and
   `agent.models.v1` sync/list schemas and results; speech/embedding bindings
   are rejected and no conversation-default fallback is synthesized.
+- New non-speech model sync entries can reuse the credential of an active,
+  configured profile with the exact normalized provider/base URL. Sync snapshots
+  and locks the source before applying the batch, then reseals the secret under
+  the target identity without returning or recording credential material.
 - Model updates and tombstone deletes remain available after historical
   conversation or snapshotted Task use. Tombstones preserve revision history
   while clearing live credentials; only future schedule/Knowledge consumers

@@ -53,6 +53,9 @@ func TestCoreV1ServiceDescriptorsAndPrivacy(t *testing.T) {
 	if f := syncEntry.Fields().ByName("api_key"); f == nil || !f.HasOptionalKeyword() {
 		t.Fatal("sync api_key must be optional/write-only")
 	}
+	if f := syncEntry.Fields().ByName("credential_source_client_profile_id"); f == nil || !f.HasOptionalKeyword() || f.Kind() != protoreflect.StringKind {
+		t.Fatal("sync credential_source_client_profile_id must be optional string")
+	}
 	for _, message := range []protoreflect.MessageDescriptor{
 		(&agentv1.ModelProfileServiceListResponse{}).ProtoReflect().Descriptor(),
 		(&agentv1.ModelProfileServiceSyncRequest{}).ProtoReflect().Descriptor(),

@@ -89,6 +89,130 @@ func TestSyncProfilesPreservesMissingProfilesAndRotatesWriteOnlyKey(t *testing.T
 	}
 }
 
+func TestSyncProfilesCreatesProfileFromExistingCredential(t *testing.T) {
+	svc := newSyncTestService(t)
+	created := mustSync(t, svc, "a0000000-0000-4000-8000-000000000070", "source", SyncProfileEntry{
+		ClientProfileID: "source", DisplayName: "Source", Provider: ProviderOpenAICompatible,
+		BaseURL: "https://models.example/v1/", Model: "chat", APIKey: stringPtr("shared-secret"),
+	})
+	if created.Profiles[0].CredentialVersion != 1 {
+		t.Fatalf("source credential version=%d", created.Profiles[0].CredentialVersion)
+	}
+
+	result := mustSync(t, svc, "a0000000-0000-4000-8000-000000000071", "target", SyncProfileEntry{
+		ClientProfileID: "target", CredentialSourceClientProfileID: "source",
+		DisplayName: "Target", Provider: ProviderOpenAICompatible,
+		BaseURL: "https://models.example/v1", Model: "other",
+	})
+	target, err := svc.ResolveProfile(context.Background(), result.Profiles[0].ID)
+	if err != nil || target.APIKey != "shared-secret" || target.Revision != 1 || target.CredentialVersion != 1 {
+		t.Fatalf("target=%+v err=%v", target, err)
+	}
+
+	replay := mustSync(t, svc, "a0000000-0000-4000-8000-000000000071", "target", SyncProfileEntry{
+		ClientProfileID: "target", CredentialSourceClientProfileID: "source",
+		DisplayName: "Target", Provider: ProviderOpenAICompatible,
+		BaseURL: "https://models.example/v1", Model: "other",
+	})
+	if !replay.Replay || replay.Profiles[0].Revision != 1 || replay.Profiles[0].CredentialVersion != 1 {
+		t.Fatalf("replay=%+v", replay)
+	}
+	if _, err := svc.Sync(context.Background(), SyncProfileCommand{IdempotencyKey: "a0000000-0000-4000-8000-000000000071", Entries: []SyncProfileEntry{{
+		ClientProfileID: "target", CredentialSourceClientProfileID: "different-source",
+		DisplayName: "Target", Provider: ProviderOpenAICompatible, BaseURL: "https://models.example/v1", Model: "other",
+	}}}); !errors.Is(err, ErrIdempotencyConflict) {
+		t.Fatalf("credential source did not participate in digest: %v", err)
+	}
+}
+
+func TestSyncProfilesCredentialSourceValidation(t *testing.T) {
+	svc := newSyncTestService(t)
+	mustSync(t, svc, "a0000000-0000-4000-8000-000000000072", "source", SyncProfileEntry{
+		ClientProfileID: "source", DisplayName: "Source", Provider: ProviderOpenAICompatible,
+		BaseURL: "https://models.example/v1", Model: "chat", APIKey: stringPtr("shared-secret"),
+	})
+	if _, err := svc.Sync(context.Background(), SyncProfileCommand{
+		IdempotencyKey:         "a0000000-0000-4000-8000-000000000082",
+		DefaultSpeechProfileID: "speech-source",
+		Entries:                []SyncProfileEntry{{ClientProfileID: "speech-source", DisplayName: "Speech source", Provider: ProviderVolcVoice, ModelKind: ModelKindSpeech}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name  string
+		entry SyncProfileEntry
+		want  error
+	}{
+		{name: "explicit key", entry: SyncProfileEntry{ClientProfileID: "explicit", CredentialSourceClientProfileID: "source", DisplayName: "Explicit", Provider: ProviderOpenAICompatible, BaseURL: "https://models.example/v1", Model: "model", APIKey: stringPtr("new")}, want: ErrInvalidProfile},
+		{name: "self", entry: SyncProfileEntry{ClientProfileID: "self", CredentialSourceClientProfileID: "self", DisplayName: "Self", Provider: ProviderOpenAICompatible, BaseURL: "https://models.example/v1", Model: "model"}, want: ErrInvalidProfile},
+		{name: "missing", entry: SyncProfileEntry{ClientProfileID: "missing-target", CredentialSourceClientProfileID: "missing", DisplayName: "Missing", Provider: ProviderOpenAICompatible, BaseURL: "https://models.example/v1", Model: "model"}, want: ErrAPIKeyUnavailable},
+		{name: "provider mismatch", entry: SyncProfileEntry{ClientProfileID: "provider-target", CredentialSourceClientProfileID: "source", DisplayName: "Provider", Provider: ProviderAnthropic, BaseURL: "https://models.example/v1", Model: "model"}, want: ErrInvalidProfile},
+		{name: "base mismatch", entry: SyncProfileEntry{ClientProfileID: "base-target", CredentialSourceClientProfileID: "source", DisplayName: "Base", Provider: ProviderOpenAICompatible, BaseURL: "https://other.example/v1", Model: "model"}, want: ErrInvalidProfile},
+		{name: "existing target", entry: SyncProfileEntry{ClientProfileID: "source", ExpectedRevision: int64Ptr(1), CredentialSourceClientProfileID: "other", DisplayName: "Source", Provider: ProviderOpenAICompatible, BaseURL: "https://models.example/v1", Model: "chat"}, want: ErrInvalidProfile},
+		{name: "speech target", entry: SyncProfileEntry{ClientProfileID: "speech", CredentialSourceClientProfileID: "source", DisplayName: "Speech", Provider: ProviderVolcVoice, ModelKind: ModelKindSpeech}, want: ErrInvalidProfile},
+		{name: "speech source", entry: SyncProfileEntry{ClientProfileID: "speech-source-target", CredentialSourceClientProfileID: "speech-source", DisplayName: "Speech source target", Provider: ProviderOpenAICompatible, Model: "model"}, want: ErrInvalidProfile},
+	}
+	for i, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := svc.Sync(context.Background(), SyncProfileCommand{IdempotencyKey: []string{
+				"a0000000-0000-4000-8000-000000000073", "a0000000-0000-4000-8000-000000000074",
+				"a0000000-0000-4000-8000-000000000075", "a0000000-0000-4000-8000-000000000076",
+				"a0000000-0000-4000-8000-000000000077", "a0000000-0000-4000-8000-000000000078",
+				"a0000000-0000-4000-8000-000000000079",
+				"a0000000-0000-4000-8000-000000000083",
+			}[i], Entries: []SyncProfileEntry{test.entry}})
+			if !errors.Is(err, test.want) {
+				t.Fatalf("err=%v want=%v", err, test.want)
+			}
+		})
+	}
+}
+
+func TestSyncProfilesCredentialSourceMustBeConfigured(t *testing.T) {
+	repo := NewMemoryProfileRepository()
+	svc, err := NewService(repo, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	repo.profiles[SyncProfileID("unconfigured")] = Profile{
+		ID: SyncProfileID("unconfigured"), ClientProfileID: "unconfigured", DisplayName: "Unconfigured",
+		Provider: ProviderOpenAICompatible, RequestDialect: DialectOpenAICompatibleChatV1,
+		ModelKind: ModelKindConversation, BaseURL: "https://api.openai.com/v1", Model: "model",
+		Revision: 1, CredentialVersion: 1, CreatedAt: now, UpdatedAt: now,
+	}
+	_, err = svc.Sync(context.Background(), SyncProfileCommand{IdempotencyKey: "a0000000-0000-4000-8000-000000000084", Entries: []SyncProfileEntry{{
+		ClientProfileID: "target", CredentialSourceClientProfileID: "unconfigured", DisplayName: "Target",
+		Provider: ProviderOpenAICompatible, Model: "other",
+	}}})
+	if !errors.Is(err, ErrAPIKeyUnavailable) {
+		t.Fatalf("unconfigured source err=%v", err)
+	}
+}
+
+func TestSyncProfilesCredentialSourceUsesPreBatchSnapshot(t *testing.T) {
+	svc := newSyncTestService(t)
+	mustSync(t, svc, "a0000000-0000-4000-8000-000000000080", "source", SyncProfileEntry{
+		ClientProfileID: "source", DisplayName: "Source", Provider: ProviderOpenAICompatible,
+		BaseURL: "https://models.example/v1", Model: "chat", APIKey: stringPtr("original"),
+	})
+	_, err := svc.Sync(context.Background(), SyncProfileCommand{
+		IdempotencyKey: "a0000000-0000-4000-8000-000000000081",
+		Entries: []SyncProfileEntry{
+			{ClientProfileID: "source", ExpectedRevision: int64Ptr(1), DisplayName: "Source", Provider: ProviderOpenAICompatible, BaseURL: "https://models.example/v1", Model: "chat", APIKey: stringPtr("rotated")},
+			{ClientProfileID: "target", CredentialSourceClientProfileID: "source", DisplayName: "Target", Provider: ProviderOpenAICompatible, BaseURL: "https://models.example/v1", Model: "other"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := svc.ResolveClientProfile(context.Background(), "target")
+	if err != nil || target.APIKey != "original" {
+		t.Fatalf("target snapshot key=%q err=%v", target.APIKey, err)
+	}
+}
+
 func TestSyncProfilesPersistsIndependentConversationKindToolDefault(t *testing.T) {
 	repo := NewMemoryProfileRepository()
 	svc, err := NewService(repo, nil)

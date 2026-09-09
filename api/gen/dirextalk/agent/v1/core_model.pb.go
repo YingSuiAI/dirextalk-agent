@@ -362,24 +362,25 @@ func (x *CoreModelProfile) GetRequestDialect() string {
 }
 
 type CoreModelProfileSyncEntry struct {
-	state            protoimpl.MessageState `protogen:"open.v1"`
-	ClientProfileId  string                 `protobuf:"bytes,1,opt,name=client_profile_id,json=clientProfileId,proto3" json:"client_profile_id,omitempty"`
-	ExpectedRevision *int64                 `protobuf:"varint,2,opt,name=expected_revision,json=expectedRevision,proto3,oneof" json:"expected_revision,omitempty"`
-	DisplayName      string                 `protobuf:"bytes,3,opt,name=display_name,json=displayName,proto3" json:"display_name,omitempty"`
-	Provider         CoreModelProvider      `protobuf:"varint,4,opt,name=provider,proto3,enum=dirextalk.agent.v1.CoreModelProvider" json:"provider,omitempty"`
-	BaseUrl          string                 `protobuf:"bytes,5,opt,name=base_url,json=baseUrl,proto3" json:"base_url,omitempty"`
-	Model            string                 `protobuf:"bytes,6,opt,name=model,proto3" json:"model,omitempty"`
-	ApiKey           *string                `protobuf:"bytes,8,opt,name=api_key,json=apiKey,proto3,oneof" json:"api_key,omitempty"`
-	Temperature      *float64               `protobuf:"fixed64,9,opt,name=temperature,proto3,oneof" json:"temperature,omitempty"`
-	TopP             *float64               `protobuf:"fixed64,10,opt,name=top_p,json=topP,proto3,oneof" json:"top_p,omitempty"`
-	MaxOutputTokens  int32                  `protobuf:"varint,11,opt,name=max_output_tokens,json=maxOutputTokens,proto3" json:"max_output_tokens,omitempty"`
-	ContextWindow    int32                  `protobuf:"varint,12,opt,name=context_window,json=contextWindow,proto3" json:"context_window,omitempty"`
-	ReasoningEffort  string                 `protobuf:"bytes,13,opt,name=reasoning_effort,json=reasoningEffort,proto3" json:"reasoning_effort,omitempty"`
-	ModelKind        string                 `protobuf:"bytes,14,opt,name=model_kind,json=modelKind,proto3" json:"model_kind,omitempty"`
-	InputModalities  []string               `protobuf:"bytes,15,rep,name=input_modalities,json=inputModalities,proto3" json:"input_modalities,omitempty"`
-	RequestDialect   string                 `protobuf:"bytes,16,opt,name=request_dialect,json=requestDialect,proto3" json:"request_dialect,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	state                           protoimpl.MessageState `protogen:"open.v1"`
+	ClientProfileId                 string                 `protobuf:"bytes,1,opt,name=client_profile_id,json=clientProfileId,proto3" json:"client_profile_id,omitempty"`
+	ExpectedRevision                *int64                 `protobuf:"varint,2,opt,name=expected_revision,json=expectedRevision,proto3,oneof" json:"expected_revision,omitempty"`
+	DisplayName                     string                 `protobuf:"bytes,3,opt,name=display_name,json=displayName,proto3" json:"display_name,omitempty"`
+	Provider                        CoreModelProvider      `protobuf:"varint,4,opt,name=provider,proto3,enum=dirextalk.agent.v1.CoreModelProvider" json:"provider,omitempty"`
+	BaseUrl                         string                 `protobuf:"bytes,5,opt,name=base_url,json=baseUrl,proto3" json:"base_url,omitempty"`
+	Model                           string                 `protobuf:"bytes,6,opt,name=model,proto3" json:"model,omitempty"`
+	ApiKey                          *string                `protobuf:"bytes,8,opt,name=api_key,json=apiKey,proto3,oneof" json:"api_key,omitempty"`
+	Temperature                     *float64               `protobuf:"fixed64,9,opt,name=temperature,proto3,oneof" json:"temperature,omitempty"`
+	TopP                            *float64               `protobuf:"fixed64,10,opt,name=top_p,json=topP,proto3,oneof" json:"top_p,omitempty"`
+	MaxOutputTokens                 int32                  `protobuf:"varint,11,opt,name=max_output_tokens,json=maxOutputTokens,proto3" json:"max_output_tokens,omitempty"`
+	ContextWindow                   int32                  `protobuf:"varint,12,opt,name=context_window,json=contextWindow,proto3" json:"context_window,omitempty"`
+	ReasoningEffort                 string                 `protobuf:"bytes,13,opt,name=reasoning_effort,json=reasoningEffort,proto3" json:"reasoning_effort,omitempty"`
+	ModelKind                       string                 `protobuf:"bytes,14,opt,name=model_kind,json=modelKind,proto3" json:"model_kind,omitempty"`
+	InputModalities                 []string               `protobuf:"bytes,15,rep,name=input_modalities,json=inputModalities,proto3" json:"input_modalities,omitempty"`
+	RequestDialect                  string                 `protobuf:"bytes,16,opt,name=request_dialect,json=requestDialect,proto3" json:"request_dialect,omitempty"`
+	CredentialSourceClientProfileId *string                `protobuf:"bytes,17,opt,name=credential_source_client_profile_id,json=credentialSourceClientProfileId,proto3,oneof" json:"credential_source_client_profile_id,omitempty"`
+	unknownFields                   protoimpl.UnknownFields
+	sizeCache                       protoimpl.SizeCache
 }
 
 func (x *CoreModelProfileSyncEntry) Reset() {
@@ -513,6 +514,13 @@ func (x *CoreModelProfileSyncEntry) GetInputModalities() []string {
 func (x *CoreModelProfileSyncEntry) GetRequestDialect() string {
 	if x != nil {
 		return x.RequestDialect
+	}
+	return ""
+}
+
+func (x *CoreModelProfileSyncEntry) GetCredentialSourceClientProfileId() string {
+	if x != nil && x.CredentialSourceClientProfileId != nil {
+		return *x.CredentialSourceClientProfileId
 	}
 	return ""
 }
@@ -1545,7 +1553,7 @@ const file_dirextalk_agent_v1_core_model_proto_rawDesc = "" +
 	"\x10input_modalities\x18\x13 \x03(\tR\x0finputModalities\x12'\n" +
 	"\x0frequest_dialect\x18\x14 \x01(\tR\x0erequestDialectB\x0e\n" +
 	"\f_temperatureB\b\n" +
-	"\x06_top_pJ\x04\b\x06\x10\aR\rsystem_prompt\"\xb1\x05\n" +
+	"\x06_top_pJ\x04\b\x06\x10\aR\rsystem_prompt\"\xac\x06\n" +
 	"\x19CoreModelProfileSyncEntry\x12*\n" +
 	"\x11client_profile_id\x18\x01 \x01(\tR\x0fclientProfileId\x120\n" +
 	"\x11expected_revision\x18\x02 \x01(\x03H\x00R\x10expectedRevision\x88\x01\x01\x12!\n" +
@@ -1563,12 +1571,14 @@ const file_dirextalk_agent_v1_core_model_proto_rawDesc = "" +
 	"\n" +
 	"model_kind\x18\x0e \x01(\tR\tmodelKind\x12)\n" +
 	"\x10input_modalities\x18\x0f \x03(\tR\x0finputModalities\x12'\n" +
-	"\x0frequest_dialect\x18\x10 \x01(\tR\x0erequestDialectB\x14\n" +
+	"\x0frequest_dialect\x18\x10 \x01(\tR\x0erequestDialect\x12Q\n" +
+	"#credential_source_client_profile_id\x18\x11 \x01(\tH\x04R\x1fcredentialSourceClientProfileId\x88\x01\x01B\x14\n" +
 	"\x12_expected_revisionB\n" +
 	"\n" +
 	"\b_api_keyB\x0e\n" +
 	"\f_temperatureB\b\n" +
-	"\x06_top_pJ\x04\b\a\x10\bR\rsystem_prompt\"\x92\x04\n" +
+	"\x06_top_pB&\n" +
+	"$_credential_source_client_profile_idJ\x04\b\a\x10\bR\rsystem_prompt\"\x92\x04\n" +
 	" ModelProfileServiceCreateRequest\x12'\n" +
 	"\x0fidempotency_key\x18\x01 \x01(\tR\x0eidempotencyKey\x12!\n" +
 	"\fdisplay_name\x18\x02 \x01(\tR\vdisplayName\x12A\n" +

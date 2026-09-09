@@ -147,5 +147,40 @@ func TestModelProfileRPCSyncRequiresExplicitRequestDialect(t *testing.T) {
 	}
 }
 
+func TestModelProfileRPCSyncMapsCredentialSource(t *testing.T) {
+	repo := coremodel.NewMemoryProfileRepository()
+	domain, err := coremodel.NewService(repo, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, _ := NewModelProfileService(domain)
+	_, err = service.Sync(context.Background(), &agentv1.ModelProfileServiceSyncRequest{
+		IdempotencyKey: "a0000000-0000-4000-8000-000000000044",
+		Entries: []*agentv1.CoreModelProfileSyncEntry{{
+			ClientProfileId: "source", DisplayName: "Source",
+			Provider:       agentv1.CoreModelProvider_CORE_MODEL_PROVIDER_OPENAI_COMPATIBLE,
+			RequestDialect: string(coremodel.DialectOpenAICompatibleChatV1), BaseUrl: "https://models.example/v1", Model: "chat", ApiKey: stringPtrRPC("shared-secret"),
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.Sync(context.Background(), &agentv1.ModelProfileServiceSyncRequest{
+		IdempotencyKey: "a0000000-0000-4000-8000-000000000045",
+		Entries: []*agentv1.CoreModelProfileSyncEntry{{
+			ClientProfileId: "target", CredentialSourceClientProfileId: stringPtrRPC("source"), DisplayName: "Target",
+			Provider:       agentv1.CoreModelProvider_CORE_MODEL_PROVIDER_OPENAI_COMPATIBLE,
+			RequestDialect: string(coremodel.DialectOpenAICompatibleChatV1), BaseUrl: "https://models.example/v1/", Model: "other",
+		}},
+	})
+	if err != nil || len(result.Profiles) != 1 || !result.Profiles[0].ApiKeyConfigured || result.Profiles[0].CredentialVersion != 1 {
+		t.Fatalf("credential-source sync=%+v err=%v", result, err)
+	}
+	resolved, err := domain.ResolveClientProfile(context.Background(), "target")
+	if err != nil || resolved.APIKey != "shared-secret" {
+		t.Fatalf("resolved target=%+v err=%v", resolved, err)
+	}
+}
+
 func stringPtrRPC(v string) *string { return &v }
 func int64PtrRPC(v int64) *int64    { return &v }

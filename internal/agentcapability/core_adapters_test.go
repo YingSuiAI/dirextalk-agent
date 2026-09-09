@@ -581,6 +581,27 @@ func TestModelSyncRejectsEmbeddingDefaultWithoutEmbeddingProfile(t *testing.T) {
 	}
 }
 
+func TestModelSyncMapsCredentialSourceClientProfileID(t *testing.T) {
+	models, err := coremodel.NewService(coremodel.NewMemoryProfileRepository(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capability := &coreModelCapability{service: models}
+	_, err = capability.HandleOperation(context.Background(), "sync_models", []byte(`{"idempotency_key":"12121212-1212-4121-8121-121212121213","entries":[{"client_profile_id":"source","display_name":"Source","provider":"openai_compatible","request_dialect":"openai_compatible_chat_v1","base_url":"https://example.invalid/v1","model":"chat","api_key":"secret"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := capability.HandleOperation(context.Background(), "sync_models", []byte(`{"idempotency_key":"12121212-1212-4121-8121-121212121214","entries":[{"client_profile_id":"target","credential_source_client_profile_id":"source","display_name":"Target","provider":"openai_compatible","request_dialect":"openai_compatible_chat_v1","base_url":"https://example.invalid/v1","model":"other"}]}`))
+	if err != nil || !strings.Contains(string(result), `"api_key_configured":true`) {
+		t.Fatalf("credential-source sync result=%s err=%v", result, err)
+	}
+	for _, operation := range capability.Descriptor().GetOperations() {
+		if operation.GetOperationId() == "sync_models" && !strings.Contains(operation.GetInputSchemaJson(), "credential_source_client_profile_id") {
+			t.Fatalf("sync schema missing credential source: %s", operation.GetInputSchemaJson())
+		}
+	}
+}
+
 func TestChatCapabilityRequiresExplicitProfilePins(t *testing.T) {
 	capability := &coreChatCapability{}
 	if _, _, _, err := capability.resolveProfilePins(map[string]json.RawMessage{}); !errors.Is(err, coreconversation.ErrInvalid) {

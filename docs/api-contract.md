@@ -159,6 +159,14 @@ or stream after admission. It never cancels the accepted Turn; callers use
   order (`created_at`, then `profile_id` as the total-order tie-breaker). Zero
   eligible profiles leaves that role unset. Speech retains explicit-only
   behavior.
+- A sync entry that creates a new non-speech profile may omit `api_key` and
+  instead provide `credential_source_client_profile_id`. Core resolves only a
+  pre-sync, active, configured non-speech profile with the same normalized
+  provider and base URL, decrypts it inside the sync transaction, and seals
+  the credential again under the new target profile identity. The source may
+  not equal the target or be combined with an explicit key, and it is not
+  accepted for updates. Missing or unconfigured sources report API-key
+  unavailability; incompatible sources report an invalid profile.
 - Profile updates ignore historical conversation and Task references because
   those consumers own immutable execution snapshots. Delete tombstones every
   model kind and clears only the live client binding and credentials; it

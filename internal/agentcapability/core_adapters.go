@@ -1132,28 +1132,29 @@ type coreModelCapability struct {
 // case-insensitive matching (which leaves client_profile_id and model_kind
 // silently empty).
 type syncProfileInput struct {
-	ClientProfileID  string            `json:"client_profile_id"`
-	ExpectedRevision *int64            `json:"expected_revision,omitempty"`
-	DisplayName      string            `json:"display_name"`
-	Provider         string            `json:"provider"`
-	RequestDialect   string            `json:"request_dialect"`
-	ModelKind        string            `json:"model_kind"`
-	InputModalities  []string          `json:"input_modalities,omitempty"`
-	ProviderConfig   map[string]any    `json:"provider_config,omitempty"`
-	ProviderSecrets  map[string]string `json:"provider_secrets,omitempty"`
-	BaseURL          string            `json:"base_url"`
-	Model            string            `json:"model"`
-	APIKey           *string           `json:"api_key,omitempty"`
-	Temperature      *float64          `json:"temperature,omitempty"`
-	TopP             *float64          `json:"top_p,omitempty"`
-	MaxOutputTokens  int               `json:"max_output_tokens"`
-	ContextWindow    int               `json:"context_window"`
-	ReasoningEffort  string            `json:"reasoning_effort"`
+	ClientProfileID                 string            `json:"client_profile_id"`
+	CredentialSourceClientProfileID string            `json:"credential_source_client_profile_id,omitempty"`
+	ExpectedRevision                *int64            `json:"expected_revision,omitempty"`
+	DisplayName                     string            `json:"display_name"`
+	Provider                        string            `json:"provider"`
+	RequestDialect                  string            `json:"request_dialect"`
+	ModelKind                       string            `json:"model_kind"`
+	InputModalities                 []string          `json:"input_modalities,omitempty"`
+	ProviderConfig                  map[string]any    `json:"provider_config,omitempty"`
+	ProviderSecrets                 map[string]string `json:"provider_secrets,omitempty"`
+	BaseURL                         string            `json:"base_url"`
+	Model                           string            `json:"model"`
+	APIKey                          *string           `json:"api_key,omitempty"`
+	Temperature                     *float64          `json:"temperature,omitempty"`
+	TopP                            *float64          `json:"top_p,omitempty"`
+	MaxOutputTokens                 int               `json:"max_output_tokens"`
+	ContextWindow                   int               `json:"context_window"`
+	ReasoningEffort                 string            `json:"reasoning_effort"`
 }
 
 func (v syncProfileInput) command() coremodel.SyncProfileEntry {
 	return coremodel.SyncProfileEntry{
-		ClientProfileID: v.ClientProfileID, ExpectedRevision: v.ExpectedRevision,
+		ClientProfileID: v.ClientProfileID, CredentialSourceClientProfileID: v.CredentialSourceClientProfileID, ExpectedRevision: v.ExpectedRevision,
 		DisplayName: v.DisplayName, Provider: coremodel.ModelProvider(strings.ToLower(strings.TrimSpace(v.Provider))), RequestDialect: coremodel.RequestDialect(strings.ToLower(strings.TrimSpace(v.RequestDialect))),
 		ModelKind: v.ModelKind, InputModalities: append([]string(nil), v.InputModalities...),
 		ProviderConfig: v.ProviderConfig, ProviderSecrets: v.ProviderSecrets, BaseURL: v.BaseURL,
@@ -2199,7 +2200,7 @@ func operationInputSchema(capabilityID, operation string) string {
 	case "agent.chat.v1:start_turn":
 		return `{"additionalProperties":false,"type":"object","properties":{"accepted_attachment_ids":{"items":{"format":"uuid","type":"string"},"maxItems":4,"uniqueItems":true,"type":"array"},"idempotency_key":{"format":"uuid","type":"string"},"conversation_id":{"format":"uuid","type":"string"},"message":{"minLength":1,"type":"string"},"model_profile_id":{"format":"uuid","type":"string"},"model_profile_revision":{"minimum":1,"type":"integer"},"credential_version":{"minimum":1,"type":"integer"},"execution_mode":{"enum":["interactive","deep","worker_orchestration"],"type":"string"},"extensions":{"items":` + durableStreamExtensionSelectionSchema + `,"maxItems":64,"minItems":1,"type":"array","uniqueItems":true}},"required":["idempotency_key","message","model_profile_id","model_profile_revision","credential_version"]}`
 	case "agent.models.v1:sync_models":
-		return `{"type":"object","additionalProperties":false,"properties":{"idempotency_key":{"type":"string"},"default_conversation_client_profile_id":{"type":"string"},"default_tool_client_profile_id":{"type":"string"},"default_embedding_client_profile_id":{"type":"string"},"default_speech_client_profile_id":{"type":"string"},"entries":{"type":"array"}},"required":["idempotency_key","entries"]}`
+		return `{"type":"object","additionalProperties":false,"properties":{"idempotency_key":{"type":"string"},"default_conversation_client_profile_id":{"type":"string"},"default_tool_client_profile_id":{"type":"string"},"default_embedding_client_profile_id":{"type":"string"},"default_speech_client_profile_id":{"type":"string"},"entries":{"type":"array","items":{"type":"object","properties":{"credential_source_client_profile_id":{"type":"string"}}}}},"required":["idempotency_key","entries"]}`
 	case "agent.models.v1:list_models":
 		return `{"additionalProperties":false,"properties":{"page_size":{"maximum":100,"minimum":1,"type":"integer"},"page_token":{"maxLength":4096,"type":"string"}},"type":"object"}`
 	case "agent.knowledge.v1:list_sources":

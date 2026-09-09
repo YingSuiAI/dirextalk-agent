@@ -225,24 +225,27 @@ type ProfileSpec struct {
 
 // SyncProfileEntry is a complete client-owned profile projection. A nil APIKey
 // preserves an existing configured key; a non-nil key is write-only rotation.
+// CredentialSourceClientProfileID is accepted only for a new non-speech entry
+// and copies a compatible pre-sync profile credential without exposing it.
 type SyncProfileEntry struct {
-	ClientProfileID  string            `json:"client_profile_id"`
-	ExpectedRevision *int64            `json:"expected_revision,omitempty"`
-	DisplayName      string            `json:"display_name"`
-	Provider         ModelProvider     `json:"provider"`
-	RequestDialect   RequestDialect    `json:"request_dialect"`
-	ModelKind        string            `json:"model_kind,omitempty"`
-	InputModalities  []string          `json:"input_modalities,omitempty"`
-	ProviderConfig   map[string]any    `json:"provider_config,omitempty"`
-	ProviderSecrets  map[string]string `json:"provider_secrets,omitempty"`
-	BaseURL          string            `json:"base_url"`
-	Model            string            `json:"model"`
-	APIKey           *string           `json:"api_key,omitempty"`
-	Temperature      *float64          `json:"temperature,omitempty"`
-	TopP             *float64          `json:"top_p,omitempty"`
-	MaxOutputTokens  int               `json:"max_output_tokens"`
-	ContextWindow    int               `json:"context_window"`
-	ReasoningEffort  string            `json:"reasoning_effort"`
+	ClientProfileID                 string            `json:"client_profile_id"`
+	CredentialSourceClientProfileID string            `json:"credential_source_client_profile_id,omitempty"`
+	ExpectedRevision                *int64            `json:"expected_revision,omitempty"`
+	DisplayName                     string            `json:"display_name"`
+	Provider                        ModelProvider     `json:"provider"`
+	RequestDialect                  RequestDialect    `json:"request_dialect"`
+	ModelKind                       string            `json:"model_kind,omitempty"`
+	InputModalities                 []string          `json:"input_modalities,omitempty"`
+	ProviderConfig                  map[string]any    `json:"provider_config,omitempty"`
+	ProviderSecrets                 map[string]string `json:"provider_secrets,omitempty"`
+	BaseURL                         string            `json:"base_url"`
+	Model                           string            `json:"model"`
+	APIKey                          *string           `json:"api_key,omitempty"`
+	Temperature                     *float64          `json:"temperature,omitempty"`
+	TopP                            *float64          `json:"top_p,omitempty"`
+	MaxOutputTokens                 int               `json:"max_output_tokens"`
+	ContextWindow                   int               `json:"context_window"`
+	ReasoningEffort                 string            `json:"reasoning_effort"`
 }
 
 type SyncProfileCommand struct {

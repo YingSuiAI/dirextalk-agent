@@ -296,8 +296,17 @@ func (s *Service) Sync(ctx context.Context, cmd SyncProfileCommand) (SyncProfile
 	for i := range cmd.Entries {
 		e := &cmd.Entries[i]
 		e.ClientProfileID = strings.TrimSpace(e.ClientProfileID)
+		e.CredentialSourceClientProfileID = strings.TrimSpace(e.CredentialSourceClientProfileID)
 		if err := ValidateClientProfileID(e.ClientProfileID); err != nil {
 			return SyncProfileResult{}, err
+		}
+		if e.CredentialSourceClientProfileID != "" {
+			if err := ValidateClientProfileID(e.CredentialSourceClientProfileID); err != nil {
+				return SyncProfileResult{}, err
+			}
+			if e.CredentialSourceClientProfileID == e.ClientProfileID || e.APIKey != nil {
+				return SyncProfileResult{}, ErrInvalidProfile
+			}
 		}
 		if _, ok := seen[e.ClientProfileID]; ok {
 			return SyncProfileResult{}, ErrSyncConflict
@@ -314,11 +323,17 @@ func (s *Service) Sync(ctx context.Context, cmd SyncProfileCommand) (SyncProfile
 			APIKey: valueOrEmpty(e.APIKey), Temperature: e.Temperature,
 			TopP: e.TopP, MaxOutputTokens: e.MaxOutputTokens, ContextWindow: e.ContextWindow, ReasoningEffort: e.ReasoningEffort}
 		validated, validationErr := validateStoredProfile(candidate)
-		if validationErr != nil && (e.APIKey != nil || e.Provider != ProviderVolcVoice) {
+		if validationErr != nil && (e.APIKey != nil || e.Provider != ProviderVolcVoice || e.CredentialSourceClientProfileID != "") {
 			return SyncProfileResult{}, validationErr
 		}
 		if validationErr == nil {
 			e.RequestDialect = validated.RequestDialect
+			if e.CredentialSourceClientProfileID != "" {
+				e.Provider, e.ModelKind, e.BaseURL = validated.Provider, validated.ModelKind, validated.BaseURL
+				if validated.ModelKind == ModelKindSpeech {
+					return SyncProfileResult{}, ErrInvalidProfile
+				}
+			}
 		}
 	}
 	cmd.DefaultConversationProfileID = strings.TrimSpace(cmd.DefaultConversationProfileID)
@@ -723,23 +738,24 @@ func syncProfileDigest(cmd SyncProfileCommand) (string, error) {
 			keyHash = hex.EncodeToString(sum[:])
 		}
 		canonical.Entries = append(canonical.Entries, struct {
-			ClientID     string         `json:"client_profile_id"`
-			Expected     *int64         `json:"expected_revision,omitempty"`
-			DisplayName  string         `json:"display_name"`
-			Provider     ModelProvider  `json:"provider"`
-			ModelKind    string         `json:"model_kind,omitempty"`
-			Modalities   []string       `json:"input_modalities,omitempty"`
-			Config       map[string]any `json:"provider_config,omitempty"`
-			Secrets      []secretDigest `json:"provider_secrets,omitempty"`
-			BaseURL      string         `json:"base_url"`
-			Model        string         `json:"model"`
-			APIKeySHA256 string         `json:"api_key_sha256,omitempty"`
-			Temperature  *float64       `json:"temperature,omitempty"`
-			TopP         *float64       `json:"top_p,omitempty"`
-			Max          int            `json:"max_output_tokens"`
-			Context      int            `json:"context_window"`
-			Reasoning    string         `json:"reasoning_effort"`
-		}{e.ClientProfileID, e.ExpectedRevision, e.DisplayName, e.Provider, e.ModelKind, append([]string(nil), e.InputModalities...), redactProviderConfig(e.ProviderConfig), providerSecretDigests(e.ProviderSecrets), e.BaseURL, e.Model, keyHash, e.Temperature, e.TopP, e.MaxOutputTokens, e.ContextWindow, e.ReasoningEffort})
+			ClientID                 string         `json:"client_profile_id"`
+			CredentialSourceClientID string         `json:"credential_source_client_profile_id,omitempty"`
+			Expected                 *int64         `json:"expected_revision,omitempty"`
+			DisplayName              string         `json:"display_name"`
+			Provider                 ModelProvider  `json:"provider"`
+			ModelKind                string         `json:"model_kind,omitempty"`
+			Modalities               []string       `json:"input_modalities,omitempty"`
+			Config                   map[string]any `json:"provider_config,omitempty"`
+			Secrets                  []secretDigest `json:"provider_secrets,omitempty"`
+			BaseURL                  string         `json:"base_url"`
+			Model                    string         `json:"model"`
+			APIKeySHA256             string         `json:"api_key_sha256,omitempty"`
+			Temperature              *float64       `json:"temperature,omitempty"`
+			TopP                     *float64       `json:"top_p,omitempty"`
+			Max                      int            `json:"max_output_tokens"`
+			Context                  int            `json:"context_window"`
+			Reasoning                string         `json:"reasoning_effort"`
+		}{e.ClientProfileID, e.CredentialSourceClientProfileID, e.ExpectedRevision, e.DisplayName, e.Provider, e.ModelKind, append([]string(nil), e.InputModalities...), redactProviderConfig(e.ProviderConfig), providerSecretDigests(e.ProviderSecrets), e.BaseURL, e.Model, keyHash, e.Temperature, e.TopP, e.MaxOutputTokens, e.ContextWindow, e.ReasoningEffort})
 	}
 	return profileDigest("sync", canonical)
 }
@@ -1117,13 +1133,23 @@ func (r *MemoryProfileRepository) SyncProfiles(_ context.Context, key, digest st
 		}
 	}
 	work := make(map[string]Profile, len(r.profiles))
+	sourceSnapshot := make(map[string]Profile, len(r.profiles))
 	for id, p := range r.profiles {
 		work[id] = cloneProfile(p)
+		if p.ClientProfileID != "" {
+			sourceSnapshot[p.ClientProfileID] = cloneProfile(p)
+		}
 	}
 	out := SyncProfileResult{DefaultConversationProfileID: cmd.DefaultConversationProfileID, Profiles: make([]PublicProfile, 0, len(cmd.Entries))}
 	for _, e := range cmd.Entries {
+		if e.CredentialSourceClientProfileID != "" && (e.CredentialSourceClientProfileID == e.ClientProfileID || e.APIKey != nil) {
+			return SyncProfileResult{}, ErrInvalidProfile
+		}
 		id, exists := byClient[e.ClientProfileID]
 		if exists {
+			if e.CredentialSourceClientProfileID != "" {
+				return SyncProfileResult{}, ErrInvalidProfile
+			}
 			p := work[id]
 			if e.ExpectedRevision == nil || p.Revision != *e.ExpectedRevision {
 				return SyncProfileResult{}, ErrRevisionConflict
@@ -1159,6 +1185,34 @@ func (r *MemoryProfileRepository) SyncProfiles(_ context.Context, key, digest st
 				return SyncProfileResult{}, ErrRevisionConflict
 			}
 			p := Profile{ID: SyncProfileID(e.ClientProfileID), ClientProfileID: e.ClientProfileID, DisplayName: e.DisplayName, Provider: e.Provider, RequestDialect: e.RequestDialect, ModelKind: e.ModelKind, InputModalities: append([]string(nil), e.InputModalities...), ProviderConfig: e.ProviderConfig, ProviderSecrets: e.ProviderSecrets, BaseURL: e.BaseURL, Model: e.Model, APIKey: valueOrEmpty(e.APIKey), Temperature: cloneFloat(e.Temperature), TopP: cloneFloat(e.TopP), MaxOutputTokens: e.MaxOutputTokens, ContextWindow: e.ContextWindow, ReasoningEffort: e.ReasoningEffort, Revision: 1, CredentialVersion: 1, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+			if e.CredentialSourceClientProfileID != "" {
+				validated, validationErr := validateStoredProfile(p)
+				if validationErr != nil {
+					return SyncProfileResult{}, validationErr
+				}
+				if validated.ModelKind == ModelKindSpeech {
+					return SyncProfileResult{}, ErrInvalidProfile
+				}
+				p = validated
+				source, ok := sourceSnapshot[e.CredentialSourceClientProfileID]
+				if !ok {
+					return SyncProfileResult{}, ErrAPIKeyUnavailable
+				}
+				sourceKind := strings.ToLower(strings.TrimSpace(source.ModelKind))
+				if sourceKind == "" {
+					sourceKind = ModelKindConversation
+				}
+				if source.Provider == ProviderVolcVoice || sourceKind == ModelKindSpeech {
+					return SyncProfileResult{}, ErrInvalidProfile
+				}
+				if source.Revision <= 0 || source.CredentialVersion <= 0 || strings.TrimSpace(source.APIKey) == "" {
+					return SyncProfileResult{}, ErrAPIKeyUnavailable
+				}
+				p.APIKey = source.APIKey
+				if p.Provider != source.Provider || p.BaseURL != source.BaseURL {
+					return SyncProfileResult{}, ErrInvalidProfile
+				}
+			}
 			id = p.ID
 			byClient[e.ClientProfileID] = id
 			work[id] = p

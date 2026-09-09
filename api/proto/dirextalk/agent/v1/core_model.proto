@@ -64,6 +64,7 @@ message CoreModelProfileSyncEntry {
   string model_kind = 14;
   repeated string input_modalities = 15;
   string request_dialect = 16;
+  optional string credential_source_client_profile_id = 17;
 }
 
 message ModelProfileServiceCreateRequest {

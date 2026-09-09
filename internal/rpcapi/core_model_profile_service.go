@@ -123,7 +123,7 @@ func (s *ModelProfileService) Sync(ctx context.Context, req *agentv1.ModelProfil
 			value := *entry.ApiKey
 			key = &value
 		}
-		e := coremodel.SyncProfileEntry{ClientProfileID: entry.ClientProfileId, ExpectedRevision: entry.ExpectedRevision, DisplayName: entry.DisplayName, Provider: provider, RequestDialect: coremodel.RequestDialect(entry.RequestDialect), ModelKind: entry.ModelKind, InputModalities: append([]string(nil), entry.InputModalities...), BaseURL: entry.BaseUrl, Model: entry.Model, APIKey: key, Temperature: entry.Temperature, TopP: entry.TopP, MaxOutputTokens: int(entry.MaxOutputTokens), ContextWindow: int(entry.ContextWindow), ReasoningEffort: entry.ReasoningEffort}
+		e := coremodel.SyncProfileEntry{ClientProfileID: entry.ClientProfileId, CredentialSourceClientProfileID: entry.GetCredentialSourceClientProfileId(), ExpectedRevision: entry.ExpectedRevision, DisplayName: entry.DisplayName, Provider: provider, RequestDialect: coremodel.RequestDialect(entry.RequestDialect), ModelKind: entry.ModelKind, InputModalities: append([]string(nil), entry.InputModalities...), BaseURL: entry.BaseUrl, Model: entry.Model, APIKey: key, Temperature: entry.Temperature, TopP: entry.TopP, MaxOutputTokens: int(entry.MaxOutputTokens), ContextWindow: int(entry.ContextWindow), ReasoningEffort: entry.ReasoningEffort}
 		cmd.Entries = append(cmd.Entries, e)
 	}
 	result, err := s.profiles.Sync(ctx, cmd)

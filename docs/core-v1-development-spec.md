@@ -190,6 +190,17 @@ role defaults. The tool role references only a conversation-kind profile and
 has no implicit conversation-default fallback; an absent tool binding remains
 absent. The Protobuf and `agent.models.v1` Capability contracts project the
 profile kind/modalities and all role defaults without credential material.
+For creation only, a non-speech sync entry may select an existing credential
+with `credential_source_client_profile_id` while omitting `api_key`. The source
+is resolved from the active, configured, non-speech profile snapshot taken
+before the batch, must differ from the target, and must match the target's
+normalized provider and base URL exactly. Core decrypts the source inside the
+same locked transaction and encrypts it again for the new target identity;
+batch ordering cannot turn a newly created or rotated entry into the source.
+The field is invalid on updates, speech profiles, or together with an explicit
+key. Missing/unconfigured sources fail as unavailable credentials and no
+credential value is projected into Protobuf, Capability results, logs, or
+idempotency records.
 Historical conversations and Tasks retain immutable model snapshots, so their
 profile references do not block a later profile update or deletion. Deletion
 tombstones every model kind, clears its live client id and credentials, and
