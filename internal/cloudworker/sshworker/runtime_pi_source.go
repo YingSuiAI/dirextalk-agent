@@ -74,7 +74,7 @@ func(p *piEventWriter)consume(raw []byte){
    p.failureCode="provider_request_failed"
    if match:=providerStatusPattern.FindStringSubmatch(strings.TrimSpace(message.ErrorMessage));len(match)==2 {p.httpStatus,_=strconv.Atoi(match[1])}
    lower:=strings.ToLower(message.ErrorMessage)
-   if p.httpStatus==0 {switch {case strings.Contains(lower,"context length"),strings.Contains(lower,"context window"):p.failureCode="model_context_limit";case strings.Contains(lower,"timed out"),strings.Contains(lower,"timeout"):p.failureCode="model_request_timeout";case strings.Contains(lower,"connection"),strings.Contains(lower,"fetch failed"):p.failureCode="model_connection_failed"}}
+   if p.httpStatus==0 {switch {case strings.Contains(lower,"context length"),strings.Contains(lower,"context window"):p.failureCode="model_context_limit";case strings.Contains(lower,"timed out"),strings.Contains(lower,"timeout"):p.failureCode="model_request_timeout";case strings.Contains(lower,"connection"),strings.Contains(lower,"fetch failed"),strings.Contains(lower,"upstream_http2_stream_error"),strings.Contains(lower,"http/2 stream"),strings.Contains(lower,"http2 stream"),strings.Contains(lower,"connection reset"),strings.Contains(lower,"unexpected eof"),strings.Contains(lower,"stream id")&&strings.Contains(lower,"received from peer"):p.failureCode="model_connection_failed"}}
    // This diagnostic text is already redacted, remains private, and is never
    // used as public progress or promoted directly into the final response.
    fmt.Fprintln(os.Stderr,message.ErrorMessage)

@@ -58,7 +58,7 @@ func TestEmbeddedWorkerReportSeparatesFinalReplyAndDiagnostics(t *testing.T) {
 		}
 		return out
 	}
-	for _, taskID := range []string{"ordinary", "bounded", "balance"} {
+	for _, taskID := range []string{"ordinary", "bounded", "balance", "http2"} {
 		t.Run(taskID, func(t *testing.T) {
 			taskRoot := filepath.Join(root, "tasks", taskID)
 			if err := os.MkdirAll(filepath.Join(taskRoot, "workspace"), 0700); err != nil {
@@ -74,6 +74,9 @@ func TestEmbeddedWorkerReportSeparatesFinalReplyAndDiagnostics(t *testing.T) {
 			if taskID == "balance" {
 				write(pi, "#!/bin/sh\nprintf '%s\\n' "+shellQuote(`{"type":"message_end","message":{"role":"assistant","stopReason":"error","errorMessage":"402: Insufficient Balance","content":[]}}`)+"\n", 0700)
 			}
+			if taskID == "http2" {
+				write(pi, "#!/bin/sh\nprintf '%s\\n' "+shellQuote(`{"type":"message_end","message":{"role":"assistant","stopReason":"error","errorMessage":"Upstream HTTP/2 stream failed","content":[]}}`)+"\n", 0700)
+			}
 			run("start", taskID)
 			deadline := time.Now().Add(8 * time.Second)
 			for {
@@ -84,7 +87,7 @@ func TestEmbeddedWorkerReportSeparatesFinalReplyAndDiagnostics(t *testing.T) {
 					t.Fatal(err)
 				}
 				if status.Phase != "running" {
-					if taskID != "balance" && status.Phase != "completed" || taskID == "balance" && status.Phase != "failed" {
+					if taskID != "balance" && taskID != "http2" && status.Phase != "completed" || (taskID == "balance" || taskID == "http2") && status.Phase != "failed" {
 						t.Fatalf("phase=%s", status.Phase)
 					}
 					break
@@ -109,6 +112,16 @@ func TestEmbeddedWorkerReportSeparatesFinalReplyAndDiagnostics(t *testing.T) {
 				}
 				if json.Unmarshal(statusBody, &status) != nil || status.Code != "provider_request_failed" || status.HTTP != 402 || report != "" {
 					t.Fatalf("balance classification lost: %s", statusBody)
+				}
+				return
+			}
+			if taskID == "http2" {
+				var status struct {
+					Code string `json:"failure_code"`
+					HTTP int    `json:"http_status"`
+				}
+				if json.Unmarshal(statusBody, &status) != nil || status.Code != "model_connection_failed" || status.HTTP != 0 || report != "" {
+					t.Fatalf("HTTP/2 stream failure classification lost: %s", statusBody)
 				}
 				return
 			}

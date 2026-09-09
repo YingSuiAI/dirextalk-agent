@@ -1030,7 +1030,9 @@ only an optional phase enum for client localization. The Pi runner consumes
 JSON-mode events to add waiting/model/file-read/file-edit/command/tool-completion
 and tool/model-failure activity, bounded to 64 transitions in the status read.
 Specific provider error codes and exact HTTP status survive the Worker result,
-task failure, and final answer even when a model cannot generate an explanation.
+task failure, and final answer even when a model cannot generate an explanation;
+upstream HTTP/2 stream resets without a status are classified as model
+connection failures rather than generic provider failures.
 Balance/auth/configuration failures requiring user action are not retried merely
 to summarize the error. Remote finite execution runs
 inside a task-named systemd scope; timeout cancellation stops that scope so
@@ -1043,6 +1045,9 @@ from stderr; a 32 KiB UTF-8-safe bound preserves both ends and explicitly marks
 omissions. Short task status, failed-task error, private report, and host service
 verification are separate fields; failed collection/commit never substitutes
 diagnostic log tails for an answer. Public task text does not expose the report.
+Only a zero-exit service result may enter host-owned service finalization; a
+failed result never registers the workload, opens its public port, or publishes
+DNS/service health as running.
 
 The durable `cloud_worker_propose` or `cloud_worker_run` call may explicitly select
 `response_mode=reply_to_user` when its objective covers the entire request.

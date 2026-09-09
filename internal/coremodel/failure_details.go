@@ -110,7 +110,7 @@ func (d FailureDetails) Message(language string) string {
 	case "model_request_timeout":
 		en, zh = "The model request timed out.", "模型请求超时。"
 	case "model_connection_failed":
-		en, zh = "The model service could not be reached. Check its network connection.", "无法连接模型服务，请检查网络连接。"
+		en, zh = "The connection to the model service was interrupted. Retry later; if it persists, check the network path.", "与模型服务的连接中断，请稍后重试；若持续发生，请检查网络链路。"
 	case "model_service_unavailable":
 		en, zh = "The model provider is temporarily unavailable.", "模型服务暂时不可用。"
 	case "MODEL_TOOL_CALL_FORMAT_INVALID":

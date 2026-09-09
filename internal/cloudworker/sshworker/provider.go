@@ -190,7 +190,10 @@ func (provider *Provider) Execute(ctx context.Context, request ExecuteRequest) (
 	if ctx.Err() != nil {
 		return ExecutionResult{}, errors.Join(ctx.Err(), provider.failExecution(ctx, &execution, &worker))
 	}
-	if request.Finalize != nil {
+	// Finalization publishes service state and network exposure. A collected
+	// remote result is authoritative even when its process exited unsuccessfully,
+	// but that failed result must never be promoted as a running service.
+	if result.ExitCode == 0 && request.Finalize != nil {
 		if err := request.Finalize(ctx, worker.WorkerID, &result); err != nil {
 			if errors.Is(context.Cause(ctx), ErrExecutionFailed) {
 				err = errors.Join(context.Canceled, ErrExecutionFailed)

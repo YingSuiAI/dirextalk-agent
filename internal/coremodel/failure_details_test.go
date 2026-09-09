@@ -20,3 +20,10 @@ func TestHTTPFailureDetailsPreserveExactStatusAndMeaning(t *testing.T) {
 		}
 	}
 }
+
+func TestConnectionFailureMessageDescribesTransientInterruption(t *testing.T) {
+	details, ok := FailureFromCode("model_connection_failed")
+	if !ok || !strings.Contains(details.Message("zh"), "连接中断") || !strings.Contains(details.Message("zh"), "稍后重试") {
+		t.Fatalf("message=%q ok=%v", details.Message("zh"), ok)
+	}
+}

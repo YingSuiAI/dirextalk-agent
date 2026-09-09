@@ -1126,7 +1126,11 @@ The private report is bounded to 32 KiB with UTF-8-safe head/tail retention and
 an explicit truncation marker; the short task/error summary remains separate.
 Failure preserves available report text in the existing completion tool data,
 not in public task text. Service verification and verified URLs are host-owned
-evidence. Tool data contains no `central_instruction` or `next_action` directive.
+evidence. An HTTP/2 upstream stream reset without a provider status is a
+`model_connection_failed` result. Service publication is success-only: a
+non-zero remote exit cannot register the workload, open a public port, or
+publish DNS/service health as running. Tool data contains no
+`central_instruction` or `next_action` directive.
 
 The `response_mode` on either `cloud_worker_propose` or `cloud_worker_run` selects final-answer ownership before
 execution. `reply_to_user` delegates the whole request, including response

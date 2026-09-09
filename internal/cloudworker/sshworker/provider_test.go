@@ -138,10 +138,11 @@ func (*fakeSink) StoreText(context.Context, []byte, []byte, int) error          
 func (*fakeSink) StoreArtifact(context.Context, string, io.Reader, int64) error { return nil }
 
 type fakeSSH struct {
-	calls int
-	hosts []string
-	err   error
-	seen  []SSHRequest
+	calls  int
+	hosts  []string
+	err    error
+	result ExecutionResult
+	seen   []SSHRequest
 }
 
 type collectionRetrySSH struct {
@@ -187,7 +188,11 @@ func (s *fakeSSH) Execute(_ context.Context, r SSHRequest) (ExecutionResult, err
 	s.calls++
 	s.hosts = append(s.hosts, r.Host)
 	s.seen = append(s.seen, r)
-	return ExecutionResult{ArtifactCount: 1}, s.err
+	result := s.result
+	if result.ArtifactCount == 0 && result.ExitCode == 0 {
+		result.ArtifactCount = 1
+	}
+	return result, s.err
 }
 
 type fakeAWS struct {
@@ -817,6 +822,29 @@ func TestProviderKeepsWorkerBusyThroughFinalization(t *testing.T) {
 	replayed, err := provider.Execute(context.Background(), request)
 	if err != nil || replayed.Summary != "service https ready" || finalized != 1 {
 		t.Fatalf("replayed=%+v finalized=%d err=%v", replayed, finalized, err)
+	}
+}
+
+func TestProviderDoesNotFinalizeFailedRemoteExecution(t *testing.T) {
+	store := newMemoryStore()
+	ssh := &fakeSSH{result: ExecutionResult{ExitCode: 1, FailureCode: "model_connection_failed"}}
+	provider, err := New(newFakeAWS(), &fakeKeys{}, ssh, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := requestFixture()
+	finalized := 0
+	request.Finalize = func(context.Context, string, *ExecutionResult) error {
+		finalized++
+		return nil
+	}
+	result, err := provider.Execute(context.Background(), request)
+	if err != nil || result.ExitCode != 1 || finalized != 0 {
+		t.Fatalf("result=%+v finalized=%d err=%v", result, finalized, err)
+	}
+	worker := store.workers[request.ExecutionID]
+	if worker.Phase != WorkerIdle || worker.CurrentExecutionID != "" {
+		t.Fatalf("worker was not released after failed result: %+v", worker)
 	}
 }
 
