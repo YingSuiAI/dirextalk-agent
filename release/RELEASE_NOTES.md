@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v1.0.216
+
+1. Preserve recoverable Cloud Worker stream failures and service-publication outcomes with accurate typed failure details, including correct runtime Pi provenance.
+
 ## v1.0.215
 
 1. Make the owner-authorized Agent system prompt a single revision-fenced global setting, applied to new conversation and Task snapshots without changing admitted work.
