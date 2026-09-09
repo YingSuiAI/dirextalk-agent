@@ -588,8 +588,15 @@ func TestCoreModelProfileStoreSyncIntegration(t *testing.T) {
 		t.Fatalf("overlap success=%d conflict=%d", success, conflict)
 	}
 	profiles, _, err := store.ListProfiles(ctx, "", 10)
-	if err != nil || len(profiles) != 2 {
-		t.Fatalf("missing profile lost: len=%d err=%v", len(profiles), err)
+	if err != nil || len(profiles) != 3 {
+		t.Fatalf("active profile set changed unexpectedly: len=%d err=%v", len(profiles), err)
+	}
+	activeClientIDs := make(map[string]bool, len(profiles))
+	for _, profile := range profiles {
+		activeClientIDs[profile.ClientProfileID] = true
+	}
+	if !activeClientIDs["one"] || !activeClientIDs["two"] || !activeClientIDs["three"] {
+		t.Fatalf("active profile set=%v", activeClientIDs)
 	}
 }
 
