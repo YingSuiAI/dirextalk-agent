@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v1.0.217
+
+1. Allow a new non-speech model profile to reuse an active matching profile's credential during sync, while keeping the secret sealed to the new profile identity and rejecting incompatible or ambiguous reuse.
+
 ## v1.0.216
 
 1. Preserve recoverable Cloud Worker stream failures and service-publication outcomes with accurate typed failure details, including correct runtime Pi provenance.
