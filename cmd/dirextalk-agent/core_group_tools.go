@@ -7,9 +7,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 
+	capabilityclient "github.com/YingSuiAI/dirextalk-agent/internal/capability/client"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/google/uuid"
@@ -53,10 +55,19 @@ func (r groupMessageResolver) ResolveExtensions(ctx context.Context, selections 
 			slog.Warn("[group-agent] group message read failed", "error", groupAgentErrorSummary(err))
 			return coreconversation.ToolResult{}, err
 		}
-		content, err := json.Marshal(history)
-		if err != nil {
-			return coreconversation.ToolResult{}, err
-		}
-		return coreconversation.ToolResult{CallID: request.Call.ID, ToolName: request.Call.Name, Content: string(content)}, nil
+		return groupHistoryToolResult(request.Call, history)
 	}}}, nil
+}
+
+// groupHistoryToolResult turns a room-scoped read into the bounded semantic
+// observation Core accepts. A bare result without an outcome is rejected as an
+// invalid read-only result, which is what the model used to be shown.
+func groupHistoryToolResult(call coreconversation.ToolCall, history capabilityclient.GroupAgentHistory) (coreconversation.ToolResult, error) {
+	content, err := json.Marshal(history)
+	if err != nil {
+		return coreconversation.ToolResult{}, err
+	}
+	result := coreconversation.ToolResult{CallID: call.ID, ToolName: call.Name, Content: string(content),
+		Summary: fmt.Sprintf("Group history returned %d message(s)", len(history.Messages))}
+	return result.WithObservation(coreconversation.ToolOutcomeSuccess, result.Summary, coreconversation.ToolMutationNone), nil
 }

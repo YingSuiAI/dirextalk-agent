@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
+	capabilityclient "github.com/YingSuiAI/dirextalk-agent/internal/capability/client"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/sshflow"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
@@ -148,5 +150,28 @@ func TestGroupMessageResolverRefusesPrivateContexts(t *testing.T) {
 	resolver := groupMessageResolver{product: &groupProductFake{}}
 	if _, err := resolver.ResolveExtensions(context.Background(), nil); !errors.Is(err, coreconversation.ErrGroupAuthorization) {
 		t.Fatalf("private context reached the group history tool: %v", err)
+	}
+}
+
+func TestGroupHistoryToolResultIsAValidObservation(t *testing.T) {
+	result, err := groupHistoryToolResult(
+		coreconversation.ToolCall{ID: uuid.NewString(), Name: groupHistoryTool},
+		capabilityclient.GroupAgentHistory{Messages: []capabilityclient.GroupAgentMessage{{
+			EventID: "$source", SenderMXID: "@member:example.test", SenderDisplayName: "Ott",
+			Body: "hello from the group",
+		}}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Core rejects a read-only result without a bounded observation with
+	// "invalid read-only result", which is exactly what the model used to see.
+	if _, err := result.ModelObservationJSON(); err != nil {
+		t.Fatalf("group history observation rejected: %v", err)
+	}
+	if result.Outcome != coreconversation.ToolOutcomeSuccess || result.IsError ||
+		!strings.Contains(result.Content, "hello from the group") ||
+		!strings.Contains(result.Content, "Ott") {
+		t.Fatalf("unexpected observation: %#v", result)
 	}
 }

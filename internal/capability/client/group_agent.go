@@ -46,10 +46,13 @@ type GroupAgentBindingCheck struct {
 }
 
 type GroupAgentMessage struct {
-	EventID        string `json:"event_id"`
-	SenderMXID     string `json:"sender_mxid"`
-	Body           string `json:"body"`
-	OriginServerTS int64  `json:"origin_server_ts"`
+	EventID    string `json:"event_id"`
+	SenderMXID string `json:"sender_mxid"`
+	// SenderDisplayName is the sanitized in-room name so the shared group
+	// conversation can attribute what each member said.
+	SenderDisplayName string `json:"sender_display_name,omitempty"`
+	Body              string `json:"body"`
+	OriginServerTS    int64  `json:"origin_server_ts"`
 }
 
 type GroupAgentHistory struct {
