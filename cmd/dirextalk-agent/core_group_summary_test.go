@@ -156,3 +156,34 @@ func TestGroupSummaryIsBoundedAndIncremental(t *testing.T) {
 		t.Fatalf("summary was not incremental: %#v", saved)
 	}
 }
+
+type failingSummaryClient struct{}
+
+func (failingSummaryClient) Generate(context.Context, coremodel.CompletionRequest) (coremodel.Completion, error) {
+	return coremodel.Completion{}, coremodel.ErrProviderUnavailable
+}
+
+func (failingSummaryClient) Stream(context.Context, coremodel.CompletionRequest) (coremodel.Stream, error) {
+	return nil, coremodel.ErrProviderUnavailable
+}
+
+// A dead utility provider must not stop the digest: the owner's conversation
+// model is used instead.
+func TestGroupSummaryFallsBackWhenTheUtilityModelIsUnreachable(t *testing.T) {
+	messages := groupTranscriptMessages(groupSummaryMinMessages + 1)
+	loop, _, store, client := newSummaryLoopFixture(t, messages, "回退后的摘要")
+	calls := 0
+	loop.summaryClientFactory = func(coremodel.Profile) (coremodel.Client, error) {
+		calls++
+		if calls == 1 {
+			return failingSummaryClient{}, nil
+		}
+		return client, nil
+	}
+	if err := loop.refreshGroupSummaries(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 || len(store.saved) != 1 || store.saved[0].Summary != "回退后的摘要" {
+		t.Fatalf("calls=%d saved=%#v", calls, store.saved)
+	}
+}

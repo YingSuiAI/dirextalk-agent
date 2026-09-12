@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
@@ -30,12 +31,6 @@ const (
 type groupSummaryStore interface {
 	LoadGroupSummary(context.Context, string, string, uint64) (coreconversation.GroupRollingSummary, bool, error)
 	SaveGroupSummary(context.Context, coreconversation.GroupRollingSummary) error
-}
-
-// groupSummaryModel is the cheap utility model boundary: the same profile the
-// Agent uses for its other small utility calls.
-type groupSummaryModel interface {
-	ResolveDefaultToolProfile(context.Context) (coremodel.Profile, error)
 }
 
 const groupSummarySystemPrompt = `你是群聊摘要器。把「新增群聊记录」合并进「现有摘要」，输出一份不超过 600 字的滚动摘要。
@@ -88,7 +83,7 @@ func (l *groupAgentLoop) refreshGroupSummary(ctx context.Context, ownerID string
 	if found {
 		previous = stored.Summary
 	}
-	summary, err := generateGroupSummary(ctx, l.profiles, l.summaryClientFactory, previous, messages)
+	summary, err := l.generateGroupSummary(ctx, previous, messages)
 	if err != nil {
 		return err
 	}
@@ -141,11 +136,32 @@ func (l *groupAgentLoop) collectGroupTranscript(ctx context.Context, binding cap
 	return collected, nil
 }
 
-func generateGroupSummary(ctx context.Context, model groupSummaryModel, factory func(coremodel.Profile) (coremodel.Client, error), previous string, messages []capabilityclient.GroupAgentMessage) (string, error) {
-	profile, err := model.ResolveDefaultToolProfile(ctx)
+// generateGroupSummary prefers the utility (tool) profile and falls back to the
+// owner's conversation model when that provider is unreachable, so a group
+// digest never depends on a second provider being up.
+func (l *groupAgentLoop) generateGroupSummary(ctx context.Context, previous string, messages []capabilityclient.GroupAgentMessage) (string, error) {
+	if profile, err := l.profiles.ResolveDefaultToolProfile(ctx); err == nil {
+		summary, callErr := generateGroupSummary(ctx, profile, l.summaryClientFactory, previous, messages)
+		if callErr == nil {
+			return summary, nil
+		}
+		if !errors.Is(callErr, coremodel.ErrProviderUnavailable) {
+			return "", callErr
+		}
+		slog.Warn("[group-agent] group summary utility model unavailable; falling back to the conversation model", "error", groupAgentErrorSummary(callErr))
+	}
+	profileID, err := l.profiles.ResolveDefaultProfileID(ctx, coremodel.ModelKindConversation)
 	if err != nil {
 		return "", err
 	}
+	fallback, err := l.profiles.ResolveProfile(ctx, profileID)
+	if err != nil {
+		return "", err
+	}
+	return generateGroupSummary(ctx, fallback, l.summaryClientFactory, previous, messages)
+}
+
+func generateGroupSummary(ctx context.Context, profile coremodel.Profile, factory func(coremodel.Profile) (coremodel.Client, error), previous string, messages []capabilityclient.GroupAgentMessage) (string, error) {
 	profile.SystemPrompt = ""
 	profile.MaxOutputTokens = 512
 	callCtx, cancel := context.WithTimeout(ctx, groupSummaryCallTimeout)
