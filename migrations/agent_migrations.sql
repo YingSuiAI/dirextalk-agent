@@ -2996,3 +2996,18 @@ CREATE INDEX core_private_conversations_list_idx
     ON core_conversations(updated_at DESC,conversation_id)
     WHERE deleted_at IS NULL AND group_scope_json IS NULL;
 -- dirextalk-agent migration end 000034_group_conversation_scope.up.sql
+-- dirextalk-agent migration begin 000035_group_rolling_summary.up.sql
+-- Rolling summary of the group conversations this owner shares Ying with. It is
+-- derived data for the shared group scope only: it never carries owner-private
+-- context, is bounded, and is dropped with the binding epoch.
+CREATE TABLE core_group_summaries (
+    room_id text PRIMARY KEY CHECK (length(room_id) BETWEEN 2 AND 1024),
+    owner_id text NOT NULL CHECK (length(owner_id) BETWEEN 2 AND 1024),
+    account_generation bigint NOT NULL CHECK (account_generation > 0),
+    binding_revision bigint NOT NULL CHECK (binding_revision > 0),
+    covered_through_ts bigint NOT NULL DEFAULT 0 CHECK (covered_through_ts >= 0),
+    message_count integer NOT NULL DEFAULT 0 CHECK (message_count >= 0),
+    summary text NOT NULL DEFAULT '' CHECK (length(summary) <= 4000),
+    updated_at timestamptz NOT NULL
+);
+-- dirextalk-agent migration end 000035_group_rolling_summary.up.sql

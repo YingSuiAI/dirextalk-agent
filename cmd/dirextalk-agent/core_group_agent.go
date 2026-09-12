@@ -18,8 +18,10 @@ import (
 
 type groupProduct interface {
 	PullGroupAgentRequests(context.Context, string) (capabilityclient.GroupAgentPage, error)
+	ListGroupAgentBindings(context.Context) (capabilityclient.GroupAgentBindings, error)
+	ReadGroupAgentTranscript(context.Context, string, int64, int64, int, string) (capabilityclient.GroupAgentHistory, error)
 	ValidateGroupAgentRequest(context.Context, string, int64) (capabilityclient.GroupAgentBindingCheck, error)
-	ReadGroupAgentHistory(context.Context, string, int64, int) (capabilityclient.GroupAgentHistory, error)
+	ReadGroupAgentHistory(context.Context, string, int64, int, string) (capabilityclient.GroupAgentHistory, error)
 	PublishGroupAgentReply(context.Context, capabilityclient.GroupAgentPublish) error
 	CompleteGroupAgentRequest(context.Context, string, int64, string) error
 }
@@ -34,6 +36,7 @@ type groupTurns interface {
 type groupModelProfiles interface {
 	ResolveDefaultProfileID(context.Context, string) (string, error)
 	ResolveProfile(context.Context, string) (coremodel.Profile, error)
+	ResolveDefaultToolProfile(context.Context) (coremodel.Profile, error)
 }
 
 // groupAgentLoop observes the Product-owned event references and the
@@ -44,14 +47,33 @@ type groupAgentLoop struct {
 	product    groupProduct
 	turns      groupTurns
 	profiles   groupModelProfiles
+	summaries  groupSummaryStore
 	generation uint64
 	interval   time.Duration
-	once       sync.Once
-	done       chan struct{}
+	// summaryInterval and the sweep fence keep the derived group digests fresh
+	// without blocking request delivery.
+	summaryInterval time.Duration
+	// summaryClientFactory is overridable in tests; production uses the utility
+	// model client for the same profile.
+	summaryClientFactory func(coremodel.Profile) (coremodel.Client, error)
+	summarySweepAt       time.Time
+	summarySweepBusy     bool
+	summaryMu            sync.Mutex
+	once                 sync.Once
+	done                 chan struct{}
 }
 
-func newGroupAgentLoop(product groupProduct, turns groupTurns, profiles groupModelProfiles, generation uint64) *groupAgentLoop {
-	return &groupAgentLoop{product: product, turns: turns, profiles: profiles, generation: generation, interval: 2 * time.Second, done: make(chan struct{})}
+func newGroupAgentLoop(product groupProduct, turns groupTurns, profiles groupModelProfiles, generation uint64, summaries groupSummaryStore) *groupAgentLoop {
+	loop := &groupAgentLoop{product: product, turns: turns, profiles: profiles, summaries: summaries,
+		generation: generation, interval: 2 * time.Second, summaryInterval: groupSummarySweepInterval, done: make(chan struct{})}
+	if summaries != nil {
+		if service, ok := turns.(interface {
+			SetGroupSummaryReader(coreconversation.GroupSummaryReader)
+		}); ok {
+			service.SetGroupSummaryReader(summaries)
+		}
+	}
+	return loop
 }
 
 func (l *groupAgentLoop) ValidateGroupOrigin(ctx context.Context, origin coreconversation.GroupOrigin) error {
@@ -111,6 +133,7 @@ func (l *groupAgentLoop) tick(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	l.scheduleSummarySweep(ctx)
 	var failures []error
 	// A single tick can still deliver several members' requests: only the first
 	// one per conversation may start work, the rest wait for a later tick.
@@ -144,6 +167,36 @@ func (l *groupAgentLoop) tick(ctx context.Context) error {
 		}
 		after = page.NextAfterRequestID
 	}
+}
+
+// scheduleSummarySweep refreshes the derived group digests in the background so
+// a slow model call never delays a member's answer.
+func (l *groupAgentLoop) scheduleSummarySweep(ctx context.Context) {
+	if l.summaries == nil || l.profiles == nil || l.summaryInterval <= 0 {
+		return
+	}
+	l.summaryMu.Lock()
+	due := !l.summarySweepBusy && time.Since(l.summarySweepAt) >= l.summaryInterval
+	if due {
+		l.summarySweepBusy = true
+		l.summarySweepAt = time.Now()
+	}
+	l.summaryMu.Unlock()
+	if !due {
+		return
+	}
+	go func() {
+		defer func() {
+			l.summaryMu.Lock()
+			l.summarySweepBusy = false
+			l.summaryMu.Unlock()
+		}()
+		sweepCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), groupSummarySweepTimeout)
+		defer cancel()
+		if err := l.refreshGroupSummaries(sweepCtx); err != nil && sweepCtx.Err() == nil {
+			slog.Warn("[group-agent] group summary sweep failed", "error", groupAgentErrorSummary(err))
+		}
+	}()
 }
 
 func (l *groupAgentLoop) busyGroupConversations(ctx context.Context) (map[string]bool, error) {

@@ -13,16 +13,36 @@ import (
 )
 
 type groupProductFake struct {
-	allowed      bool
-	validateErr  error
-	published    []capabilityclient.GroupAgentPublish
-	completed    []string
-	historyCalls []string
-	page         capabilityclient.GroupAgentPage
+	allowed            bool
+	validateErr        error
+	published          []capabilityclient.GroupAgentPublish
+	completed          []string
+	historyCalls       []string
+	page               capabilityclient.GroupAgentPage
+	bindings           capabilityclient.GroupAgentBindings
+	bindingsErr        error
+	transcript         []capabilityclient.GroupAgentMessage
+	transcriptErr      error
+	transcriptRoom     string
+	transcriptRevision int64
 }
 
 func (f *groupProductFake) PullGroupAgentRequests(context.Context, string) (capabilityclient.GroupAgentPage, error) {
 	return f.page, nil
+}
+
+func (f *groupProductFake) ListGroupAgentBindings(context.Context) (capabilityclient.GroupAgentBindings, error) {
+	return f.bindings, f.bindingsErr
+}
+
+func (f *groupProductFake) ReadGroupAgentTranscript(_ context.Context, roomID string, revision int64, _ int64, _ int, _ string) (capabilityclient.GroupAgentHistory, error) {
+	if f.transcriptErr != nil {
+		return capabilityclient.GroupAgentHistory{}, f.transcriptErr
+	}
+	if roomID != f.transcriptRoom || revision != f.transcriptRevision {
+		return capabilityclient.GroupAgentHistory{}, errors.New("unexpected transcript scope")
+	}
+	return capabilityclient.GroupAgentHistory{Messages: f.transcript}, nil
 }
 
 func (f *groupProductFake) ValidateGroupAgentRequest(context.Context, string, int64) (capabilityclient.GroupAgentBindingCheck, error) {
@@ -32,7 +52,7 @@ func (f *groupProductFake) ValidateGroupAgentRequest(context.Context, string, in
 	return capabilityclient.GroupAgentBindingCheck{Allowed: f.allowed}, nil
 }
 
-func (f *groupProductFake) ReadGroupAgentHistory(_ context.Context, requestID string, _ int64, _ int) (capabilityclient.GroupAgentHistory, error) {
+func (f *groupProductFake) ReadGroupAgentHistory(_ context.Context, requestID string, _ int64, _ int, _ string) (capabilityclient.GroupAgentHistory, error) {
 	f.historyCalls = append(f.historyCalls, requestID)
 	return capabilityclient.GroupAgentHistory{}, nil
 }
@@ -55,6 +75,8 @@ type groupTurnsFake struct {
 	cancelled []string
 	active    []coreconversation.Turn
 }
+
+func (f *groupTurnsFake) SetGroupSummaryReader(coreconversation.GroupSummaryReader) {}
 
 func (f *groupTurnsFake) StartGroupTurn(_ context.Context, command coreconversation.TurnStartCommand, origin coreconversation.GroupOrigin) (coreconversation.Turn, error) {
 	if f.startErr != nil {
@@ -102,6 +124,10 @@ func (f *groupProfilesFake) ResolveProfile(context.Context, string) (coremodel.P
 	return f.profile, f.profErr
 }
 
+func (f *groupProfilesFake) ResolveDefaultToolProfile(context.Context) (coremodel.Profile, error) {
+	return f.profile, f.profErr
+}
+
 func groupRequestFixture() capabilityclient.GroupAgentRequest {
 	return capabilityclient.GroupAgentRequest{
 		RequestID: uuid.NewString(), RoomID: "!group:example.test", EventID: "$event",
@@ -116,7 +142,7 @@ func newGroupLoopFixture(t *testing.T) (*groupAgentLoop, *groupProductFake, *gro
 	product := &groupProductFake{allowed: true}
 	turns := &groupTurnsFake{getErr: coreconversation.ErrConflict}
 	profiles := &groupProfilesFake{id: uuid.NewString(), profile: coremodel.Profile{ID: uuid.NewString(), Revision: 2, CredentialVersion: 3}}
-	return newGroupAgentLoop(product, turns, profiles, 9), product, turns, profiles
+	return newGroupAgentLoop(product, turns, profiles, 9, nil), product, turns, profiles
 }
 
 func TestGroupLoopStartsOneIsolatedTurnAndPublishesProgress(t *testing.T) {

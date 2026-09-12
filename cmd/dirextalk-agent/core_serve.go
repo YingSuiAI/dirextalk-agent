@@ -493,7 +493,7 @@ func serveCore(cfg config.Config) error {
 	var groupLoop *groupAgentLoop
 	var groupCleaner coreLifecycleCleaner
 	if productCapabilityClient != nil {
-		groupLoop = newGroupAgentLoop(productCapabilityClient, conversation, profiles, uint64(cfg.ProductCapabilityAccountGeneration))
+		groupLoop = newGroupAgentLoop(productCapabilityClient, conversation, profiles, uint64(cfg.ProductCapabilityAccountGeneration), conversationStore)
 		groupCleaner = groupLoop
 		conversation.SetGroupAuthorizationGuard(groupLoop)
 		conversation.SetGroupExtensionResolver(&webSearchConversationResolver{base: groupMessageResolver{product: productCapabilityClient}, service: webSearchService})

@@ -56,7 +56,22 @@ type GroupAgentMessage struct {
 }
 
 type GroupAgentHistory struct {
-	Messages []GroupAgentMessage `json:"messages"`
+	Messages   []GroupAgentMessage `json:"messages"`
+	HasMore    bool                `json:"has_more"`
+	NextCursor string              `json:"next_cursor,omitempty"`
+}
+
+// GroupAgentBindingRef is one enabled shared group the Agent may sweep for its
+// rolling summary. It carries no member data.
+type GroupAgentBindingRef struct {
+	RoomID          string `json:"room_id"`
+	AgentMXID       string `json:"agent_mxid"`
+	BindingRevision int64  `json:"revision"`
+}
+
+type GroupAgentBindings struct {
+	OwnerMXID string                 `json:"owner_mxid"`
+	Bindings  []GroupAgentBindingRef `json:"bindings"`
 }
 
 type GroupAgentPublish struct {
@@ -92,13 +107,73 @@ func (c *Client) ValidateGroupAgentRequest(ctx context.Context, requestID string
 	return result, err
 }
 
-func (c *Client) ReadGroupAgentHistory(ctx context.Context, requestID string, revision int64, limit int) (GroupAgentHistory, error) {
+func (c *Client) ReadGroupAgentHistory(ctx context.Context, requestID string, revision int64, limit int, cursor string) (GroupAgentHistory, error) {
 	var result GroupAgentHistory
-	if !validGroupRequestID(requestID) || revision <= 0 || limit < 1 || limit > 50 {
+	if !validGroupRequestID(requestID) || revision <= 0 || limit < 1 || limit > groupHistoryMaxLimit || !validGroupCursor(cursor) {
 		return result, errors.New("invalid group history reference")
 	}
-	err := c.groupAgentQuery(ctx, "history", map[string]any{"request_id": requestID, "binding_revision": revision, "limit": limit}, &result)
+	input := map[string]any{"request_id": requestID, "binding_revision": revision, "limit": limit}
+	if cursor != "" {
+		input["cursor"] = cursor
+	}
+	err := c.groupAgentQuery(ctx, "history", input, &result)
 	return result, err
+}
+
+// ListGroupAgentBindings lists the groups the owner shared Ying with. The
+// Agent's own summarizer uses it; it is never a model tool.
+func (c *Client) ListGroupAgentBindings(ctx context.Context) (GroupAgentBindings, error) {
+	var result GroupAgentBindings
+	err := c.groupAgentQuery(ctx, "bindings", map[string]any{}, &result)
+	if err != nil {
+		return result, err
+	}
+	if len(result.Bindings) > groupBindingsMaxCount || !validGroupMXID(result.OwnerMXID) {
+		return GroupAgentBindings{}, errors.New("invalid group binding page")
+	}
+	for _, binding := range result.Bindings {
+		if !validGroupRoomID(binding.RoomID) || !validGroupMXID(binding.AgentMXID) || binding.BindingRevision <= 0 {
+			return GroupAgentBindings{}, errors.New("invalid group binding entry")
+		}
+	}
+	return result, nil
+}
+
+// ReadGroupAgentTranscript is the Agent's own room read for the rolling group
+// summary. It never carries a member ticket and never crosses rooms.
+func (c *Client) ReadGroupAgentTranscript(ctx context.Context, roomID string, revision int64, afterTS int64, limit int, cursor string) (GroupAgentHistory, error) {
+	var result GroupAgentHistory
+	if !validGroupRoomID(roomID) || revision <= 0 || afterTS < 0 || limit < 1 || limit > groupHistoryMaxLimit || !validGroupCursor(cursor) {
+		return result, errors.New("invalid group transcript reference")
+	}
+	input := map[string]any{"room_id": roomID, "binding_revision": revision, "after_ts": afterTS, "limit": limit}
+	if cursor != "" {
+		input["cursor"] = cursor
+	}
+	err := c.groupAgentQuery(ctx, "transcript", input, &result)
+	return result, err
+}
+
+const (
+	groupHistoryMaxLimit  = 200
+	groupBindingsMaxCount = 50
+	groupCursorMaxBytes   = 4096
+)
+
+func validGroupCursor(cursor string) bool {
+	trimmed := strings.TrimSpace(cursor)
+	return trimmed == "" || (len(trimmed) <= groupCursorMaxBytes && !strings.ContainsAny(trimmed, "\n\r\t"))
+}
+
+func validGroupRoomID(roomID string) bool {
+	trimmed := strings.TrimSpace(roomID)
+	return len(trimmed) > 1 && len(trimmed) <= 1024 && strings.HasPrefix(trimmed, "!") && !strings.ContainsAny(trimmed, "\n\r\t ")
+}
+
+func validGroupMXID(mxid string) bool {
+	trimmed := strings.TrimSpace(mxid)
+	return len(trimmed) > 1 && len(trimmed) <= 1024 && strings.HasPrefix(trimmed, "@") &&
+		strings.Contains(trimmed, ":") && !strings.ContainsAny(trimmed, "\n\r\t ")
 }
 
 func (c *Client) PublishGroupAgentReply(ctx context.Context, input GroupAgentPublish) error {

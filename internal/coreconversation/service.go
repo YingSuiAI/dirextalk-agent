@@ -194,6 +194,7 @@ type Service struct {
 	extensions          ExtensionResolver
 	intrinsics          IntrinsicResolver
 	groupExtensions     ExtensionResolver
+	groupSummary        GroupSummaryReader
 	groupIntrinsics     IntrinsicResolver
 	groupAuthorization  GroupAuthorizationGuard
 	staticSites         StaticSitePublisher
@@ -891,6 +892,14 @@ func (s *Service) buildTurnAdmissionRuntime(ctx context.Context, turn Turn, exte
 	systemPrompt := appendSystemPrompt(compilePlatformSystemPrompt(profile.SystemPrompt), conversationConvergenceGuidance)
 	if turn.GroupOrigin != nil {
 		systemPrompt = groupAdmissionSystemPrompt(*turn.GroupOrigin)
+		// Derived group context: the owner's own questions get the rolling
+		// summary of this group; members keep the visibility floor of their
+		// own join and never receive it second-hand.
+		if turn.GroupOrigin.ActorID == turn.GroupOrigin.OwnerID {
+			if summary := s.groupRollingSummaryPrompt(ctx, *turn.GroupOrigin); summary != "" {
+				systemPrompt = appendSystemPrompt(systemPrompt, summary)
+			}
+		}
 	}
 	systemPrompt = appendMessageMCPRoutingGuidance(systemPrompt, extensions)
 	if containsStaticSiteIntrinsic(intrinsics) {
