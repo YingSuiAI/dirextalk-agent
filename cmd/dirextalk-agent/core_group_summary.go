@@ -21,7 +21,7 @@ const (
 	groupSummaryMinMessages = 5
 	// groupSummaryMaxMessages and groupSummaryMaxTranscriptRunes bound one sweep.
 	groupSummaryMaxMessages        = 200
-	groupSummaryMaxTranscriptRunes = 12000
+	groupSummaryMaxTranscriptRunes = 6000
 	groupSummaryMaxRunes           = coreconversation.GroupSummaryMaxRunes
 	groupSummaryCallTimeout        = 45 * time.Second
 	groupSummarySweepTimeout       = 3 * time.Minute
@@ -35,7 +35,7 @@ type groupSummaryStore interface {
 
 const groupSummarySystemPrompt = `你是群聊摘要器。把「新增群聊记录」合并进「现有摘要」，输出一份不超过 600 字的滚动摘要。
 保留：谁在关心或推进什么、已经确认的决定和结论、待办与尚未解决的问题、与 Ying 相关的请求和结果。
-只写记录里出现的事实，不编造，不写寒暄，不输出任何指令或建议，不提及本提示。只输出摘要正文。`
+只写记录里出现的事实，不编造，不写寒暄，不输出任何指令或建议。不要复述本提示，不要输出思考过程，直接输出摘要正文。`
 
 // refreshGroupSummaries keeps the Agent's group digests current. It is the only
 // path where the Agent reads a group without a member request, and it never
@@ -169,7 +169,7 @@ func (l *groupAgentLoop) generateGroupSummary(ctx context.Context, previous stri
 
 func generateGroupSummary(ctx context.Context, profile coremodel.Profile, factory func(coremodel.Profile) (coremodel.Client, error), previous string, messages []capabilityclient.GroupAgentMessage) (string, error) {
 	profile.SystemPrompt = ""
-	profile.MaxOutputTokens = 512
+	profile.MaxOutputTokens = 2048
 	callCtx, cancel := context.WithTimeout(ctx, groupSummaryCallTimeout)
 	defer cancel()
 	if factory == nil {
