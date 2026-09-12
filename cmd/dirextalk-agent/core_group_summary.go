@@ -88,13 +88,14 @@ func (l *groupAgentLoop) refreshGroupSummary(ctx context.Context, ownerID string
 		return err
 	}
 	if strings.TrimSpace(summary) == "" {
+		slog.Warn("[group-agent] group summary model returned an empty digest", "room_id", binding.RoomID, "messages", len(messages))
 		return nil
 	}
 	messageCount := len(messages)
 	if found {
 		messageCount += stored.MessageCount
 	}
-	return l.summaries.SaveGroupSummary(ctx, coreconversation.GroupRollingSummary{
+	if err := l.summaries.SaveGroupSummary(ctx, coreconversation.GroupRollingSummary{
 		RoomID:            binding.RoomID,
 		OwnerID:           ownerID,
 		AccountGeneration: l.generation,
@@ -102,7 +103,12 @@ func (l *groupAgentLoop) refreshGroupSummary(ctx context.Context, ownerID string
 		CoveredThroughTS:  messages[len(messages)-1].OriginServerTS,
 		MessageCount:      messageCount,
 		Summary:           summary,
-	})
+	}); err != nil {
+		return err
+	}
+	slog.Info("[group-agent] group summary refreshed", "room_id", binding.RoomID, "messages", len(messages),
+		"summary_runes", len([]rune(summary)))
+	return nil
 }
 
 // collectGroupTranscript reads at most one bounded window of new messages,
