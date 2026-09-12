@@ -29,13 +29,18 @@ type GroupOrigin struct {
 }
 
 // GroupConversationScope is immutable conversation authority. A different
-// group, owner, account generation or binding epoch cannot reuse its context.
+// group, owner, agent identity or account generation cannot reuse its context.
+//
+// The owner's enable/disable epoch (BindingRevision) is deliberately not part
+// of this identity: the group keeps one continuous conversation, so every
+// member's question and every answer stay in the same shared thread. The epoch
+// still fences every single call through GroupOrigin.BindingRevision, the
+// per-request authorization guard and the publication revision check.
 type GroupConversationScope struct {
 	RoomID            string `json:"room_id"`
 	OwnerID           string `json:"owner_id"`
 	AgentMXID         string `json:"agent_mxid"`
 	AccountGeneration uint64 `json:"account_generation"`
-	BindingRevision   int64  `json:"binding_revision"`
 }
 
 func validGroupIdentifier(value string, prefix byte) bool {
@@ -53,12 +58,12 @@ func (g GroupOrigin) Validate() error {
 
 func (g GroupOrigin) Scope() GroupConversationScope {
 	return GroupConversationScope{RoomID: g.RoomID, OwnerID: g.OwnerID, AgentMXID: g.AgentMXID,
-		AccountGeneration: g.AccountGeneration, BindingRevision: g.BindingRevision}
+		AccountGeneration: g.AccountGeneration}
 }
 
 func (g GroupConversationScope) Validate() error {
 	if !validGroupIdentifier(g.RoomID, '!') || !validGroupIdentifier(g.OwnerID, '@') ||
-		!validGroupIdentifier(g.AgentMXID, '@') || g.AccountGeneration == 0 || g.BindingRevision <= 0 {
+		!validGroupIdentifier(g.AgentMXID, '@') || g.AccountGeneration == 0 {
 		return ErrInvalid
 	}
 	return nil

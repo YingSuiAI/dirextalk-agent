@@ -100,13 +100,23 @@ func TestGroupOriginSeparatesConversationScopeFromEventIdentity(t *testing.T) {
 		func(g *GroupOrigin) { g.OwnerID = "@other:example.test" },
 		func(g *GroupOrigin) { g.AgentMXID = "@other-ying:example.test" },
 		func(g *GroupOrigin) { g.AccountGeneration++ },
-		func(g *GroupOrigin) { g.BindingRevision++ },
 	} {
 		changed := origin
 		mutate(&changed)
 		if changed.ConversationID() == origin.ConversationID() {
 			t.Fatal("different group authority reused a conversation")
 		}
+	}
+	// Enabling/disabling the switch is an authorization epoch, not a new group
+	// conversation: the group keeps one continuous shared thread with every
+	// member's messages in it.
+	reenabled := origin
+	reenabled.BindingRevision += 2
+	if reenabled.ConversationID() != origin.ConversationID() {
+		t.Fatal("toggling the group Ying switch must not discard the group conversation")
+	}
+	if reenabled.Scope() != origin.Scope() {
+		t.Fatal("binding revision must not reach the stored conversation scope")
 	}
 	if _, ok := GroupOriginFromContext(context.Background()); ok {
 		t.Fatal("ordinary context acquired group authority")

@@ -28,6 +28,9 @@ type GroupAgentRequest struct {
 	BindingRevision   int64  `json:"binding_revision"`
 	AccountGeneration uint64 `json:"account_generation"`
 	Body              string `json:"body"`
+	// SenderDisplayName is the sender's sanitized in-room name. It labels the
+	// message inside the shared group conversation and never authorizes.
+	SenderDisplayName string `json:"sender_display_name,omitempty"`
 	OriginServerTS    int64  `json:"origin_server_ts"`
 }
 

@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	capabilityclient "github.com/YingSuiAI/dirextalk-agent/internal/capability/client"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
@@ -176,7 +177,7 @@ func (l *groupAgentLoop) processRequest(ctx context.Context, request capabilityc
 			return l.publish(ctx, origin, groupReply(request.Body, "Ying 的模型暂时不可用，请群主检查模型配置后重试。", "Ying's model is unavailable. Ask the group owner to check its configuration and retry."), "final", "failed")
 		}
 		turn, err = l.turns.StartGroupTurn(ctx, coreconversation.TurnStartCommand{TurnID: request.RequestID, RequestID: request.RequestID,
-			OwnerID: request.OwnerMXID, AccountGeneration: request.AccountGeneration, Prompt: request.Body,
+			OwnerID: request.OwnerMXID, AccountGeneration: request.AccountGeneration, Prompt: groupAgentTurnPrompt(request),
 			ProfileID: profileID, ExpectedProfileRevision: profile.Revision, ExpectedCredentialVersion: profile.CredentialVersion}, origin)
 	}
 	if err != nil {
@@ -226,4 +227,49 @@ func groupReply(prompt, chinese, english string) string {
 		}
 	}
 	return english
+}
+
+const groupAgentSpeakerNameMaxRunes = 64
+
+// groupAgentTurnPrompt renders the model-facing text of one group request. The
+// whole group shares a single conversation, so the speaker belongs to the
+// message: the model can attribute, compare and combine what different members
+// said. The visible reply, the language choice and the durable turn identity
+// keep using the raw body.
+func groupAgentTurnPrompt(request capabilityclient.GroupAgentRequest) string {
+	mxid := strings.TrimSpace(request.SenderMXID)
+	name := sanitizeGroupAgentSpeakerName(request.SenderDisplayName)
+	if name == "" || name == mxid {
+		return mxid + ": " + request.Body
+	}
+	return name + " (" + mxid + "): " + request.Body
+}
+
+// sanitizeGroupAgentSpeakerName treats the member-controlled name as display
+// data: one bounded line, no control characters, no injected line breaks.
+func sanitizeGroupAgentSpeakerName(raw string) string {
+	value := strings.TrimSpace(raw)
+	if value == "" || !utf8.ValidString(value) {
+		return ""
+	}
+	var out strings.Builder
+	space := false
+	written := 0
+	for _, r := range value {
+		if unicode.IsSpace(r) || unicode.IsControl(r) || r == utf8.RuneError {
+			space = out.Len() > 0
+			continue
+		}
+		if space {
+			out.WriteByte(' ')
+			written++
+			space = false
+		}
+		if written >= groupAgentSpeakerNameMaxRunes {
+			break
+		}
+		out.WriteRune(r)
+		written++
+	}
+	return strings.TrimSpace(out.String())
 }
