@@ -38,7 +38,7 @@ func validateConversationGroupScopeTx(ctx context.Context, tx pgx.Tx, conversati
 	if origin == nil && conversation.GroupScope == nil {
 		return nil
 	}
-	if origin == nil || conversation.GroupScope == nil || *conversation.GroupScope != origin.Scope() {
+	if origin == nil || conversation.GroupScope == nil || !conversation.GroupScope.SameAuthority(origin.Scope()) {
 		return core.ErrGroupAuthorization
 	}
 	return nil

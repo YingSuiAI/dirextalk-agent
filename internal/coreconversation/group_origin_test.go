@@ -115,8 +115,11 @@ func TestGroupOriginSeparatesConversationScopeFromEventIdentity(t *testing.T) {
 	if reenabled.ConversationID() != origin.ConversationID() {
 		t.Fatal("toggling the group Ying switch must not discard the group conversation")
 	}
-	if reenabled.Scope() != origin.Scope() {
-		t.Fatal("binding revision must not reach the stored conversation scope")
+	if !reenabled.Scope().SameAuthority(origin.Scope()) {
+		t.Fatal("binding revision must not change the stored conversation authority")
+	}
+	if reenabled.Scope() == origin.Scope() {
+		t.Fatal("the recorded epoch is expected to differ for diagnostics")
 	}
 	if _, ok := GroupOriginFromContext(context.Background()); ok {
 		t.Fatal("ordinary context acquired group authority")

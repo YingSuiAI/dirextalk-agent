@@ -31,16 +31,22 @@ type GroupOrigin struct {
 // GroupConversationScope is immutable conversation authority. A different
 // group, owner, agent identity or account generation cannot reuse its context.
 //
-// The owner's enable/disable epoch (BindingRevision) is deliberately not part
-// of this identity: the group keeps one continuous conversation, so every
-// member's question and every answer stay in the same shared thread. The epoch
-// still fences every single call through GroupOrigin.BindingRevision, the
-// per-request authorization guard and the publication revision check.
+// The identity of that authority is room + owner + agent + account generation.
+// The owner's enable/disable epoch (BindingRevision) is recorded for diagnostics
+// only and never changes the identity: the group keeps one continuous
+// conversation, so every member's question and every answer stay in the same
+// shared thread. The epoch still fences every single call through
+// GroupOrigin.BindingRevision, the per-request authorization guard and the
+// publication revision check.
 type GroupConversationScope struct {
 	RoomID            string `json:"room_id"`
 	OwnerID           string `json:"owner_id"`
 	AgentMXID         string `json:"agent_mxid"`
 	AccountGeneration uint64 `json:"account_generation"`
+	// BindingRevision is the epoch that opened this conversation. It is stored
+	// (and required by the durable schema) but excluded from ConversationID and
+	// from every scope comparison.
+	BindingRevision int64 `json:"binding_revision"`
 }
 
 func validGroupIdentifier(value string, prefix byte) bool {
@@ -58,7 +64,7 @@ func (g GroupOrigin) Validate() error {
 
 func (g GroupOrigin) Scope() GroupConversationScope {
 	return GroupConversationScope{RoomID: g.RoomID, OwnerID: g.OwnerID, AgentMXID: g.AgentMXID,
-		AccountGeneration: g.AccountGeneration}
+		AccountGeneration: g.AccountGeneration, BindingRevision: g.BindingRevision}
 }
 
 func (g GroupConversationScope) Validate() error {
@@ -70,11 +76,20 @@ func (g GroupConversationScope) Validate() error {
 }
 
 func (g GroupConversationScope) ConversationID() string {
-	raw, _ := json.Marshal(g)
+	raw, _ := json.Marshal(GroupConversationScope{RoomID: g.RoomID, OwnerID: g.OwnerID,
+		AgentMXID: g.AgentMXID, AccountGeneration: g.AccountGeneration})
 	return uuid.NewSHA1(uuid.NameSpaceOID, append([]byte("group-conversation:"), raw...)).String()
 }
 
 func (g GroupOrigin) ConversationID() string { return g.Scope().ConversationID() }
+
+// SameAuthority reports whether two scopes describe the same conversation
+// authority: group, owner, agent identity and account generation. Authorization
+// epochs are compared per request, never through this identity.
+func (g GroupConversationScope) SameAuthority(other GroupConversationScope) bool {
+	return g.RoomID == other.RoomID && g.OwnerID == other.OwnerID &&
+		g.AgentMXID == other.AgentMXID && g.AccountGeneration == other.AccountGeneration
+}
 
 // GroupAuthorizationGuard must validate the original durable Product request
 // and current binding/membership on every call. Missing guards fail closed.
@@ -219,7 +234,8 @@ func validateTurnConversationScope(conversation Conversation, turn Turn) error {
 		return nil
 	}
 	if turn.GroupOrigin.Validate() != nil || conversation.GroupScope == nil ||
-		*conversation.GroupScope != turn.GroupOrigin.Scope() || conversation.ID != turn.GroupOrigin.ConversationID() {
+		!conversation.GroupScope.SameAuthority(turn.GroupOrigin.Scope()) ||
+		conversation.ID != turn.GroupOrigin.ConversationID() {
 		return ErrGroupAuthorization
 	}
 	return nil
