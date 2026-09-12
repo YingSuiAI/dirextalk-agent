@@ -60,7 +60,7 @@ func TestGroupAgentPrivateClientUsesFixedOperationsAndStableMutationIDs(t *testi
 		t.Fatal(err)
 	}
 	s.result = []byte(`{"messages":[]}`)
-	if _, err := c.ReadGroupAgentHistory(ctx, id, 4, 30); err != nil {
+	if _, err := c.ReadGroupAgentHistory(ctx, id, 4, 30, ""); err != nil {
 		t.Fatal(err)
 	}
 	input := GroupAgentPublish{RequestID: id, BindingRevision: 4, Body: "Public group response", Kind: "final", Status: "completed"}
@@ -89,7 +89,7 @@ func TestGroupAgentPrivateClientUsesFixedOperationsAndStableMutationIDs(t *testi
 	if err := c.CompleteGroupAgentRequest(ctx, id, 4, "cancelled"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.ReadGroupAgentHistory(ctx, id, 4, 100); err == nil {
+	if _, err := c.ReadGroupAgentHistory(ctx, id, 4, 100, ""); err == nil {
 		t.Fatal("unbounded history accepted")
 	}
 }
