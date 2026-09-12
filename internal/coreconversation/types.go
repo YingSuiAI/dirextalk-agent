@@ -299,17 +299,18 @@ type Message struct {
 }
 
 type Conversation struct {
-	ID                            string         `json:"id"`
-	Title                         string         `json:"title,omitempty"`
-	Revision                      uint64         `json:"revision"`
-	CreatedAt                     time.Time      `json:"created_at"`
-	UpdatedAt                     time.Time      `json:"updated_at"`
-	DeletedAt                     *time.Time     `json:"deleted_at,omitempty"`
-	Summary                       string         `json:"summary,omitempty"`
-	WorkingContext                WorkingContext `json:"working_context,omitempty"`
-	WorkingContextProtectedDigest string         `json:"-"`
-	ContextMessageOffset          uint64         `json:"context_message_offset,omitempty"`
-	Messages                      []Message      `json:"messages"`
+	GroupScope                    *GroupConversationScope `json:"-"`
+	ID                            string                  `json:"id"`
+	Title                         string                  `json:"title,omitempty"`
+	Revision                      uint64                  `json:"revision"`
+	CreatedAt                     time.Time               `json:"created_at"`
+	UpdatedAt                     time.Time               `json:"updated_at"`
+	DeletedAt                     *time.Time              `json:"deleted_at,omitempty"`
+	Summary                       string                  `json:"summary,omitempty"`
+	WorkingContext                WorkingContext          `json:"working_context,omitempty"`
+	WorkingContextProtectedDigest string                  `json:"-"`
+	ContextMessageOffset          uint64                  `json:"context_message_offset,omitempty"`
+	Messages                      []Message               `json:"messages"`
 }
 
 // ContextCompressionResult is the Agent-owned result of a context compaction
@@ -1385,6 +1386,9 @@ func (m Message) Validate() error {
 }
 
 func (c Conversation) ValidateForPersistence() error {
+	if c.GroupScope != nil && (c.GroupScope.Validate() != nil || c.ID != c.GroupScope.ConversationID()) {
+		return ErrInvalid
+	}
 	if !validUUID(c.ID) || len(c.Title) > 512 || !utf8.ValidString(c.Title) || len(c.Summary) > MaxSummaryBytes || !utf8.ValidString(c.Summary) || c.Revision == 0 || len(c.Messages) > MaxMessages || c.ContextMessageOffset > uint64(len(c.Messages)) || c.CreatedAt.IsZero() || c.UpdatedAt.IsZero() || c.CreatedAt.Location() != time.UTC || c.UpdatedAt.Location() != time.UTC || c.UpdatedAt.Before(c.CreatedAt) {
 		return ErrInvalid
 	}
@@ -1545,6 +1549,10 @@ func validateProfilePins(snapshot coremodel.ExecutionSnapshot, profileID string,
 
 func (c Conversation) Snapshot() Conversation {
 	out := c
+	if c.GroupScope != nil {
+		scope := *c.GroupScope
+		out.GroupScope = &scope
+	}
 	out.WorkingContext = c.WorkingContext.Snapshot()
 	out.Messages = append([]Message(nil), c.Messages...)
 	for i := range out.Messages {

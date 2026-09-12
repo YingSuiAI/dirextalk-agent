@@ -61,6 +61,7 @@ const (
 )
 
 type Turn struct {
+	GroupOrigin              *GroupOrigin `json:"-"`
 	ID                       string
 	RequestID                string
 	RequestFingerprint       string `json:"-"`
@@ -222,6 +223,9 @@ func (e TurnEvent) ValidateWaitingConfirmationAuthority() error {
 }
 
 type TurnStartCommand struct {
+	// GroupOrigin is set exclusively by StartGroupTurn's trusted Product adapter.
+	// Owner HTTP/Protobuf admission must never populate this field.
+	GroupOrigin *GroupOrigin `json:"-"`
 	// TurnID is set by adapters that already own a canonical public turn
 	// identity. RequestID remains the independent business idempotency key.
 	TurnID                    string
@@ -653,6 +657,7 @@ func NormalizeClientTurnExecutionMode(mode TurnExecutionMode) (TurnExecutionMode
 }
 
 type TurnRuntimeSnapshot struct {
+	GroupOrigin           *GroupOrigin            `json:"group_origin,omitempty"`
 	Version               int                     `json:"version"`
 	CompiledSystemPrompt  string                  `json:"compiled_system_prompt"`
 	SystemPromptDigest    string                  `json:"system_prompt_digest"`
@@ -729,6 +734,16 @@ func newTurnRuntimeSnapshotWithPolicy(systemPrompt string, profile coremodel.Exe
 }
 
 func (s TurnRuntimeSnapshot) Validate() error {
+	if s.GroupOrigin != nil {
+		if s.GroupOrigin.Validate() != nil || !s.ConstrainedWorkflow.IsZero() {
+			return ErrInvalid
+		}
+		for _, tool := range s.IntrinsicTools {
+			if !groupIntrinsicAllowed(tool.Name) {
+				return ErrInvalid
+			}
+		}
+	}
 	if s.Version != TurnRuntimeSnapshotVersion || s.SystemPromptDigest != digest(s.CompiledSystemPrompt) ||
 		!validReferenceDigest(s.ProfileSnapshotDigest) || !validRuntimeRequestDialect(s.RequestDialect) ||
 		(len(s.ExtensionDigest) != 0 && !validReferenceDigest(s.ExtensionDigest)) ||
@@ -813,6 +828,12 @@ type TurnUncertainStore interface {
 }
 
 func (c TurnStartCommand) Validate() error {
+	if c.GroupOrigin != nil && (c.GroupOrigin.Validate() != nil || c.RequestID != c.GroupOrigin.RequestID ||
+		c.OwnerID != c.GroupOrigin.OwnerID || c.AccountGeneration != c.GroupOrigin.AccountGeneration ||
+		c.ConversationID != c.GroupOrigin.ConversationID() || len(c.AcceptedAttachmentIDs) != 0 ||
+		len(c.AttachmentSources) != 0 || c.ProfileSnapshot.SystemPrompt != "" || !c.ConstrainedWorkflow.IsZero() || validateGroupExtensions(c.ExtensionSnapshots) != nil) {
+		return ErrInvalid
+	}
 	if (c.TurnID != "" && !validUUID(c.TurnID)) || !validUUID(c.RequestID) || !validUUID(c.ProfileID) || (c.ConversationID != "" && !validUUID(c.ConversationID)) || c.ExpectedProfileRevision <= 0 || c.ExpectedCredentialVersion <= 0 {
 		return ErrInvalid
 	}
@@ -923,6 +944,9 @@ func (c TurnStartCommand) Fingerprint() string {
 	}
 	if !c.ConstrainedWorkflow.IsZero() {
 		values = append(values, "constrained_workflow", c.ConstrainedWorkflow)
+	}
+	if c.GroupOrigin != nil {
+		values = append(values, "group_origin", c.GroupOrigin)
 	}
 	// Keep the ordinary false form byte-for-byte compatible with already
 	// accepted turns. The internal explicit-pin marker still has its own replay

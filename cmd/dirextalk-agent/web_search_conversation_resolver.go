@@ -115,12 +115,20 @@ func (r *webSearchConversationResolver) ResolveExtensions(ctx context.Context, s
 	if r == nil || r.service == nil {
 		return resolved, nil
 	}
-	permission, ok := capabilityclient.PermissionFromContext(ctx)
-	if !ok || permission == nil || strings.TrimSpace(permission.GetAuthenticatedOwnerId()) == "" || permission.GetAccountGeneration() <= 0 {
-		return resolved, nil
+	var ownerID string
+	var accountGeneration int64
+	if origin, group := coreconversation.GroupOriginFromContext(ctx); group {
+		if origin.Validate() != nil {
+			return nil, coreconversation.ErrGroupAuthorization
+		}
+		ownerID, accountGeneration = origin.OwnerID, int64(origin.AccountGeneration)
+	} else {
+		permission, ok := capabilityclient.PermissionFromContext(ctx)
+		if !ok || permission == nil || strings.TrimSpace(permission.GetAuthenticatedOwnerId()) == "" || permission.GetAccountGeneration() <= 0 {
+			return resolved, nil
+		}
+		ownerID, accountGeneration = strings.TrimSpace(permission.GetAuthenticatedOwnerId()), permission.GetAccountGeneration()
 	}
-	ownerID := strings.TrimSpace(permission.GetAuthenticatedOwnerId())
-	accountGeneration := permission.GetAccountGeneration()
 	config, err := r.service.Resolve(ctx, ownerID, accountGeneration)
 	if errors.Is(err, corewebsearch.ErrNotConfigured) {
 		return resolved, nil

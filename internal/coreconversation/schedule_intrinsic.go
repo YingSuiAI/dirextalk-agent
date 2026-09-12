@@ -34,6 +34,38 @@ type scheduleIntrinsicArguments struct {
 }
 
 func (s *Service) resolveIntrinsicTools(ctx context.Context, lease TurnLease) ([]ResolvedIntrinsic, error) {
+	if lease.Turn.GroupOrigin != nil {
+		if s.groupIntrinsics == nil {
+			return nil, nil
+		}
+		origin := *lease.Turn.GroupOrigin
+		groupCtx := withGroupOrigin(ctx, origin)
+		if err := s.validateGroupAuthorization(groupCtx, &origin); err != nil {
+			return nil, err
+		}
+		external, err := s.groupIntrinsics.ResolveIntrinsicTools(groupCtx, lease)
+		if err != nil {
+			return nil, err
+		}
+		tools := make([]ResolvedIntrinsic, 0, len(external))
+		for _, intrinsic := range external {
+			if !groupIntrinsicAllowed(intrinsic.Tool.Name) {
+				continue
+			}
+			execute := intrinsic.Execute
+			if execute == nil {
+				return nil, ErrInvalid
+			}
+			intrinsic.Execute = func(runCtx context.Context, request IntrinsicExecutionRequest) (IntrinsicExecutionResult, error) {
+				if err := s.validateGroupAuthorization(runCtx, &origin); err != nil {
+					return IntrinsicExecutionResult{}, err
+				}
+				return execute(withGroupOrigin(runCtx, origin), request)
+			}
+			tools = append(tools, intrinsic)
+		}
+		return tools, nil
+	}
 	tools := make([]ResolvedIntrinsic, 0, 4)
 	if schedules, ok := s.turns.(ConversationScheduleStore); ok && strings.TrimSpace(lease.Turn.OwnerID) != "" && lease.Turn.AccountGeneration != 0 {
 		tools = append(tools, scheduleIntrinsic(schedules, lease))

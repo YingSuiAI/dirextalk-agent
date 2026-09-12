@@ -517,7 +517,20 @@ func (c *coreChatCapability) HandleOperation(ctx context.Context, operationID st
 			return nil, coreconversation.ErrInvalid
 		}
 		value, err := c.service.GetTurn(ctx, stringValue(in, "turn_id"))
-		return marshalResult(map[string]any{"turn": publicListedTurn{publicTurnMetadata: projectPublicTurnMetadata(value), IdempotencyKey: value.RequestID}}, err)
+		if err != nil {
+			return nil, err
+		}
+		if value.GroupOrigin != nil {
+			permission, ok := capabilityclient.PermissionFromContext(ctx)
+			if !ok || permission == nil || permission.GetAuthenticatedOwnerId() != value.GroupOrigin.OwnerID || uint64(permission.GetAccountGeneration()) != value.GroupOrigin.AccountGeneration {
+				return nil, coreconversation.ErrGroupAuthorization
+			}
+			return marshalResult(map[string]any{"turn": struct {
+				publicListedTurn
+				GroupOrigin *coreconversation.GroupOrigin `json:"group_origin"`
+			}{publicListedTurn{publicTurnMetadata: projectPublicTurnMetadata(value), IdempotencyKey: value.RequestID}, value.GroupOrigin}}, nil)
+		}
+		return marshalResult(map[string]any{"turn": publicListedTurn{publicTurnMetadata: projectPublicTurnMetadata(value), IdempotencyKey: value.RequestID}}, nil)
 	case "compress_context":
 		value, err := c.service.CompressContext(ctx, stringValue(in, "conversation_id"), uintValue(in, "expected_revision"), intValue(in, "memory_window", coreconversation.DefaultContextMemoryWindow), key)
 		return marshalResult(value, err)
@@ -2136,7 +2149,7 @@ func operationResultSchema(capabilityID, operation string) string {
 	case "agent.chat.v1:list_turns":
 		return `{"additionalProperties":false,"properties":{"next_page_token":{"type":"string"},"turns":{"items":` + publicTurnResultSchema + `,"type":"array"}},"required":["turns","next_page_token"],"type":"object"}`
 	case "agent.chat.v1:get_turn":
-		return `{"additionalProperties":false,"properties":{"turn":` + publicTurnResultSchema + `},"required":["turn"],"type":"object"}`
+		return `{"additionalProperties":false,"properties":{"turn":` + strings.Replace(publicTurnResultSchema, `"properties":{`, `"properties":{"group_origin":`+groupOriginResultSchema+`,`, 1) + `},"required":["turn"],"type":"object"}`
 	case "agent.chat.v1:stop_turn":
 		return publicTurnResultSchema
 	case "agent.chat.v1:steer_turn":

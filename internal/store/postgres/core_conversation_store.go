@@ -486,9 +486,13 @@ func (s *CoreConversationStore) LoadConversation(ctx context.Context, id string)
 	var summary string
 	var offset int64
 	var workingRaw []byte
+	var groupScopeRaw []byte
 	var protectedDigest *string
-	if e := s.pool.QueryRow(ctx, `SELECT c.conversation_id,c.title,c.revision,c.created_at,c.updated_at,c.deleted_at,COALESCE(x.summary,''),COALESCE(x.message_offset,0),x.working_context_json,x.protected_digest FROM core_conversations c LEFT JOIN core_conversation_contexts x ON x.conversation_id=c.conversation_id WHERE c.conversation_id=$1`, id).Scan(&c.ID, &c.Title, &c.Revision, &c.CreatedAt, &c.UpdatedAt, &del, &summary, &offset, &workingRaw, &protectedDigest); e != nil {
+	if e := s.pool.QueryRow(ctx, `SELECT c.conversation_id,c.title,c.revision,c.created_at,c.updated_at,c.deleted_at,COALESCE(x.summary,''),COALESCE(x.message_offset,0),x.working_context_json,x.protected_digest,c.group_scope_json FROM core_conversations c LEFT JOIN core_conversation_contexts x ON x.conversation_id=c.conversation_id WHERE c.conversation_id=$1`, id).Scan(&c.ID, &c.Title, &c.Revision, &c.CreatedAt, &c.UpdatedAt, &del, &summary, &offset, &workingRaw, &protectedDigest, &groupScopeRaw); e != nil {
 		return c, core.ErrConflict
+	}
+	if err := decodeConversationGroupScope(groupScopeRaw, &c); err != nil {
+		return c, err
 	}
 	normalizeConversationTimesPG(&c, del)
 	if offset < 0 {
@@ -564,8 +568,10 @@ func (s *CoreConversationStore) LoadConversation(ctx context.Context, id string)
 		}
 		rows3.Close()
 	}
-	if e = s.projectAvailableCloudWorkerRuns(ctx, &c); e != nil {
-		return c, e
+	if c.GroupScope == nil {
+		if e = s.projectAvailableCloudWorkerRuns(ctx, &c); e != nil {
+			return c, e
+		}
 	}
 	return c, nil
 }
@@ -579,7 +585,7 @@ func (s *CoreConversationStore) ListConversations(ctx context.Context, token str
 	var rows pgx.Rows
 	var e error
 	if strings.TrimSpace(token) == "" {
-		rows, e = s.pool.Query(ctx, `SELECT c.conversation_id,c.title,c.revision,c.created_at,c.updated_at,c.deleted_at,COALESCE(x.summary,''),COALESCE(x.message_offset,0),x.working_context_json,x.protected_digest FROM core_conversations c LEFT JOIN core_conversation_contexts x ON x.conversation_id=c.conversation_id WHERE c.deleted_at IS NULL ORDER BY c.updated_at DESC,c.conversation_id LIMIT $1`, limit)
+		rows, e = s.pool.Query(ctx, `SELECT c.conversation_id,c.title,c.revision,c.created_at,c.updated_at,c.deleted_at,COALESCE(x.summary,''),COALESCE(x.message_offset,0),x.working_context_json,x.protected_digest FROM core_conversations c LEFT JOIN core_conversation_contexts x ON x.conversation_id=c.conversation_id WHERE c.deleted_at IS NULL AND c.group_scope_json IS NULL ORDER BY c.updated_at DESC,c.conversation_id LIMIT $1`, limit)
 	} else {
 		parts := strings.SplitN(token, "|", 2)
 		if len(parts) != 2 {
@@ -589,7 +595,7 @@ func (s *CoreConversationStore) ListConversations(ctx context.Context, token str
 		if pe != nil || !coreUUID(parts[1]) {
 			return nil, "", core.ErrInvalid
 		}
-		rows, e = s.pool.Query(ctx, `SELECT c.conversation_id,c.title,c.revision,c.created_at,c.updated_at,c.deleted_at,COALESCE(x.summary,''),COALESCE(x.message_offset,0),x.working_context_json,x.protected_digest FROM core_conversations c LEFT JOIN core_conversation_contexts x ON x.conversation_id=c.conversation_id WHERE c.deleted_at IS NULL AND (c.updated_at < $1 OR (c.updated_at = $1 AND c.conversation_id > $2)) ORDER BY c.updated_at DESC,c.conversation_id ASC LIMIT $3`, ct, parts[1], limit)
+		rows, e = s.pool.Query(ctx, `SELECT c.conversation_id,c.title,c.revision,c.created_at,c.updated_at,c.deleted_at,COALESCE(x.summary,''),COALESCE(x.message_offset,0),x.working_context_json,x.protected_digest FROM core_conversations c LEFT JOIN core_conversation_contexts x ON x.conversation_id=c.conversation_id WHERE c.deleted_at IS NULL AND c.group_scope_json IS NULL AND (c.updated_at < $1 OR (c.updated_at = $1 AND c.conversation_id > $2)) ORDER BY c.updated_at DESC,c.conversation_id ASC LIMIT $3`, ct, parts[1], limit)
 	}
 	if e != nil {
 		return nil, "", e

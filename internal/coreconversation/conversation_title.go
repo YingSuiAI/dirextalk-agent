@@ -33,6 +33,9 @@ func (s *Service) replaceProvisionalConversationTitle(ctx context.Context, curre
 }
 
 func (s *Service) generatedConversationTitle(ctx context.Context, userText, assistantText string) string {
+	if _, group := GroupOriginFromContext(ctx); group {
+		return ProvisionalConversationTitle(userText)
+	}
 	if s.titleGenerator != nil {
 		generated, err := s.titleGenerator.GenerateConversationTitle(ctx, conversationTitleSource(userText), conversationTitleSource(assistantText))
 		if err == nil {

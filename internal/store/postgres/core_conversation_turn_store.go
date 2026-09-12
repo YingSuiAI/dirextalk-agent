@@ -149,7 +149,8 @@ func (s *CoreConversationStore) PrepareTurnRuntimeAdmission(ctx context.Context,
 	}
 	now := time.Now().UTC()
 	return core.Turn{
-		ID: turnID, RequestID: c.RequestID, OwnerID: c.OwnerID, AccountGeneration: c.AccountGeneration,
+		GroupOrigin: c.GroupOrigin,
+		ID:          turnID, RequestID: c.RequestID, OwnerID: c.OwnerID, AccountGeneration: c.AccountGeneration,
 		ConversationID: c.ConversationID, Prompt: c.Prompt, ProfileID: c.ProfileID,
 		ExpectedRevision: cloneRevision(c.ExpectedRevision), State: core.TurnAccepted, Revision: 1,
 		CreatedAt: now, UpdatedAt: now, ProfileSnapshot: c.ProfileSnapshot,
@@ -160,7 +161,7 @@ func (s *CoreConversationStore) PrepareTurnRuntimeAdmission(ctx context.Context,
 }
 
 func (s *CoreConversationStore) StartTurnWithRuntime(ctx context.Context, c core.TurnStartCommand, runtime core.TurnRuntimeSnapshot) (core.Turn, error) {
-	if runtime.Validate() != nil {
+	if runtime.Validate() != nil || !equalGroupOriginPG(c.GroupOrigin, runtime.GroupOrigin) {
 		return core.Turn{}, core.ErrInvalid
 	}
 	return s.startTurn(ctx, c, &runtime)
@@ -183,6 +184,9 @@ func (s *CoreConversationStore) ValidateTurnRuntime(ctx context.Context, lease c
 }
 
 func (s *CoreConversationStore) startTurn(ctx context.Context, c core.TurnStartCommand, admittedRuntime *core.TurnRuntimeSnapshot) (core.Turn, error) {
+	if c.GroupOrigin != nil && admittedRuntime == nil {
+		return core.Turn{}, core.ErrInvalid
+	}
 	// The caller selects source UUIDs only. Immutable metadata is always
 	// resolved from the attachment authority while this transaction holds the
 	// source locks.
@@ -240,7 +244,11 @@ func (s *CoreConversationStore) startTurn(ctx context.Context, c core.TurnStartC
 	// completion transaction advances this row with the fenced revision.
 	if c.ExpectedRevision == nil {
 		now = time.Now().UTC()
-		if _, err = tx.Exec(ctx, `INSERT INTO core_conversations(conversation_id,title,revision,created_at,updated_at) VALUES($1,$2,1,$3,$3) ON CONFLICT(conversation_id) DO NOTHING`, c.ConversationID, core.ProvisionalConversationTitle(c.Prompt), now); err != nil {
+		var groupScope []byte
+		if c.GroupOrigin != nil {
+			groupScope, _ = json.Marshal(c.GroupOrigin.Scope())
+		}
+		if _, err = tx.Exec(ctx, `INSERT INTO core_conversations(conversation_id,title,revision,created_at,updated_at,group_scope_json) VALUES($1,$2,1,$3,$3,$4) ON CONFLICT(conversation_id) DO NOTHING`, c.ConversationID, core.ProvisionalConversationTitle(c.Prompt), now, nullableJSONPG(groupScope)); err != nil {
 			return core.Turn{}, err
 		}
 		if _, err = tx.Exec(ctx, `UPDATE core_conversations SET title=$2,updated_at=GREATEST(updated_at,$3)
@@ -252,6 +260,9 @@ func (s *CoreConversationStore) startTurn(ctx context.Context, c core.TurnStartC
 		if err = tx.QueryRow(ctx, `SELECT title FROM core_conversations WHERE conversation_id=$1 AND deleted_at IS NULL`, c.ConversationID).Scan(&title); err != nil || strings.TrimSpace(title) == "" {
 			return core.Turn{}, core.ErrConflict
 		}
+	}
+	if err = validateConversationGroupScopeTx(ctx, tx, c.ConversationID, c.GroupOrigin); err != nil {
+		return core.Turn{}, err
 	}
 	turnID := c.TurnID
 	if turnID == "" {
@@ -271,7 +282,7 @@ func (s *CoreConversationStore) startTurn(ctx context.Context, c core.TurnStartC
 		if admittedRuntime.Validate() != nil || admittedRuntime.ProfileSnapshotDigest != c.ProfileSnapshot.Digest() ||
 			admittedRuntime.RequestDialect != string(c.ProfileSnapshot.RequestDialect) || admittedRuntime.ExtensionDigest != c.ExtensionSnapshotDigest() ||
 			admittedRuntime.AttachmentDigest != core.TurnAttachmentSnapshotDigest(c.AttachmentSources) ||
-			admittedRuntime.ExecutionPolicy.Mode != executionMode {
+			admittedRuntime.ExecutionPolicy.Mode != executionMode || !equalGroupOriginPG(c.GroupOrigin, admittedRuntime.GroupOrigin) {
 			return core.Turn{}, core.ErrInvalid
 		}
 		built := *admittedRuntime
@@ -324,7 +335,7 @@ func (s *CoreConversationStore) startTurn(ctx context.Context, c core.TurnStartC
 	if err = tx.Commit(ctx); err != nil {
 		return core.Turn{}, err
 	}
-	return core.Turn{ID: turnID, RequestID: c.RequestID, RequestFingerprint: fp, OwnerID: c.OwnerID, AccountGeneration: c.AccountGeneration, ConversationID: c.ConversationID, Prompt: c.Prompt, ProfileID: c.ProfileID, ExpectedRevision: cloneRevision(c.ExpectedRevision), Revision: 1, State: core.TurnAccepted, LastSequence: 1, CreatedAt: now, UpdatedAt: now, ProfileSnapshot: c.ProfileSnapshot, ProfileSnapshotDigest: c.ProfileSnapshot.Digest(), ExtensionSnapshots: append([]core.ExtensionExecutionSnapshot(nil), c.ExtensionSnapshots...), ExtensionSnapshotDigest: c.ExtensionSnapshotDigest(), AttachmentSources: append([]core.TurnAttachment(nil), c.AttachmentSources...), AttachmentSnapshotDigest: attachmentDigest, RuntimeSnapshot: runtimeSnapshot}, nil
+	return core.Turn{GroupOrigin: c.GroupOrigin, ID: turnID, RequestID: c.RequestID, RequestFingerprint: fp, OwnerID: c.OwnerID, AccountGeneration: c.AccountGeneration, ConversationID: c.ConversationID, Prompt: c.Prompt, ProfileID: c.ProfileID, ExpectedRevision: cloneRevision(c.ExpectedRevision), Revision: 1, State: core.TurnAccepted, LastSequence: 1, CreatedAt: now, UpdatedAt: now, ProfileSnapshot: c.ProfileSnapshot, ProfileSnapshotDigest: c.ProfileSnapshot.Digest(), ExtensionSnapshots: append([]core.ExtensionExecutionSnapshot(nil), c.ExtensionSnapshots...), ExtensionSnapshotDigest: c.ExtensionSnapshotDigest(), AttachmentSources: append([]core.TurnAttachment(nil), c.AttachmentSources...), AttachmentSnapshotDigest: attachmentDigest, RuntimeSnapshot: runtimeSnapshot}, nil
 }
 
 func applyAutomaticTurnContextCompaction(ctx context.Context, tx pgx.Tx, conversationID string, revision uint64, plan core.TurnContextCompaction) error {
@@ -475,6 +486,12 @@ func (s *CoreConversationStore) scanTurn(ctx context.Context, q turnRow, key str
 			return core.ErrConflict
 		}
 		out.RuntimeSnapshot = &runtime
+		out.GroupOrigin = runtime.GroupOrigin
+		if out.GroupOrigin != nil && (out.GroupOrigin.RequestID != out.RequestID ||
+			out.GroupOrigin.OwnerID != out.OwnerID || out.GroupOrigin.AccountGeneration != out.AccountGeneration ||
+			out.GroupOrigin.ConversationID() != out.ConversationID || out.ProfileSnapshot.SystemPrompt != "") {
+			return core.ErrConflict
+		}
 	} else if runtimeDigest != nil {
 		return core.ErrConflict
 	}
@@ -1611,7 +1628,8 @@ func (s *CoreConversationStore) commitTurnTx(ctx context.Context, tx pgx.Tx, lea
 		return core.ErrConflict
 	}
 	if turn.State != core.TurnRunning || turn.RequestID != lease.Turn.RequestID || turn.OwnerID != lease.Turn.OwnerID ||
-		turn.AccountGeneration != lease.Turn.AccountGeneration || turn.ConversationID != lease.Turn.ConversationID || turn.ProfileID != lease.Turn.ProfileID {
+		turn.AccountGeneration != lease.Turn.AccountGeneration || turn.ConversationID != lease.Turn.ConversationID || turn.ProfileID != lease.Turn.ProfileID ||
+		!equalGroupOriginPG(turn.GroupOrigin, lease.Turn.GroupOrigin) {
 		return core.ErrConflict
 	}
 	raw, _ := json.Marshal(response)
@@ -1698,8 +1716,10 @@ func (s *CoreConversationStore) commitTurnTx(ctx context.Context, tx pgx.Tx, lea
 	for _, steer := range steers {
 		userParts = append(userParts, steer.Instruction)
 	}
-	if err = s.enqueueMemoryObservationTx(ctx, tx, lease.Turn.RequestID, response.ConversationID, lease.Turn.ProfileID, strings.Join(userParts, "\n"), response.Message.Content, now); err != nil {
-		return err
+	if turn.GroupOrigin == nil {
+		if err = s.enqueueMemoryObservationTx(ctx, tx, lease.Turn.RequestID, response.ConversationID, lease.Turn.ProfileID, strings.Join(userParts, "\n"), response.Message.Content, now); err != nil {
+			return err
+		}
 	}
 	if err = insertTurnEventTx(ctx, tx, lease.Turn.ID, turn.LastSequence+1, core.TurnEvent{Kind: core.TurnEventDone, Message: &response.Message, Response: &response}, now); err != nil {
 		return err
@@ -2036,6 +2056,10 @@ func (s *CoreConversationStore) RequestTurnSteer(ctx context.Context, c core.Tur
 	var generation uint64
 	if err = tx.QueryRow(ctx, `SELECT state,revision,last_sequence,cancel_requested,dispatch_state,dispatch_result_json,owner_id,account_generation FROM core_conversation_turns WHERE turn_id=$1 FOR UPDATE`, c.TurnID).Scan(&state, &revision, &lastSequence, &cancelRequested, &dispatchState, &dispatchRaw, &owner, &generation); err != nil {
 		return core.Turn{}, false, core.ErrConflict
+	}
+	var groupTurn bool
+	if err = tx.QueryRow(ctx, `SELECT runtime_snapshot_json->'group_origin' IS NOT NULL FROM core_conversation_turns WHERE turn_id=$1`, c.TurnID).Scan(&groupTurn); err != nil || groupTurn {
+		return core.Turn{}, false, core.ErrGroupAuthorization
 	}
 	rows, err := tx.Query(ctx, `SELECT payload_json FROM core_conversation_turn_events WHERE turn_id=$1 AND kind=$2 ORDER BY sequence`, c.TurnID, string(core.TurnEventSteered))
 	if err != nil {

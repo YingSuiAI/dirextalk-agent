@@ -27,6 +27,7 @@ import (
 	capabilityclient "github.com/YingSuiAI/dirextalk-agent/internal/capability/client"
 	"github.com/YingSuiAI/dirextalk-agent/internal/capability/operation"
 	capabilityserver "github.com/YingSuiAI/dirextalk-agent/internal/capability/server"
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/localartifact"
 	"github.com/YingSuiAI/dirextalk-agent/internal/config"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreaws"
@@ -464,6 +465,9 @@ func serveCore(cfg config.Config) error {
 	}
 	if cloudComposition != nil {
 		conversation.SetIntrinsicResolver(cloudComposition.intrinsic)
+		// Even if Product is disabled after restart, persisted group work must
+		// remain identifiable and fail closed without its authorization guard.
+		cloudComposition.executor.groupTurnReader = conversation
 	}
 	// Compose model-facing tools in one resolver chain. Agent-owned built-ins
 	// remain available without Product Capability, but inject tools only for an
@@ -486,6 +490,26 @@ func serveCore(cfg config.Config) error {
 		conversationResolver = &knowledgeConversationResolver{base: conversationResolver, search: knowledgeComposition.domain}
 	}
 	conversation.SetExtensionResolver(&webSearchConversationResolver{base: &githubMCPConversationResolver{base: conversationResolver, service: githubService}, service: webSearchService})
+	var groupLoop *groupAgentLoop
+	var groupCleaner coreLifecycleCleaner
+	if productCapabilityClient != nil {
+		groupLoop = newGroupAgentLoop(productCapabilityClient, conversation, profiles, uint64(cfg.ProductCapabilityAccountGeneration))
+		groupCleaner = groupLoop
+		conversation.SetGroupAuthorizationGuard(groupLoop)
+		conversation.SetGroupExtensionResolver(&webSearchConversationResolver{base: groupMessageResolver{product: productCapabilityClient}, service: webSearchService})
+		if cloudComposition != nil {
+			// Group work may request a new isolated Worker with owner approval.
+			// Deliberately do not attach private GitHub, inventory, reuse or domain
+			// management to this resolver; the private owner's resolver is intact.
+			groupWorker, groupErr := cloudworker.NewProposeIntrinsic(cloudComposition.domain, conversationStore, conversationStore, conversationStore)
+			if groupErr != nil {
+				return fmt.Errorf("initialize group Worker proposal: %w", groupErr)
+			}
+			conversation.SetGroupIntrinsicResolver(groupWorker)
+			cloudComposition.executor.groupAuthorization = groupLoop
+			cloudComposition.executor.groupTurnReader = conversation
+		}
+	}
 	if knowledgeComposition != nil {
 		conversationStore.EnableMemoryCapture()
 		conversation.SetMemoryRecallResolver(coreMemoryRecallResolver{structured: knowledgeComposition.memory})
@@ -694,7 +718,7 @@ func serveCore(cfg config.Config) error {
 			pool.Close()
 			poolClosed = true
 		}
-	}, append([]coreLifecycleCleaner{cleanup, extensionCleanup, confirmationExpiry}, cloudComposition.Cleaners()...)...)
+	}, append([]coreLifecycleCleaner{cleanup, extensionCleanup, confirmationExpiry, groupCleaner}, cloudComposition.Cleaners()...)...)
 }
 
 // capabilityRegistryAdapter keeps the domain registry independent from the

@@ -2963,3 +2963,36 @@ WHERE defaults.singleton AND profile.deleted_at IS NULL
 
 ALTER TABLE core_model_profiles DROP COLUMN system_prompt;
 -- dirextalk-agent migration end 000033_global_system_prompt.up.sql
+-- dirextalk-agent migration begin 000034_group_conversation_scope.up.sql
+-- Group context is an immutable, separate conversation namespace. Ordinary
+-- owner conversations can never be relabeled as a group context.
+ALTER TABLE core_conversations ADD COLUMN group_scope_json jsonb;
+ALTER TABLE core_conversations ADD CONSTRAINT core_conversation_group_scope_shape
+    CHECK (group_scope_json IS NULL OR (
+        jsonb_typeof(group_scope_json) = 'object'
+        AND pg_column_size(group_scope_json) <= 8192
+        AND group_scope_json ?& ARRAY['room_id','owner_id','agent_mxid','account_generation','binding_revision']
+        AND jsonb_typeof(group_scope_json->'room_id') = 'string'
+        AND jsonb_typeof(group_scope_json->'owner_id') = 'string'
+        AND jsonb_typeof(group_scope_json->'agent_mxid') = 'string'
+        AND jsonb_typeof(group_scope_json->'account_generation') = 'number'
+        AND jsonb_typeof(group_scope_json->'binding_revision') = 'number'
+    ));
+
+CREATE FUNCTION reject_core_conversation_scope_change() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF NEW.group_scope_json IS DISTINCT FROM OLD.group_scope_json THEN
+        RAISE EXCEPTION 'conversation group scope is immutable';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER core_conversation_scope_immutable
+BEFORE UPDATE OF group_scope_json ON core_conversations
+FOR EACH ROW EXECUTE FUNCTION reject_core_conversation_scope_change();
+
+CREATE INDEX core_private_conversations_list_idx
+    ON core_conversations(updated_at DESC,conversation_id)
+    WHERE deleted_at IS NULL AND group_scope_json IS NULL;
+-- dirextalk-agent migration end 000034_group_conversation_scope.up.sql
