@@ -71,8 +71,8 @@ func (f *groupTurnsFake) StartGroupTurn(_ context.Context, command coreconversat
 	return turn, nil
 }
 
-func (f *groupTurnsFake) GetTurn(context.Context, string) (coreconversation.Turn, error) {
-	if f.turn != nil {
+func (f *groupTurnsFake) GetTurn(_ context.Context, id string) (coreconversation.Turn, error) {
+	if f.turn != nil && f.turn.ID == id {
 		return *f.turn, nil
 	}
 	return coreconversation.Turn{}, f.getErr
@@ -198,6 +198,39 @@ func TestGroupLoopSerializesTurnsInsideOneGroupConversation(t *testing.T) {
 	}
 	if len(turns.started) != 1 {
 		t.Fatalf("idle conversation started %d turns", len(turns.started))
+	}
+}
+
+func TestGroupLoopStartsOneTurnPerConversationPerTick(t *testing.T) {
+	loop, product, turns, _ := newGroupLoopFixture(t)
+	first := groupRequestFixture()
+	second := groupRequestFixture()
+	second.RoomID, second.OwnerMXID, second.AgentMXID, second.AccountGeneration = first.RoomID, first.OwnerMXID, first.AgentMXID, first.AccountGeneration
+	second.SenderMXID, second.SenderDisplayName = "@other:example.test", "Other"
+	product.page = capabilityclient.GroupAgentPage{Requests: []capabilityclient.GroupAgentRequest{first, second}}
+
+	if err := loop.tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(turns.started) != 1 {
+		t.Fatalf("one tick started %d turns in one conversation", len(turns.started))
+	}
+	if turns.started[0].Prompt != "Ott (@member:example.test): "+first.Body {
+		t.Fatalf("wrong request admitted first: %#v", turns.started[0])
+	}
+	// The first member's turn finished: only the second member's request is
+	// still pending, so the next tick delivers it in the same conversation.
+	turns.turn = nil
+	turns.getErr = coreconversation.ErrConflict
+	product.page = capabilityclient.GroupAgentPage{Requests: []capabilityclient.GroupAgentRequest{second}}
+	if err := loop.tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(turns.started) != 2 || turns.started[1].Prompt != "Other (@other:example.test): "+second.Body {
+		t.Fatalf("second member was not delivered: %#v", turns.started)
+	}
+	if turns.started[1].ConversationID != "" {
+		t.Fatalf("the fake records no conversation id: %#v", turns.started[1])
 	}
 }
 

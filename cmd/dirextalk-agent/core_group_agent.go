@@ -112,6 +112,9 @@ func (l *groupAgentLoop) tick(ctx context.Context) error {
 		return err
 	}
 	var failures []error
+	// A single tick can still deliver several members' requests: only the first
+	// one per conversation may start work, the rest wait for a later tick.
+	started := make(map[string]bool, len(busy))
 	for after := ""; ; {
 		pageCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		page, err := l.product.PullGroupAgentRequests(pageCtx, after)
@@ -120,7 +123,8 @@ func (l *groupAgentLoop) tick(ctx context.Context) error {
 			return err
 		}
 		for _, request := range page.Requests {
-			if busy[groupRequestConversationID(request)] {
+			conversationID := groupRequestConversationID(request)
+			if conversationID != "" && (busy[conversationID] || started[conversationID]) {
 				continue
 			}
 			requestCtx, requestCancel := context.WithTimeout(ctx, 15*time.Second)
@@ -128,6 +132,9 @@ func (l *groupAgentLoop) tick(ctx context.Context) error {
 				failures = append(failures, err)
 			}
 			requestCancel()
+			if conversationID != "" {
+				started[conversationID] = true
+			}
 		}
 		if !page.HasMore {
 			return errors.Join(failures...)
