@@ -84,7 +84,7 @@ func (l *groupAgentLoop) Run(ctx context.Context) error {
 		case <-timer.C:
 			if err := l.tick(ctx); err != nil && ctx.Err() == nil {
 				// Never include request bodies, private provider data or credentials.
-				slog.Warn("[group-agent] delivery retry pending")
+				slog.Warn("[group-agent] delivery retry pending", "error", groupAgentErrorSummary(err))
 			}
 			timer.Reset(l.interval)
 		}
@@ -104,6 +104,13 @@ func (l *groupAgentLoop) tick(ctx context.Context) error {
 	if err := l.cancelRevoked(ctx); err != nil {
 		return err
 	}
+	// One group shares one conversation, so two answers cannot be committed at
+	// the same revision. A request for a conversation that is still answering
+	// stays pending and is delivered on the next tick.
+	busy, err := l.busyGroupConversations(ctx)
+	if err != nil {
+		return err
+	}
 	var failures []error
 	for after := ""; ; {
 		pageCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -113,6 +120,9 @@ func (l *groupAgentLoop) tick(ctx context.Context) error {
 			return err
 		}
 		for _, request := range page.Requests {
+			if busy[groupRequestConversationID(request)] {
+				continue
+			}
 			requestCtx, requestCancel := context.WithTimeout(ctx, 15*time.Second)
 			if err = l.processRequest(requestCtx, request); err != nil {
 				failures = append(failures, err)
@@ -127,6 +137,51 @@ func (l *groupAgentLoop) tick(ctx context.Context) error {
 		}
 		after = page.NextAfterRequestID
 	}
+}
+
+func (l *groupAgentLoop) busyGroupConversations(ctx context.Context) (map[string]bool, error) {
+	turns, err := l.turns.ListActiveGroupTurns(ctx)
+	if err != nil {
+		return nil, err
+	}
+	busy := make(map[string]bool, len(turns))
+	for _, turn := range turns {
+		if turn.GroupOrigin == nil || strings.TrimSpace(turn.ConversationID) == "" {
+			continue
+		}
+		busy[turn.ConversationID] = true
+	}
+	return busy, nil
+}
+
+// groupRequestConversationID derives the identity of the shared group
+// conversation without starting the turn.
+func groupRequestConversationID(request capabilityclient.GroupAgentRequest) string {
+	origin := coreconversation.GroupOrigin{RequestID: request.RequestID, RoomID: request.RoomID, EventID: request.EventID,
+		ActorID: request.SenderMXID, OwnerID: request.OwnerMXID, AgentMXID: request.AgentMXID,
+		AccountGeneration: request.AccountGeneration, BindingRevision: request.BindingRevision}
+	if origin.Validate() != nil {
+		return ""
+	}
+	return origin.ConversationID()
+}
+
+// groupAgentErrorSummary keeps diagnostics useful without logging untrusted
+// bodies: one bounded line.
+func groupAgentErrorSummary(err error) string {
+	if err == nil {
+		return ""
+	}
+	summary := strings.TrimSpace(err.Error())
+	if len(summary) > 240 {
+		summary = summary[:240]
+	}
+	return strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\r' || r == '\t' {
+			return ' '
+		}
+		return r
+	}, summary)
 }
 
 func (l *groupAgentLoop) cancelRevoked(ctx context.Context) error {

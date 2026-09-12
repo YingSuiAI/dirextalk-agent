@@ -18,10 +18,11 @@ type groupProductFake struct {
 	published    []capabilityclient.GroupAgentPublish
 	completed    []string
 	historyCalls []string
+	page         capabilityclient.GroupAgentPage
 }
 
 func (f *groupProductFake) PullGroupAgentRequests(context.Context, string) (capabilityclient.GroupAgentPage, error) {
-	return capabilityclient.GroupAgentPage{}, nil
+	return f.page, nil
 }
 
 func (f *groupProductFake) ValidateGroupAgentRequest(context.Context, string, int64) (capabilityclient.GroupAgentBindingCheck, error) {
@@ -168,6 +169,52 @@ func TestGroupAgentTurnPromptAttributesTheSpeaker(t *testing.T) {
 		if got := groupAgentTurnPrompt(request); got != tc.expected {
 			t.Fatalf("%s: prompt = %q, want %q", tc.name, got, tc.expected)
 		}
+	}
+}
+
+func TestGroupLoopSerializesTurnsInsideOneGroupConversation(t *testing.T) {
+	loop, product, turns, _ := newGroupLoopFixture(t)
+	request := groupRequestFixture()
+	origin := coreconversation.GroupOrigin{RequestID: request.RequestID, RoomID: request.RoomID, EventID: request.EventID,
+		ActorID: request.SenderMXID, OwnerID: request.OwnerMXID, AgentMXID: request.AgentMXID,
+		AccountGeneration: request.AccountGeneration, BindingRevision: request.BindingRevision}
+	product.page = capabilityclient.GroupAgentPage{Requests: []capabilityclient.GroupAgentRequest{request}}
+
+	// A second member's question arrives while the shared conversation is still
+	// answering: it stays pending for the next tick instead of racing the commit.
+	turns.active = []coreconversation.Turn{{ID: uuid.NewString(), ConversationID: origin.ConversationID(),
+		State: coreconversation.TurnRunning, GroupOrigin: &origin}}
+	if err := loop.tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(turns.started) != 0 || len(product.published) != 0 {
+		t.Fatalf("busy conversation started work: turns=%d published=%d", len(turns.started), len(product.published))
+	}
+
+	// Once the conversation is idle the same request is delivered normally.
+	turns.active = nil
+	if err := loop.tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(turns.started) != 1 {
+		t.Fatalf("idle conversation started %d turns", len(turns.started))
+	}
+}
+
+func TestGroupRequestConversationIDIgnoresTheAuthorizationEpoch(t *testing.T) {
+	request := groupRequestFixture()
+	first := groupRequestConversationID(request)
+	if first == "" {
+		t.Fatal("group request did not resolve a conversation")
+	}
+	request.BindingRevision++
+	request.SenderMXID = "@another:example.test"
+	if groupRequestConversationID(request) != first {
+		t.Fatal("one group must keep one conversation across epochs and members")
+	}
+	request.RoomID = "!other:example.test"
+	if groupRequestConversationID(request) == first {
+		t.Fatal("a different group reused a conversation")
 	}
 }
 

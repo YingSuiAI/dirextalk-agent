@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
@@ -49,6 +50,7 @@ func (r groupMessageResolver) ResolveExtensions(ctx context.Context, selections 
 		}
 		history, err := r.product.ReadGroupAgentHistory(callCtx, origin.RequestID, origin.BindingRevision, input.Limit)
 		if err != nil {
+			slog.Warn("[group-agent] group message read failed", "error", groupAgentErrorSummary(err))
 			return coreconversation.ToolResult{}, err
 		}
 		content, err := json.Marshal(history)
