@@ -8,6 +8,18 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
 )
 
+// groupAuthorizationPoll is the revalidation cadence while a group-approved
+// Worker runs. Tests may shorten it; zero falls back to the production value so
+// executor literals stay valid.
+const defaultGroupAuthorizationPoll = 2 * time.Second
+
+func (executor *sshWorkerExecutor) groupAuthorizationInterval() time.Duration {
+	if executor.groupAuthorizationPoll > 0 {
+		return executor.groupAuthorizationPoll
+	}
+	return defaultGroupAuthorizationPoll
+}
+
 // The persisted turn, not the request's context or its human-written goal,
 // determines whether execution originated in a group. It is checked again
 // after the private owner has approved the quote and before any remote start.
@@ -38,7 +50,7 @@ func (executor *sshWorkerExecutor) watchGroupWorkerAuthorization(ctx context.Con
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		ticker := time.NewTicker(2 * time.Second)
+		ticker := time.NewTicker(executor.groupAuthorizationInterval())
 		defer ticker.Stop()
 		for {
 			select {

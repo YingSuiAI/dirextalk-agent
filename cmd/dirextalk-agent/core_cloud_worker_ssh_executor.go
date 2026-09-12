@@ -42,6 +42,7 @@ type sshWorkerExecutor struct {
 	groupTurnReader    interface {
 		GetTurn(context.Context, string) (coreconversation.Turn, error)
 	}
+	groupAuthorizationPoll   time.Duration
 	authority                *cloudWorkerCredentialAuthority
 	github                   cloudWorkerGitHubPATResolver
 	exact                    workaws.ExactCredentialResolver
