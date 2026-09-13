@@ -76,10 +76,6 @@ func (r *githubMCPConversationResolver) ResolveExtensions(ctx context.Context, s
 		owner, gen = strings.TrimSpace(p.GetAuthenticatedOwnerId()), p.GetAccountGeneration()
 	}
 	snap, e := r.service.Resolve(ctx, githubScopeForTurn(ctx, owner, gen))
-	if origin, group := coreconversation.GroupOriginFromContext(ctx); group {
-		slog.Info("[github-mcp] group scope resolve", "room_id", origin.RoomID,
-			"scope_room", githubScopeForTurn(ctx, owner, gen).RoomID, "err", groupAgentErrorSummary(e))
-	}
 	if errors.Is(e, coregithub.ErrNotConfigured) || errors.Is(e, coregithub.ErrDisabled) {
 		return out, nil
 	}
@@ -104,10 +100,12 @@ func (r *githubMCPConversationResolver) ResolveExtensions(ctx context.Context, s
 	}
 	provider, e := factory(ctx, snap)
 	if e != nil {
+		slog.Warn("[github-mcp] provider unavailable", "error", groupAgentErrorSummary(e))
 		return out, nil
 	}
 	tools, e := provider.Tools(ctx)
 	if e != nil {
+		slog.Warn("[github-mcp] tool catalog unavailable", "error", groupAgentErrorSummary(e))
 		return out, nil
 	}
 	selected := make([]mcphttp.Tool, 0, len(tools))
@@ -147,6 +145,7 @@ func (r *githubMCPConversationResolver) ResolveExtensions(ctx context.Context, s
 		}
 	}
 	if len(selected) == 0 {
+		slog.Warn("[github-mcp] no direct tools selected from the provider catalog", "catalog", len(tools))
 		return out, nil
 	}
 	sort.Slice(selected, func(i, j int) bool { return selected[i].Definition.Name < selected[j].Definition.Name })

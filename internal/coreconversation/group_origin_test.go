@@ -178,6 +178,73 @@ func TestStartGroupTurnExcludesOwnerPromptAndAutomaticExtensions(t *testing.T) {
 	}
 }
 
+// groupOwnerTool builds one resolved extension exactly as the owner's chain
+// would return it, so the group admission boundary is exercised with the real
+// snapshot shape.
+func groupOwnerTool(source, toolName string, readOnly bool) ResolvedExtension {
+	selection := ExtensionSelection{Kind: ExtensionMCP, ID: uuid.NewString(), Version: "v1",
+		Digest: strings.Repeat("a", 64), AllowedTools: []string{toolName}}
+	return ResolvedExtension{
+		Selection: selection,
+		Snapshot: ExtensionExecutionSnapshot{Selection: selection, InstallationID: selection.ID, VersionID: "v1",
+			Source: source, ContentDigest: selection.Digest, ArtifactDigest: selection.Digest,
+			ToolNames: []string{toolName}, ReadOnly: readOnly},
+		Tools:   []coremodel.Tool{{Name: toolName, InputSchema: map[string]any{"type": "object"}}},
+		Execute: func(context.Context, ToolExecutionRequest) (ToolResult, error) { return ToolResult{}, nil },
+	}
+}
+
+// TestGroupAdmissionKeepsSharedOwnerToolsAndDropsPrivateOnes pins the production
+// failure mode where the group reuses the owner's whole tool chain: the private
+// entries must be dropped at admission, and the shared ones must be admitted,
+// instead of the turn failing with ErrInvalid and retrying forever.
+func TestGroupAdmissionKeepsSharedOwnerToolsAndDropsPrivateOnes(t *testing.T) {
+	origin := testGroupOrigin()
+	profile := testTurnSnapshot()
+	store := &groupAdmissionStore{&terminalAdmissionStore{publicActiveTurnStore: &publicActiveTurnStore{fakeStore: newFakeStore()}}}
+	service, err := NewService(store, &fakeModel{}, nil,
+		snapshotResolverFunc(func(context.Context, string) (coremodel.ExecutionSnapshot, error) { return profile, nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close()
+	service.SetGroupAuthorizationGuard(groupGuardFunc(func(context.Context, GroupOrigin) error { return nil }))
+	service.SetGroupExtensionResolver(extensionResolverFunc(func(context.Context, []ExtensionSelection) ([]ResolvedExtension, error) {
+		return []ResolvedExtension{
+			groupOwnerTool("message-mcp", "read_private_messages", true),
+			groupOwnerTool("builtin:knowledge:semantic", "search_private_knowledge", true),
+			groupOwnerTool("builtin", "owner_local_sandbox", false),
+			groupOwnerTool("github-mcp", "mcp__github__get_me", true),
+			groupOwnerTool("builtin:web_search:tavily", "web_search", true),
+			groupOwnerTool("group-message", "read_group_messages", true),
+		}, nil
+	}))
+	command := TurnStartCommand{RequestID: origin.RequestID, OwnerID: origin.OwnerID, AccountGeneration: origin.AccountGeneration,
+		Prompt: "帮我看下这个仓库", ProfileID: profile.ProfileID, ExpectedProfileRevision: profile.Revision,
+		ExpectedCredentialVersion: profile.CredentialVersion}
+	if _, err := service.StartGroupTurn(context.Background(), command, origin); err != nil {
+		t.Fatalf("group admission failed on the owner's own tool chain: %v", err)
+	}
+	if len(store.commands) != 1 {
+		t.Fatalf("admissions=%d", len(store.commands))
+	}
+	admitted := store.commands[0].ExtensionSnapshots
+	got := make(map[string]bool, len(admitted))
+	for _, snapshot := range admitted {
+		got[snapshot.Source] = true
+	}
+	for _, source := range []string{"github-mcp", "builtin:web_search:tavily", "group-message"} {
+		if !got[source] {
+			t.Fatalf("shared source %q was not admitted: %v", source, got)
+		}
+	}
+	for _, source := range []string{"message-mcp", "builtin:knowledge:semantic", "builtin"} {
+		if got[source] {
+			t.Fatalf("private source %q reached the group turn", source)
+		}
+	}
+}
+
 func TestGroupAdmissionBindsConversationRevisionAndReplaysOriginalRevision(t *testing.T) {
 	origin := testGroupOrigin()
 	profile := testTurnSnapshot()

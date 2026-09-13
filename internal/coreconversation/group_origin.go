@@ -150,10 +150,47 @@ func (s *Service) SetGroupAuthorizationGuard(guard GroupAuthorizationGuard) {
 	s.groupAuthorization = guard
 }
 
-// Group resolver setters are separate from private-owner composition. They
-// may expose public Web search, explicitly room-bound reads, and owner-approved
-// Worker offers; the ordinary owner catalogs are never implicitly inherited.
-func (s *Service) SetGroupExtensionResolver(resolver ExtensionResolver) { s.groupExtensions = resolver }
+// SetGroupExtensionResolver installs the tool chain a group turn may use. The
+// chain is wrapped at this trusted boundary so that the group-visible subset is
+// decided here, not by each caller: reusing the owner's tools must never expose
+// private-context data, and a private tool must never fail a group turn.
+func (s *Service) SetGroupExtensionResolver(resolver ExtensionResolver) {
+	if s == nil {
+		return
+	}
+	if resolver == nil {
+		s.groupExtensions = noopExtensions{}
+		return
+	}
+	s.groupExtensions = groupExtensionFilter{base: resolver}
+}
+
+// groupExtensionFilter drops every resolved extension that is not group
+// visible before admission sees it. Admission still re-checks the same policy,
+// so a chain that bypasses this wrapper fails closed instead of leaking.
+type groupExtensionFilter struct{ base ExtensionResolver }
+
+func (f groupExtensionFilter) ResolveExtensions(ctx context.Context, selections []ExtensionSelection) ([]ResolvedExtension, error) {
+	resolved, err := f.base.ResolveExtensions(ctx, selections)
+	if err != nil {
+		return nil, err
+	}
+	kept := make([]ResolvedExtension, 0, len(resolved))
+	for _, extension := range resolved {
+		if !groupResolvedExtensionAllowed(extension) {
+			continue
+		}
+		kept = append(kept, extension)
+	}
+	return kept, nil
+}
+
+// groupResolvedExtensionAllowed applies the group policy to one resolved
+// extension using the same snapshot admission persists.
+func groupResolvedExtensionAllowed(extension ResolvedExtension) bool {
+	return groupExtensionAllowed(snapshotForResolved(extension))
+}
+
 func (s *Service) SetGroupIntrinsicResolver(resolver IntrinsicResolver) { s.groupIntrinsics = resolver }
 
 func (s *Service) validateGroupAuthorization(ctx context.Context, origin *GroupOrigin) error {
