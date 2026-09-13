@@ -494,11 +494,13 @@ func serveCore(cfg config.Config) error {
 	var groupLoop *groupAgentLoop
 	var groupCleaner coreLifecycleCleaner
 	var groupModelBindings *groupModelBindingAdapter
+	var groupExtensionBindings *groupExtensionBindingAdapter
 	if productCapabilityClient != nil {
 		groupLoop = newGroupAgentLoop(productCapabilityClient, conversation, profiles, uint64(cfg.ProductCapabilityAccountGeneration), conversationStore)
 		// A group answers with the model its owner picked for that group, and
 		// with the owner's default conversation model when none was picked.
 		groupModelBindings = &groupModelBindingAdapter{store: postgres.NewCoreGroupModelBindingStore(store)}
+		groupExtensionBindings = &groupExtensionBindingAdapter{store: postgres.NewCoreGroupExtensionBindingStore(store)}
 		groupLoop.SetGroupModelOverrides(groupModelBindings)
 		groupCleaner = groupLoop
 		conversation.SetGroupAuthorizationGuard(groupLoop)
@@ -507,8 +509,9 @@ func serveCore(cfg config.Config) error {
 		// private-context tools centrally, so a new tool never has to be wired
 		// twice.
 		conversation.SetGroupExtensionResolver(groupToolChain{
-			base:  fullResolver,
-			group: groupMessageResolver{product: productCapabilityClient},
+			base:     fullResolver,
+			group:    groupMessageResolver{product: productCapabilityClient},
+			bindings: groupExtensionBindings,
 		})
 		if cloudComposition != nil {
 			// Group work may request a new isolated Worker with owner approval.
@@ -579,14 +582,20 @@ func serveCore(cfg config.Config) error {
 			Conversation:  conversation,
 			Confirmations: confirmationDomain,
 			Models:        profiles,
+			GroupExtensions: func() agentcapability.GroupExtensionBindings {
+				if groupExtensionBindings == nil {
+					return nil
+				}
+				return groupExtensionBindings
+			}(),
 			GroupModels: func() agentcapability.GroupModelBindings {
 				if groupModelBindings == nil {
 					return nil
 				}
 				return groupModelBindings
 			}(),
-			Tasks:         taskStore,
-			Schedules:     scheduleStore,
+			Tasks:     taskStore,
+			Schedules: scheduleStore,
 			Knowledge: func() *coreknowledge.Service {
 				if knowledgeComposition == nil {
 					return nil

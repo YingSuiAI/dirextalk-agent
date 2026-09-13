@@ -224,6 +224,12 @@ func (s *Service) extensionResolverForContext(ctx context.Context) ExtensionReso
 //     rooms, contacts, Knowledge, long-term memory, sending as the owner), and
 //   - tools that mutate or need an interactive confirmation; those keep the
 //     owner's private approval path.
+//
+// GroupBoundMCPSource marks a third-party MCP installation that the owner bound
+// to this group. It is produced by the group tool chain after reading the
+// durable per-room binding, never by a model or a group member.
+const GroupBoundMCPSource = "group-bound-mcp"
+
 func groupExtensionAllowed(snapshot ExtensionExecutionSnapshot) bool {
 	if snapshot.Selection.Kind != ExtensionMCP || snapshot.SkillInstructions != "" ||
 		!snapshot.ReadOnly || snapshot.RequiresConfirmation {
@@ -233,10 +239,17 @@ func groupExtensionAllowed(snapshot ExtensionExecutionSnapshot) bool {
 	case "group-message", "builtin:web_search:tavily", "github-mcp":
 		// "github-mcp" and "builtin:web_search:tavily" are scoped to the group's
 		// own credential; "group-message" is the room-scoped read tool.
+		return true
+	case GroupBoundMCPSource:
+		// A third-party MCP installation the owner explicitly bound to this
+		// group. The marker is applied by the group tool chain only after the
+		// durable binding for this exact room was read, and the guards above
+		// still require a read-only, non-confirmation MCP tool with no skill
+		// instructions. Private-context sources never carry this marker.
+		return snapshot.Selection.Kind == ExtensionMCP && snapshot.InstallationID != ""
 	default:
 		return false
 	}
-	return true
 }
 
 // filterGroupExtensions keeps the group-visible subset of the owner's tool list

@@ -3059,3 +3059,17 @@ ALTER TABLE core_aws_credentials ADD COLUMN room_id text NOT NULL DEFAULT '' CHE
 ALTER TABLE core_aws_credentials ADD CONSTRAINT core_aws_credentials_scope_room CHECK ((scope = 'group') = (room_id <> ''));
 CREATE UNIQUE INDEX core_aws_credentials_scope_room_idx ON core_aws_credentials(scope, room_id) WHERE disabled_at IS NULL;
 -- dirextalk-agent migration end 000039_aws_credential_scopes.up.sql
+-- dirextalk-agent migration begin 000040_group_extension_bindings.up.sql
+-- One group can use third-party MCP installations the owner bound to it. The
+-- binding is explicit and per room: an installation is never implicitly shared
+-- with a group, and Skills stay personal. Only read-only MCP tools are exposed.
+CREATE TABLE core_group_extension_bindings (
+    owner_id text NOT NULL CHECK (length(owner_id) BETWEEN 1 AND 512),
+    account_generation bigint NOT NULL CHECK (account_generation > 0),
+    room_id text NOT NULL CHECK (length(room_id) BETWEEN 2 AND 1024),
+    installation_id uuid NOT NULL REFERENCES core_extension_installations(installation_id) ON DELETE CASCADE,
+    revision bigint NOT NULL DEFAULT 1 CHECK (revision > 0),
+    updated_at timestamptz NOT NULL,
+    PRIMARY KEY (owner_id, account_generation, room_id, installation_id)
+);
+-- dirextalk-agent migration end 000040_group_extension_bindings.up.sql

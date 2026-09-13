@@ -198,6 +198,46 @@ func groupOwnerTool(source, toolName string, readOnly bool) ResolvedExtension {
 // failure mode where the group reuses the owner's whole tool chain: the private
 // entries must be dropped at admission, and the shared ones must be admitted,
 // instead of the turn failing with ErrInvalid and retrying forever.
+// TestGroupBoundMCPMarkerOnlySharesReadOnlyInstallations pins the third-party
+// plugin boundary: the group-bound marker admits a read-only MCP installation
+// the owner bound to this group, and nothing else — not a mutating tool, not a
+// confirmation-gated one, not a skill, and not a marker without an installation.
+func TestGroupBoundMCPMarkerOnlySharesReadOnlyInstallations(t *testing.T) {
+	selection := ExtensionSelection{Kind: ExtensionMCP, ID: uuid.NewString(), Version: "1.0.0",
+		Digest: strings.Repeat("a", 64), AllowedTools: []string{"external_read"}}
+	base := ExtensionExecutionSnapshot{Selection: selection, InstallationID: uuid.NewString(), VersionID: "1.0.0",
+		Source: GroupBoundMCPSource, ContentDigest: selection.Digest, ArtifactDigest: selection.Digest,
+		ToolNames: []string{"external_read"}, ReadOnly: true}
+	if !groupExtensionAllowed(base) {
+		t.Fatal("a bound read-only installation was refused")
+	}
+	for _, mutate := range []func(*ExtensionExecutionSnapshot){
+		func(s *ExtensionExecutionSnapshot) { s.ReadOnly = false },
+		func(s *ExtensionExecutionSnapshot) { s.RequiresConfirmation = true },
+		func(s *ExtensionExecutionSnapshot) { s.SkillInstructions = "do things" },
+		func(s *ExtensionExecutionSnapshot) { s.InstallationID = "" },
+		func(s *ExtensionExecutionSnapshot) {
+			s.Selection.Kind = ExtensionSkill
+			s.Selection.AllowedTools = nil
+			s.ToolNames = nil
+		},
+	} {
+		changed := base
+		changed.Selection = selection
+		mutate(&changed)
+		if groupExtensionAllowed(changed) {
+			t.Fatalf("marker admitted a non-shareable extension: %+v", changed)
+		}
+	}
+	// A private-context source can never carry the marker's privileges even if
+	// some resolver wrongly wrote the string.
+	private := base
+	private.InstallationID = ""
+	if groupExtensionAllowed(private) {
+		t.Fatal("marker without an installation was admitted")
+	}
+}
+
 func TestGroupAdmissionKeepsSharedOwnerToolsAndDropsPrivateOnes(t *testing.T) {
 	origin := testGroupOrigin()
 	profile := testTurnSnapshot()

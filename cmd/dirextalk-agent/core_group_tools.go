@@ -141,6 +141,14 @@ func groupHistoryToolResult(call coreconversation.ToolCall, history capabilitycl
 type groupToolChain struct {
 	base  coreconversation.ExtensionResolver
 	group coreconversation.ExtensionResolver
+	// bindings lists the third-party MCP installations the owner bound to the
+	// turning group. Without it every installation stays personal.
+	bindings groupExtensionBindings
+}
+
+// groupExtensionBindings reads one group's explicit installation bindings.
+type groupExtensionBindings interface {
+	ListGroupExtensionBindings(context.Context, string, uint64, string) ([]string, error)
 }
 
 func (c groupToolChain) ResolveExtensions(ctx context.Context, selections []coreconversation.ExtensionSelection) ([]coreconversation.ResolvedExtension, error) {
@@ -159,5 +167,47 @@ func (c groupToolChain) ResolveExtensions(ctx context.Context, selections []core
 		}
 		out = append(out, resolved...)
 	}
+	if c.bindings != nil {
+		if origin, ok := coreconversation.GroupOriginFromContext(ctx); ok && origin.Validate() == nil {
+			bound, err := c.bindings.ListGroupExtensionBindings(ctx, origin.OwnerID, origin.AccountGeneration, origin.RoomID)
+			if err != nil {
+				// Fail closed: an unreadable binding list shares nothing with the
+				// group, it never falls back to "everything allowed".
+				bound = nil
+			}
+			out = markGroupBoundMCP(out, bound)
+		}
+	}
 	return out, nil
+}
+
+// markGroupBoundMCP marks the installations this group may use. Only read-only
+// MCP tools without confirmation and without skill instructions can be shared;
+// everything else keeps its original source and is dropped by the group filter.
+func markGroupBoundMCP(resolved []coreconversation.ResolvedExtension, bound []string) []coreconversation.ResolvedExtension {
+	if len(resolved) == 0 || len(bound) == 0 {
+		return resolved
+	}
+	allowed := make(map[string]struct{}, len(bound))
+	for _, id := range bound {
+		if trimmed := strings.TrimSpace(id); trimmed != "" {
+			allowed[trimmed] = struct{}{}
+		}
+	}
+	if len(allowed) == 0 {
+		return resolved
+	}
+	out := make([]coreconversation.ResolvedExtension, 0, len(resolved))
+	for _, extension := range resolved {
+		snapshot := extension.Snapshot
+		if snapshot.Selection.Kind == coreconversation.ExtensionMCP && snapshot.ReadOnly && !snapshot.RequiresConfirmation &&
+			strings.TrimSpace(snapshot.SkillInstructions) == "" && strings.TrimSpace(snapshot.InstallationID) != "" {
+			if _, ok := allowed[snapshot.InstallationID]; ok {
+				snapshot.Source = coreconversation.GroupBoundMCPSource
+				extension.Snapshot = snapshot
+			}
+		}
+		out = append(out, extension)
+	}
+	return out
 }

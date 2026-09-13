@@ -48,14 +48,17 @@ type CoreBindings struct {
 	// GroupModels is the per-group conversation model choice. It is optional:
 	// without it every group inherits the owner's default conversation model.
 	GroupModels GroupModelBindings
-	Tasks       coretask.Service
-	Schedules   coretask.ScheduleStore
-	Knowledge   *coreknowledge.Service
-	Memory      *corememory.Service
-	StaticSites *corestaticsite.Service
-	Servers     *coreserver.Service
-	Extensions  coreextension.Service
-	Product     *capabilityclient.Client
+	// GroupExtensions is the per-group third-party MCP binding. It is optional:
+	// without it no installation is shared with a group.
+	GroupExtensions GroupExtensionBindings
+	Tasks           coretask.Service
+	Schedules       coretask.ScheduleStore
+	Knowledge       *coreknowledge.Service
+	Memory          *corememory.Service
+	StaticSites     *corestaticsite.Service
+	Servers         *coreserver.Service
+	Extensions      coreextension.Service
+	Product         *capabilityclient.Client
 	// CapabilityProgress persists bounded stream events in the capability
 	// operation ledger. It is optional so the Core adapter remains reusable in
 	// unary-only tests and embeddings.
@@ -137,7 +140,7 @@ func NewCoreRegistry(bindings CoreBindings) *Registry {
 		r.Register(NewCoreServerCapability(bindings.Servers))
 	}
 	if bindings.Extensions != nil || bindings.Product != nil {
-		r.Register(&coreExtensionCapability{service: bindings.Extensions, product: bindings.Product})
+		r.Register(&coreExtensionCapability{service: bindings.Extensions, product: bindings.Product, groups: bindings.GroupExtensions})
 	}
 	if bindings.Deprovision != nil && bindings.DeprovisionPurge != nil {
 		r.Register(&coreAccountCapability{service: bindings.Deprovision, purge: bindings.DeprovisionPurge})
@@ -1832,6 +1835,7 @@ func (c *coreKnowledgeCapability) HandleOperation(ctx context.Context, operation
 type coreExtensionCapability struct {
 	service coreextension.Service
 	product *capabilityclient.Client
+	groups  GroupExtensionBindings
 }
 
 type publicInstallation struct {
@@ -1875,7 +1879,7 @@ func projectInstallationPage(page coreextension.InstallationPage) map[string]any
 
 func (c *coreExtensionCapability) Descriptor() *capv1.CapabilityDescriptor {
 	return descriptor("agent.skills.v1", "Skills and MCP", "Core isolated Skills/MCP operations", []opSpec{
-		{"discover_skill", capv1.OperationType_OPERATION_TYPE_READ, "agent:skills:read"}, {"get_skill", capv1.OperationType_OPERATION_TYPE_READ, "agent:skills:read"}, {"list_skills", capv1.OperationType_OPERATION_TYPE_READ, "agent:skills:read"}, {"inspect_skill", capv1.OperationType_OPERATION_TYPE_READ, "agent:skills:read"}, {"install_skill", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:skills:write"}, {"update_skill", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:skills:write"}, {"remove_skill", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:skills:write"}, {"list_mcp", capv1.OperationType_OPERATION_TYPE_READ, "agent:mcp:read"}, {"discover_mcp", capv1.OperationType_OPERATION_TYPE_READ, "agent:mcp:read"}, {"get_mcp", capv1.OperationType_OPERATION_TYPE_READ, "agent:mcp:read"}, {"inspect_mcp", capv1.OperationType_OPERATION_TYPE_READ, "agent:mcp:read"}, {"install_mcp", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:mcp:write"}, {"update_mcp", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:mcp:write"}, {"remove_mcp", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:mcp:write"}, {"list_tools", capv1.OperationType_OPERATION_TYPE_READ, "agent:skills:read"}, {"invoke_skill", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:skills:execute"}, {"execute_mcp", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:mcp:execute"}, {"invoke_product", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:product:execute"},
+		{"discover_skill", capv1.OperationType_OPERATION_TYPE_READ, "agent:skills:read"}, {"get_skill", capv1.OperationType_OPERATION_TYPE_READ, "agent:skills:read"}, {"list_skills", capv1.OperationType_OPERATION_TYPE_READ, "agent:skills:read"}, {"inspect_skill", capv1.OperationType_OPERATION_TYPE_READ, "agent:skills:read"}, {"install_skill", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:skills:write"}, {"update_skill", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:skills:write"}, {"remove_skill", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:skills:write"}, {"list_mcp", capv1.OperationType_OPERATION_TYPE_READ, "agent:mcp:read"}, {"discover_mcp", capv1.OperationType_OPERATION_TYPE_READ, "agent:mcp:read"}, {"get_mcp", capv1.OperationType_OPERATION_TYPE_READ, "agent:mcp:read"}, {"inspect_mcp", capv1.OperationType_OPERATION_TYPE_READ, "agent:mcp:read"}, {"install_mcp", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:mcp:write"}, {"update_mcp", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:mcp:write"}, {"remove_mcp", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:mcp:write"}, {"list_tools", capv1.OperationType_OPERATION_TYPE_READ, "agent:skills:read"}, {"invoke_skill", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:skills:execute"}, {"execute_mcp", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:mcp:execute"}, {"invoke_product", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:product:execute"}, {"list_group_bindings", capv1.OperationType_OPERATION_TYPE_READ, "agent:mcp:read"}, {"set_group_binding", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:mcp:write"},
 	})
 }
 func (c *coreExtensionCapability) HandleOperation(ctx context.Context, operationID string, raw []byte) ([]byte, error) {
@@ -1967,6 +1971,40 @@ func (c *coreExtensionCapability) HandleOperation(ctx context.Context, operation
 	case "list_tools":
 		x, err := c.service.ListTools(ctx, stringValue(in, "installation_id"), int64Value(in, "expected_revision"))
 		return marshalResult(map[string]any{"tools": x}, err)
+	case "list_group_bindings":
+		if c.groups == nil {
+			return nil, coreextension.ErrInvalid
+		}
+		ownerID, accountGeneration, err := capabilityOwnerIdentity(ctx)
+		if err != nil {
+			return nil, err
+		}
+		roomID := strings.TrimSpace(stringValue(in, "room_id"))
+		bound, err := c.groups.ListGroupExtensionBindings(ctx, ownerID, accountGeneration, roomID)
+		if err != nil {
+			return nil, err
+		}
+		return marshalResult(map[string]any{"room_id": roomID, "installation_ids": bound}, nil)
+	case "set_group_binding":
+		if c.groups == nil {
+			return nil, coreextension.ErrInvalid
+		}
+		ownerID, accountGeneration, err := capabilityOwnerIdentity(ctx)
+		if err != nil {
+			return nil, err
+		}
+		roomID := strings.TrimSpace(stringValue(in, "room_id"))
+		installationID := strings.TrimSpace(stringValue(in, "installation_id"))
+		enabled := boolValue(in, "enabled")
+		if enabled {
+			err = c.groups.SetGroupExtensionBinding(ctx, ownerID, accountGeneration, roomID, installationID)
+		} else {
+			err = c.groups.ClearGroupExtensionBinding(ctx, ownerID, accountGeneration, roomID, installationID)
+		}
+		if err != nil {
+			return nil, err
+		}
+		return marshalResult(map[string]any{"room_id": roomID, "installation_id": installationID, "enabled": enabled}, nil)
 	case "invoke_skill", "execute_mcp":
 		permission, ok := capabilityclient.PermissionFromContext(ctx)
 		if !ok || permission == nil || strings.TrimSpace(permission.GetAuthenticatedOwnerId()) == "" || permission.GetAccountGeneration() <= 0 {
