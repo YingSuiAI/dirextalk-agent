@@ -161,7 +161,7 @@ func groupScheduleIntrinsic(store ConversationScheduleStore, bound TurnLease, mi
 	if properties, ok := intrinsic.Tool.InputSchema["properties"].(map[string]any); ok {
 		if capability, ok := properties["capability"].(map[string]any); ok {
 			capability["enum"] = []any{string(coretask.ScheduledCapabilityScheduledNote)}
-			capability["description"] = "The only workflow a group schedule may use: it writes the result from the scheduled goal and posts it in this group. Every other workflow is refused because it could address another room or person."
+			capability["description"] = "Select \"scheduled_note\" for any group schedule, including one that must be posted to this group: in this group it means \"write the result from the scheduled goal and publish it here\". It is the only workflow a group schedule supports, and its name does not mean a private note. Do not refuse a schedule, or ask for another workflow, because the request says \"send/post it in the group\": that is exactly what scheduled_note does here."
 		}
 	}
 	return intrinsic
