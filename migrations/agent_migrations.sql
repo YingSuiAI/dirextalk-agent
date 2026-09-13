@@ -3011,3 +3011,13 @@ CREATE TABLE core_group_summaries (
     updated_at timestamptz NOT NULL
 );
 -- dirextalk-agent migration end 000035_group_rolling_summary.up.sql
+-- dirextalk-agent migration begin 000036_credential_scopes.up.sql
+-- Credential scopes: the personal Agent keeps one set, every group the owner
+-- shares Ying with keeps its own independent set. Personal rows keep scope
+-- 'personal' with an empty room_id.
+ALTER TABLE core_github_configs ADD COLUMN scope text NOT NULL DEFAULT 'personal' CHECK (scope IN ('personal','group'));
+ALTER TABLE core_github_configs ADD COLUMN room_id text NOT NULL DEFAULT '' CHECK (length(room_id) <= 1024);
+ALTER TABLE core_github_configs DROP CONSTRAINT core_github_configs_pkey;
+ALTER TABLE core_github_configs ADD PRIMARY KEY (owner_id, account_generation, scope, room_id);
+ALTER TABLE core_github_configs ADD CONSTRAINT core_github_configs_scope_room CHECK ((scope = 'group') = (room_id <> ''));
+-- dirextalk-agent migration end 000036_credential_scopes.up.sql

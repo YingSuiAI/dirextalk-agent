@@ -183,7 +183,10 @@ func validateGroupExtensions(snapshots []ExtensionExecutionSnapshot) error {
 			return ErrGroupAuthorization
 		}
 		switch snapshot.Source {
-		case "group-message", "builtin:web_search:tavily":
+		case "group-message", "builtin:web_search:tavily", "github-mcp":
+			// "github-mcp" is allowed because the group resolver resolves it
+			// with the group's own credential scope; the owner's personal
+			// credential is never reachable from a group turn.
 		default:
 			return ErrGroupAuthorization
 		}

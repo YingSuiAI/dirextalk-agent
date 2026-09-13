@@ -58,13 +58,23 @@ func (r *githubMCPConversationResolver) ResolveExtensions(ctx context.Context, s
 	if r == nil || r.service == nil {
 		return out, nil
 	}
-	p, ok := capabilityclient.PermissionFromContext(ctx)
-	if !ok || p == nil {
-		return out, nil
+	// A group turn carries no capability permission: its scope comes from the
+	// authenticated group origin, so the group keeps its own GitHub credential.
+	var owner string
+	var gen int64
+	if origin, group := coreconversation.GroupOriginFromContext(ctx); group {
+		if origin.Validate() != nil {
+			return nil, coreconversation.ErrGroupAuthorization
+		}
+		owner, gen = origin.OwnerID, int64(origin.AccountGeneration)
+	} else {
+		p, ok := capabilityclient.PermissionFromContext(ctx)
+		if !ok || p == nil {
+			return out, nil
+		}
+		owner, gen = strings.TrimSpace(p.GetAuthenticatedOwnerId()), p.GetAccountGeneration()
 	}
-	owner := strings.TrimSpace(p.GetAuthenticatedOwnerId())
-	gen := p.GetAccountGeneration()
-	snap, e := r.service.Resolve(ctx, owner, gen)
+	snap, e := r.service.Resolve(ctx, githubScopeForTurn(ctx, owner, gen))
 	if errors.Is(e, coregithub.ErrNotConfigured) || errors.Is(e, coregithub.ErrDisabled) {
 		return out, nil
 	}
@@ -231,7 +241,7 @@ func (s githubMCPSecret) ResolveSecret(ctx context.Context, ref string) ([]byte,
 		return nil, mcphttp.ErrCredentialUnavailable
 	}
 	var out []byte
-	e := s.service.WithTokenResolved(ctx, strings.TrimSpace(p.GetAuthenticatedOwnerId()), p.GetAccountGeneration(), s.snapshot, func(v string) error { out = []byte(v); return nil })
+	e := s.service.WithTokenResolved(ctx, githubScopeForTurn(ctx, strings.TrimSpace(p.GetAuthenticatedOwnerId()), p.GetAccountGeneration()), s.snapshot, func(v string) error { out = []byte(v); return nil })
 	return out, e
 }
 
@@ -245,7 +255,7 @@ func (s githubMCPSecret) WithSecret(ctx context.Context, ref string, fn func([]b
 	if !ok || p == nil {
 		return mcphttp.ErrCredentialUnavailable
 	}
-	return s.service.WithTokenResolved(ctx, strings.TrimSpace(p.GetAuthenticatedOwnerId()), p.GetAccountGeneration(), s.snapshot, func(value string) error {
+	return s.service.WithTokenResolved(ctx, githubScopeForTurn(ctx, strings.TrimSpace(p.GetAuthenticatedOwnerId()), p.GetAccountGeneration()), s.snapshot, func(value string) error {
 		secret := []byte(value)
 		defer clear(secret)
 		return fn(secret)
@@ -262,4 +272,15 @@ func githubMCPServerConfig() mcphttp.ServerConfig {
 		SecretRef: githubMCPSecretRef,
 		Headers:   map[string]string{"X-MCP-Tools": strings.Join(githubMCPDirectTools, ",")},
 	}
+}
+
+// githubScopeForTurn selects the credential scope: a group turn always uses
+// that group's independent credential set; every other turn uses the owner's
+// personal set. The scope comes from the authenticated turn origin, never from
+// a tool argument or member input.
+func githubScopeForTurn(ctx context.Context, ownerID string, accountGeneration int64) coregithub.Scope {
+	if origin, ok := coreconversation.GroupOriginFromContext(ctx); ok && origin.Validate() == nil && strings.TrimSpace(origin.RoomID) != "" {
+		return coregithub.GroupScope(ownerID, accountGeneration, origin.RoomID)
+	}
+	return coregithub.PersonalScope(ownerID, accountGeneration)
 }

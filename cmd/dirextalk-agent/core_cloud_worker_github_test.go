@@ -18,15 +18,15 @@ type cloudWorkerGitHubRepositoryFake struct {
 	resolves    int
 }
 
-func (r *cloudWorkerGitHubRepositoryFake) Get(context.Context, string, int64) (coregithub.Config, error) {
+func (r *cloudWorkerGitHubRepositoryFake) Get(context.Context, coregithub.Scope) (coregithub.Config, error) {
 	r.gets++
 	return r.current.Config, nil
 }
-func (r *cloudWorkerGitHubRepositoryFake) Resolve(context.Context, string, int64) (coregithub.ResolvedConfig, error) {
+func (r *cloudWorkerGitHubRepositoryFake) Resolve(context.Context, coregithub.Scope) (coregithub.ResolvedConfig, error) {
 	r.resolves++
 	return r.current, nil
 }
-func (r *cloudWorkerGitHubRepositoryFake) ResolveForDispatch(context.Context, string, int64, coregithub.ResolvedConfig) (coregithub.ResolvedConfig, func() error, error) {
+func (r *cloudWorkerGitHubRepositoryFake) ResolveForDispatch(context.Context, coregithub.Scope, coregithub.ResolvedConfig) (coregithub.ResolvedConfig, func() error, error) {
 	r.dispatches++
 	if r.dispatchErr != nil {
 		return coregithub.ResolvedConfig{}, nil, r.dispatchErr
@@ -36,7 +36,7 @@ func (r *cloudWorkerGitHubRepositoryFake) ResolveForDispatch(context.Context, st
 func (r *cloudWorkerGitHubRepositoryFake) Update(context.Context, coregithub.Mutation, func(string) error) (coregithub.Config, error) {
 	return coregithub.Config{}, coregithub.ErrRepository
 }
-func (r *cloudWorkerGitHubRepositoryFake) MarkTested(context.Context, string, int64, int64, time.Time) (coregithub.Config, error) {
+func (r *cloudWorkerGitHubRepositoryFake) MarkTested(context.Context, coregithub.Scope, int64, time.Time) (coregithub.Config, error) {
 	return coregithub.Config{}, coregithub.ErrRepository
 }
 

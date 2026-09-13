@@ -44,13 +44,15 @@ func (c *coreGitHubCapability) HandleOperation(ctx context.Context, operationID 
 	accountGeneration := permission.GetAccountGeneration()
 	switch operationID {
 	case "get_config":
-		if err := requireEmptyObject(raw); err != nil {
+		scope, err := githubScopeFromRequest(ownerID, accountGeneration, raw)
+		if err != nil {
 			return nil, err
 		}
-		value, err := c.service.Get(ctx, ownerID, accountGeneration)
+		value, err := c.service.Get(ctx, scope)
 		return marshalResult(value, err)
 	case "update_config":
 		var request struct {
+			RoomID           string  `json:"room_id,omitempty"`
 			IdempotencyKey   string  `json:"idempotency_key"`
 			ExpectedRevision int64   `json:"expected_revision"`
 			Enabled          *bool   `json:"enabled,omitempty"`
@@ -67,17 +69,41 @@ func (c *coreGitHubCapability) HandleOperation(ctx context.Context, operationID 
 			provider = &value
 		}
 		value, err := c.service.Update(ctx, coregithub.UpdateCommand{
+			Scope:   groupOrPersonalScope(ownerID, accountGeneration, request.RoomID),
 			OwnerID: ownerID, AccountGeneration: accountGeneration, IdempotencyKey: request.IdempotencyKey, ExpectedRevision: request.ExpectedRevision,
 			Enabled: request.Enabled, Provider: provider, GitHubToken: request.GitHubToken, GitHubTokenClear: request.GitHubTokenClear,
 		})
 		return marshalResult(value, err)
 	case "test":
-		if err := requireEmptyObject(raw); err != nil {
+		scope, err := githubScopeFromRequest(ownerID, accountGeneration, raw)
+		if err != nil {
 			return nil, err
 		}
-		value, err := c.service.Test(ctx, ownerID, accountGeneration)
+		value, err := c.service.Test(ctx, scope)
 		return marshalResult(value, err)
 	default:
 		return nil, fmt.Errorf("unknown GitHub operation %q", operationID)
 	}
+}
+
+// groupOrPersonalScope maps an optional room_id onto the credential scope. The
+// owner configures both scopes; a group scope is never selected by a model or
+// by a group member.
+func groupOrPersonalScope(ownerID string, accountGeneration int64, roomID string) coregithub.Scope {
+	if strings.TrimSpace(roomID) == "" {
+		return coregithub.PersonalScope(ownerID, accountGeneration)
+	}
+	return coregithub.GroupScope(ownerID, accountGeneration, strings.TrimSpace(roomID))
+}
+
+// githubScopeFromRequest accepts either an empty object (personal scope) or one
+// with an optional room_id (that group's scope).
+func githubScopeFromRequest(ownerID string, accountGeneration int64, raw []byte) (coregithub.Scope, error) {
+	var request struct {
+		RoomID string `json:"room_id,omitempty"`
+	}
+	if err := decodeStrictObject(raw, &request); err != nil {
+		return coregithub.Scope{}, err
+	}
+	return groupOrPersonalScope(ownerID, accountGeneration, request.RoomID), nil
 }

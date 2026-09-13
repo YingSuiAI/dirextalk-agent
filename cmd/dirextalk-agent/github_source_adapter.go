@@ -24,14 +24,15 @@ func (a githubSourceAdapter) withAdapter(ctx context.Context, fn func(coreextens
 		return coregithub.ErrInvalid
 	}
 	owner, generation := strings.TrimSpace(p.GetAuthenticatedOwnerId()), p.GetAccountGeneration()
-	snapshot, err := a.service.Resolve(ctx, owner, generation)
+	scope := githubScopeForTurn(ctx, owner, generation)
+	snapshot, err := a.service.Resolve(ctx, scope)
 	if err != nil {
 		return err
 	}
 	// Resolve only supplied the snapshot; do not retain that temporary plaintext.
 	snapshot.GitHubToken = ""
 	adapter, buildErr := source.NewGitHubWithNodeResolver(source.HTTPConfig{BaseURL: source.GitHubAuthority, TokenDispatcher: func(requestCtx context.Context, request func(string) error) error {
-		return a.service.WithTokenResolved(requestCtx, owner, generation, snapshot, request)
+		return a.service.WithTokenResolved(requestCtx, scope, snapshot, request)
 	}}, a.node)
 	if buildErr != nil {
 		return coregithub.ErrProvider

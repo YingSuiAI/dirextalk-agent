@@ -41,17 +41,32 @@ type githubQuery interface {
 }
 
 const githubColumns = `account_generation,enabled,provider,github_token_configured,credential_version,github_token_key_version,github_token_nonce,github_token_ciphertext,revision,tested_at,updated_at`
-const githubSelect = `SELECT ` + githubColumns + ` FROM core_github_configs WHERE owner_id=$1 AND account_generation=$2`
+const githubSelect = `SELECT ` + githubColumns + ` FROM core_github_configs WHERE owner_id=$1 AND account_generation=$2 AND scope=$3 AND room_id=$4`
 
-func (s *CoreGitHubStore) Get(ctx context.Context, ownerID string, accountGeneration int64) (coregithub.Config, error) {
-	ownerID = strings.TrimSpace(ownerID)
+// githubScopeArgs2 expands a scope into the two durable scope columns.
+func githubScopeArgs2(scope coregithub.Scope) []any {
+	kind, roomID := githubScopeArgs(scope)
+	return []any{kind, roomID}
+}
+
+// githubScopeArgs maps a credential scope onto the durable scope columns.
+func githubScopeArgs(scope coregithub.Scope) (string, string) {
+	if strings.TrimSpace(scope.RoomID) == "" {
+		return "personal", ""
+	}
+	return "group", strings.TrimSpace(scope.RoomID)
+}
+
+func (s *CoreGitHubStore) Get(ctx context.Context, scope coregithub.Scope) (coregithub.Config, error) {
+	ownerID, accountGeneration := strings.TrimSpace(scope.OwnerID), scope.AccountGeneration
 	if !coregithub.ValidIdentity(ownerID, accountGeneration) {
 		return coregithub.Config{}, coregithub.ErrInvalid
 	}
 	if err := s.checkGitHubAdmission(ctx, ownerID, accountGeneration); err != nil {
 		return coregithub.Config{}, err
 	}
-	row, err := scanGitHubRow(s.store.pool.QueryRow(ctx, githubSelect, ownerID, accountGeneration))
+	scopeKind, roomID := githubScopeArgs(scope)
+	row, err := scanGitHubRow(s.store.pool.QueryRow(ctx, githubSelect, ownerID, accountGeneration, scopeKind, roomID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return coregithub.DefaultConfig(), nil
 	}
@@ -61,7 +76,8 @@ func (s *CoreGitHubStore) Get(ctx context.Context, ownerID string, accountGenera
 	return row.config, nil
 }
 
-func (s *CoreGitHubStore) Resolve(ctx context.Context, ownerID string, accountGeneration int64) (coregithub.ResolvedConfig, error) {
+func (s *CoreGitHubStore) Resolve(ctx context.Context, scope coregithub.Scope) (coregithub.ResolvedConfig, error) {
+	ownerID, accountGeneration := strings.TrimSpace(scope.OwnerID), scope.AccountGeneration
 	ownerID = strings.TrimSpace(ownerID)
 	if !coregithub.ValidIdentity(ownerID, accountGeneration) {
 		return coregithub.ResolvedConfig{}, coregithub.ErrInvalid
@@ -69,7 +85,7 @@ func (s *CoreGitHubStore) Resolve(ctx context.Context, ownerID string, accountGe
 	if err := s.checkGitHubAdmission(ctx, ownerID, accountGeneration); err != nil {
 		return coregithub.ResolvedConfig{}, err
 	}
-	row, err := scanGitHubRow(s.store.pool.QueryRow(ctx, githubSelect, ownerID, accountGeneration))
+	row, err := scanGitHubRow(s.store.pool.QueryRow(ctx, githubSelect, ownerID, accountGeneration, githubScopeArgs2(scope)))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return coregithub.ResolvedConfig{}, coregithub.ErrNotConfigured
 	}
@@ -138,7 +154,8 @@ func (s *CoreGitHubStore) Update(ctx context.Context, mutation coregithub.Mutati
 		return coregithub.Config{}, coregithub.ErrRepository
 	}
 
-	current, err := scanGitHubRow(tx.QueryRow(ctx, githubSelect+` FOR UPDATE`, mutation.OwnerID, mutation.AccountGeneration))
+	scopeKind, roomID := githubScopeArgs(mutation.Scope)
+	current, err := scanGitHubRow(tx.QueryRow(ctx, githubSelect+` FOR UPDATE`, mutation.OwnerID, mutation.AccountGeneration, scopeKind, roomID))
 	exists := err == nil
 	if errors.Is(err, pgx.ErrNoRows) {
 		current = githubRow{config: coregithub.DefaultConfig(), keyVersion: secretbox.KeyVersionMin}
@@ -227,9 +244,9 @@ func (s *CoreGitHubStore) Update(ctx context.Context, mutation coregithub.Mutati
 	}
 	next := coregithub.Config{Enabled: enabled, Provider: provider, GitHubTokenConfigured: configured, Revision: current.config.Revision + 1, TestedAt: testedAt, UpdatedAt: &now}
 	if !exists {
-		_, err = tx.Exec(ctx, `INSERT INTO core_github_configs(owner_id,account_generation,enabled,provider,github_token_configured,credential_version,github_token_key_version,github_token_nonce,github_token_ciphertext,revision,tested_at,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$12)`, mutation.OwnerID, mutation.AccountGeneration, enabled, provider, configured, credentialVersion, keyVersion, nonce, ciphertext, next.Revision, next.TestedAt, now)
+		_, err = tx.Exec(ctx, `INSERT INTO core_github_configs(owner_id,account_generation,scope,room_id,enabled,provider,github_token_configured,credential_version,github_token_key_version,github_token_nonce,github_token_ciphertext,revision,tested_at,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$14)`, mutation.OwnerID, mutation.AccountGeneration, scopeKind, roomID, enabled, provider, configured, credentialVersion, keyVersion, nonce, ciphertext, next.Revision, next.TestedAt, now)
 	} else {
-		_, err = tx.Exec(ctx, `UPDATE core_github_configs SET enabled=$3,provider=$4,github_token_configured=$5,credential_version=$6,github_token_key_version=$7,github_token_nonce=$8,github_token_ciphertext=$9,revision=$10,tested_at=$11,updated_at=$12 WHERE owner_id=$1 AND account_generation=$2 AND revision=$13`, mutation.OwnerID, mutation.AccountGeneration, enabled, provider, configured, credentialVersion, keyVersion, nonce, ciphertext, next.Revision, next.TestedAt, now, mutation.ExpectedRevision)
+		_, err = tx.Exec(ctx, `UPDATE core_github_configs SET enabled=$5,provider=$6,github_token_configured=$7,credential_version=$8,github_token_key_version=$9,github_token_nonce=$10,github_token_ciphertext=$11,revision=$12,tested_at=$13,updated_at=$14 WHERE owner_id=$1 AND account_generation=$2 AND scope=$3 AND room_id=$4 AND revision=$15`, mutation.OwnerID, mutation.AccountGeneration, scopeKind, roomID, enabled, provider, configured, credentialVersion, keyVersion, nonce, ciphertext, next.Revision, next.TestedAt, now, mutation.ExpectedRevision)
 	}
 	if err != nil {
 		return coregithub.Config{}, coregithub.ErrRepository
@@ -247,7 +264,8 @@ func (s *CoreGitHubStore) Update(ctx context.Context, mutation coregithub.Mutati
 	return next, nil
 }
 
-func (s *CoreGitHubStore) MarkTested(ctx context.Context, ownerID string, accountGeneration, expectedRevision int64, testedAt time.Time) (coregithub.Config, error) {
+func (s *CoreGitHubStore) MarkTested(ctx context.Context, scope coregithub.Scope, expectedRevision int64, testedAt time.Time) (coregithub.Config, error) {
+	ownerID, accountGeneration := strings.TrimSpace(scope.OwnerID), scope.AccountGeneration
 	ownerID = strings.TrimSpace(ownerID)
 	if !coregithub.ValidIdentity(ownerID, accountGeneration) {
 		return coregithub.Config{}, coregithub.ErrInvalid
@@ -256,7 +274,7 @@ func (s *CoreGitHubStore) MarkTested(ctx context.Context, ownerID string, accoun
 		return coregithub.Config{}, err
 	}
 	testedAt = testedAt.UTC().Truncate(time.Microsecond)
-	row, err := scanGitHubRow(s.store.pool.QueryRow(ctx, `UPDATE core_github_configs SET tested_at=$4 WHERE owner_id=$1 AND account_generation=$2 AND revision=$3 RETURNING `+githubColumns, ownerID, accountGeneration, expectedRevision, testedAt))
+	row, err := scanGitHubRow(s.store.pool.QueryRow(ctx, `UPDATE core_github_configs SET tested_at=$5 WHERE owner_id=$1 AND account_generation=$2 AND scope=$3 AND room_id=$4 AND revision=$6 RETURNING `+githubColumns, ownerID, accountGeneration, githubScopeArgs2(scope), expectedRevision, testedAt))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return coregithub.Config{}, coregithub.ErrRevisionConflict
 	}
@@ -272,7 +290,8 @@ func (s *CoreGitHubStore) MarkTested(ctx context.Context, ownerID string, accoun
 // read-only transaction only after the bounded provider request, so
 // deprovision cannot commit between the final config check and outbound
 // dispatch.
-func (s *CoreGitHubStore) ResolveForDispatch(ctx context.Context, ownerID string, accountGeneration int64, snapshot coregithub.ResolvedConfig) (coregithub.ResolvedConfig, func() error, error) {
+func (s *CoreGitHubStore) ResolveForDispatch(ctx context.Context, scope coregithub.Scope, snapshot coregithub.ResolvedConfig) (coregithub.ResolvedConfig, func() error, error) {
+	ownerID, accountGeneration := strings.TrimSpace(scope.OwnerID), scope.AccountGeneration
 	ownerID = strings.TrimSpace(ownerID)
 	if !coregithub.ValidIdentity(ownerID, accountGeneration) {
 		return coregithub.ResolvedConfig{}, nil, coregithub.ErrInvalid
@@ -298,7 +317,7 @@ func (s *CoreGitHubStore) ResolveForDispatch(ctx context.Context, ownerID string
 		rollback()
 		return coregithub.ResolvedConfig{}, nil, err
 	}
-	row, err := scanGitHubRow(tx.QueryRow(ctx, githubSelect+` FOR UPDATE`, ownerID, accountGeneration))
+	row, err := scanGitHubRow(tx.QueryRow(ctx, githubSelect+` FOR UPDATE`, ownerID, accountGeneration, githubScopeArgs2(scope)))
 	if errors.Is(err, pgx.ErrNoRows) {
 		rollback()
 		return coregithub.ResolvedConfig{}, nil, coregithub.ErrNotConfigured

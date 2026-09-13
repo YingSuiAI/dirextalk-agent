@@ -14,23 +14,24 @@ import (
 
 type githubResolverRepo struct{ v coregithub.ResolvedConfig }
 
-func (r *githubResolverRepo) Get(context.Context, string, int64) (coregithub.Config, error) {
+func (r *githubResolverRepo) Get(context.Context, coregithub.Scope) (coregithub.Config, error) {
 	return r.v.Config, nil
 }
-func (r *githubResolverRepo) Resolve(_ context.Context, o string, g int64) (coregithub.ResolvedConfig, error) {
+func (r *githubResolverRepo) Resolve(_ context.Context, scope coregithub.Scope) (coregithub.ResolvedConfig, error) {
 	v := r.v
-	v.OwnerID = o
-	v.AccountGeneration = g
+	v.OwnerID = scope.OwnerID
+	v.AccountGeneration = scope.AccountGeneration
+	v.RoomID = scope.RoomID
 	return v, nil
 }
-func (r *githubResolverRepo) ResolveForDispatch(c context.Context, o string, g int64, _ coregithub.ResolvedConfig) (coregithub.ResolvedConfig, func() error, error) {
-	v, e := r.Resolve(c, o, g)
+func (r *githubResolverRepo) ResolveForDispatch(c context.Context, scope coregithub.Scope, _ coregithub.ResolvedConfig) (coregithub.ResolvedConfig, func() error, error) {
+	v, e := r.Resolve(c, scope)
 	return v, func() error { return nil }, e
 }
 func (r *githubResolverRepo) Update(context.Context, coregithub.Mutation, func(string) error) (coregithub.Config, error) {
 	return r.v.Config, nil
 }
-func (r *githubResolverRepo) MarkTested(context.Context, string, int64, int64, time.Time) (coregithub.Config, error) {
+func (r *githubResolverRepo) MarkTested(context.Context, coregithub.Scope, int64, time.Time) (coregithub.Config, error) {
 	return r.v.Config, nil
 }
 
