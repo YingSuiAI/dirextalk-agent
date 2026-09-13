@@ -124,6 +124,57 @@ func TestGroupWorkerOriginReturnsTheGroupScopeForApprovedWork(t *testing.T) {
 	}
 }
 
+// The approved quote was bound to the group's own AWS credential, so the run
+// must resolve that same scope. Losing it made the live execution fall back to
+// the owner's personal credential and fail every paid step with "stale
+// authorization" after the owner had already confirmed.
+func TestGroupWorkerExecutionKeepsTheGroupCredentialScope(t *testing.T) {
+	// The credential authority revalidates the origin it reads from the
+	// context, so this fixture uses a syntactically valid group origin.
+	turn := coreconversation.Turn{ID: uuid.NewString(), OwnerID: "@owner:example.test", AccountGeneration: 1,
+		GroupOrigin: &coreconversation.GroupOrigin{RequestID: uuid.NewString(), RoomID: "!group:example.test",
+			EventID: "$event", ActorID: "@member:example.test", OwnerID: "@owner:example.test",
+			AgentMXID: "@ying:example.test", AccountGeneration: 1, BindingRevision: 3}}
+	executor := &sshWorkerExecutor{groupTurnReader: groupTurnReaderFake{turn: turn},
+		groupAuthorization: &groupGuardFake{}, groupAuthorizationPoll: 10 * time.Millisecond}
+	scope, err := executor.authorizedWorkerScope(context.Background(), groupWorkerRequest(turn))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer scope.stop()
+	if scope.origin == nil || *scope.origin != *turn.GroupOrigin {
+		t.Fatalf("group Worker scope = %#v, want the durable turn origin", scope.origin)
+	}
+	if got := cloudWorkerTurnRoom(scope.ctx); got != turn.GroupOrigin.RoomID {
+		t.Fatalf("group Worker ran in credential scope %q, want the group room %q", got, turn.GroupOrigin.RoomID)
+	}
+
+	private := groupWorkerTurn(false)
+	ownerExecutor := &sshWorkerExecutor{groupTurnReader: groupTurnReaderFake{turn: private},
+		groupAuthorization: &groupGuardFake{}}
+	ownerScope, err := ownerExecutor.authorizedWorkerScope(context.Background(), groupWorkerRequest(private))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ownerScope.stop()
+	if ownerScope.origin != nil || cloudWorkerTurnRoom(ownerScope.ctx) != "" {
+		t.Fatalf("private Worker inherited group scope %#v", ownerScope.origin)
+	}
+}
+
+func TestGroupWorkerExecutionRefusesUnguardedAndRevokedTurns(t *testing.T) {
+	turn := groupWorkerTurn(true)
+	unguarded := &sshWorkerExecutor{groupTurnReader: groupTurnReaderFake{turn: turn}}
+	if _, err := unguarded.authorizedWorkerScope(context.Background(), groupWorkerRequest(turn)); !errors.Is(err, coreconversation.ErrGroupAuthorization) {
+		t.Fatalf("unguarded group run returned %v", err)
+	}
+	revoked := &sshWorkerExecutor{groupTurnReader: groupTurnReaderFake{turn: turn},
+		groupAuthorization: &groupGuardFake{err: coreconversation.ErrGroupAuthorization}}
+	if _, err := revoked.authorizedWorkerScope(context.Background(), groupWorkerRequest(turn)); !errors.Is(err, coreconversation.ErrGroupAuthorization) {
+		t.Fatalf("revoked group run returned %v", err)
+	}
+}
+
 func TestGroupWorkerWatchCancelsTheRunWhenTheOwnerTurnsItOff(t *testing.T) {
 	turn := groupWorkerTurn(true)
 	guard := &groupGuardFake{}

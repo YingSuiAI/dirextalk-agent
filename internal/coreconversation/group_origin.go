@@ -130,7 +130,12 @@ func GroupOriginFromContext(ctx context.Context) (GroupOrigin, bool) {
 	return g, ok
 }
 
-func withGroupOrigin(ctx context.Context, origin GroupOrigin) context.Context {
+// WithGroupOrigin re-attaches an already authenticated group origin. Turn
+// admission sets it from the Product event; a runtime that resolved the same
+// origin from durable state later (for example a Worker run the owner approved
+// from a group quote) sets it again so every credential and inventory read
+// below it resolves that group's scope instead of the owner's private one.
+func WithGroupOrigin(ctx context.Context, origin GroupOrigin) context.Context {
 	return context.WithValue(ctx, groupOriginContextKey{}, origin)
 }
 
@@ -297,7 +302,7 @@ func (s *Service) StartGroupTurn(ctx context.Context, command TurnStartCommand, 
 	}
 	command.GroupOrigin = cloneGroupOrigin(&origin)
 	command.ConversationID = origin.ConversationID()
-	return s.startTurn(withGroupOrigin(ctx, origin), command)
+	return s.startTurn(WithGroupOrigin(ctx, origin), command)
 }
 
 func validateTurnConversationScope(conversation Conversation, turn Turn) error {

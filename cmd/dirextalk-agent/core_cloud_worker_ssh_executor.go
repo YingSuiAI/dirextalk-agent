@@ -154,15 +154,12 @@ func (executor *sshWorkerExecutor) hourlyQuote(ctx context.Context, worker sshwo
 }
 
 func (executor *sshWorkerExecutor) Execute(ctx context.Context, request sshflow.Request) (sshflow.Result, error) {
-	groupOrigin, groupErr := executor.groupWorkerOrigin(ctx, request)
-	if groupErr != nil {
-		return sshflow.Result{}, groupErr
+	scope, err := executor.authorizedWorkerScope(ctx, request)
+	if err != nil {
+		return sshflow.Result{}, err
 	}
-	if groupOrigin != nil {
-		var stop func()
-		ctx, stop = executor.watchGroupWorkerAuthorization(ctx, *groupOrigin)
-		defer stop()
-	}
+	defer scope.stop()
+	ctx, groupOrigin := scope.ctx, scope.origin
 	current, err := executor.authority.resolveCurrentAWSBindingInRegion(ctx, request.AWS.Region)
 	if err != nil || current != request.AWS {
 		return sshflow.Result{}, errors.Join(cloudworker.ErrStaleAuthorization, err)

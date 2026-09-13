@@ -357,7 +357,7 @@ func newIsolatedGroupExecution(t *testing.T) (*Service, *attemptTurnStore, *retr
 	turn.ProfileSnapshot.SystemPrompt = ""
 	turn.ProfileSnapshotDigest = turn.ProfileSnapshot.Digest()
 	service.SetGroupAuthorizationGuard(groupGuardFunc(func(context.Context, GroupOrigin) error { return nil }))
-	runtime, err := service.buildTurnAdmissionRuntime(withGroupOrigin(context.Background(), origin), turn, nil, "", TurnExecutionInteractive, TurnConstrainedWorkflow{})
+	runtime, err := service.buildTurnAdmissionRuntime(WithGroupOrigin(context.Background(), origin), turn, nil, "", TurnExecutionInteractive, TurnConstrainedWorkflow{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -428,7 +428,7 @@ func TestGroupCapabilitiesDenyPrivateSourcesAndRevalidateBeforeEachTool(t *testi
 		return []ResolvedExtension{{Selection: current.Selection, Snapshot: current, Tools: []coremodel.Tool{{Name: "group_read", InputSchema: map[string]any{"type": "object"}}},
 			Execute: func(context.Context, ToolExecutionRequest) (ToolResult, error) { toolCalls++; return ToolResult{}, nil }}}, nil
 	}))
-	ctx := withGroupOrigin(context.Background(), origin)
+	ctx := WithGroupOrigin(context.Background(), origin)
 	resolved, err := service.resolveAcceptedTurnExtensions(ctx, []ExtensionExecutionSnapshot{snapshot})
 	if err != nil || len(resolved) != 1 {
 		t.Fatalf("resolve=%d err=%v", len(resolved), err)

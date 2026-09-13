@@ -39,7 +39,7 @@ func (s *Service) resolveIntrinsicTools(ctx context.Context, lease TurnLease) ([
 			return nil, nil
 		}
 		origin := *lease.Turn.GroupOrigin
-		groupCtx := withGroupOrigin(ctx, origin)
+		groupCtx := WithGroupOrigin(ctx, origin)
 		if err := s.validateGroupAuthorization(groupCtx, &origin); err != nil {
 			return nil, err
 		}
@@ -60,7 +60,7 @@ func (s *Service) resolveIntrinsicTools(ctx context.Context, lease TurnLease) ([
 				if err := s.validateGroupAuthorization(runCtx, &origin); err != nil {
 					return IntrinsicExecutionResult{}, err
 				}
-				return execute(withGroupOrigin(runCtx, origin), request)
+				return execute(WithGroupOrigin(runCtx, origin), request)
 			}
 			tools = append(tools, intrinsic)
 		}

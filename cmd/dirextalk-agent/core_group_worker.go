@@ -45,6 +45,34 @@ func (executor *sshWorkerExecutor) groupWorkerOrigin(ctx context.Context, reques
 	return &origin, nil
 }
 
+// workerExecutionScope is the authorization a paid Worker run executes under:
+// the caller's context, the group origin the durable turn proved (nil for the
+// owner's own work), and the revocation watch to stop.
+type workerExecutionScope struct {
+	ctx    context.Context
+	origin *coreconversation.GroupOrigin
+	stop   func()
+}
+
+// authorizedWorkerScope scopes a paid Worker run to the origin the durable turn
+// already proved, and watches that origin for revocation while the run is live.
+// The approved quote was priced and bound from the group's own AWS credential,
+// so a run that lost this scope would resolve the owner's personal credential
+// instead, fail the credential revision fence and refuse to spend. Private
+// turns keep the caller's context untouched and get a no-op stop.
+func (executor *sshWorkerExecutor) authorizedWorkerScope(ctx context.Context, request sshflow.Request) (workerExecutionScope, error) {
+	noop := func() {}
+	origin, err := executor.groupWorkerOrigin(ctx, request)
+	if err != nil {
+		return workerExecutionScope{ctx: ctx, stop: noop}, err
+	}
+	if origin == nil {
+		return workerExecutionScope{ctx: ctx, stop: noop}, nil
+	}
+	scoped, stop := executor.watchGroupWorkerAuthorization(coreconversation.WithGroupOrigin(ctx, *origin), *origin)
+	return workerExecutionScope{ctx: scoped, origin: origin, stop: stop}, nil
+}
+
 func (executor *sshWorkerExecutor) watchGroupWorkerAuthorization(ctx context.Context, origin coreconversation.GroupOrigin) (context.Context, func()) {
 	workCtx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})

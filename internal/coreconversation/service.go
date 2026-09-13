@@ -1373,7 +1373,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 		return
 	}
 	if turn.GroupOrigin != nil {
-		ctx = withGroupOrigin(ctx, *turn.GroupOrigin)
+		ctx = WithGroupOrigin(ctx, *turn.GroupOrigin)
 		if err := s.validateGroupAuthorization(ctx, turn.GroupOrigin); err != nil {
 			_, _ = s.turns.FailTurn(ctx, lease, "group_authorization_revoked", "group Ying authorization is unavailable or revoked")
 			return
@@ -3050,7 +3050,7 @@ func (s *Service) resolveAcceptedTurnExtensions(ctx context.Context, snapshots [
 				if err := s.validateGroupAuthorization(runCtx, &origin); err != nil {
 					return ToolResult{}, err
 				}
-				return execute(withGroupOrigin(runCtx, origin), request)
+				return execute(WithGroupOrigin(runCtx, origin), request)
 			}
 		}
 	}
