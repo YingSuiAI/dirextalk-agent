@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -74,7 +75,7 @@ func (s *Service) resolveIntrinsicTools(ctx context.Context, lease TurnLease) ([
 		// keeps every scheduled result inside this room.
 		if schedules, ok := s.turns.(ConversationScheduleStore); ok &&
 			strings.TrimSpace(lease.Turn.OwnerID) != "" && lease.Turn.AccountGeneration != 0 {
-			return s.appendGroupIntrinsic(tools, groupScheduleIntrinsic(schedules, lease), origin)
+			return s.appendGroupIntrinsic(tools, groupScheduleIntrinsic(schedules, lease, s.groupScheduleMirror), origin)
 		}
 		return tools, nil
 	}
@@ -94,6 +95,29 @@ func (s *Service) resolveIntrinsicTools(ctx context.Context, lease TurnLease) ([
 		tools = append(tools, external...)
 	}
 	return tools, nil
+}
+
+// GroupScheduleMirror publishes the group schedules Product shows to every
+// member of a room. A member's client cannot reach the owner's Agent, so the
+// mirror is how the group detail page learns about them.
+type GroupScheduleMirror interface {
+	RecordGroupSchedule(context.Context, GroupScheduleMirrorRecord) error
+	RemoveGroupSchedule(context.Context, string, string) error
+}
+
+// GroupScheduleMirrorRecord is the mirror payload. It carries no credential and
+// no member ticket.
+type GroupScheduleMirrorRecord struct {
+	RoomID, ScheduleID, Name, Capability, Cron, Timezone, CreatedBy string
+	RunAt, NextRunAt                                                *time.Time
+}
+
+// SetGroupScheduleMirror wires the mirror. Leaving it unset keeps a group
+// schedule durable but invisible in Product's member-facing list.
+func (s *Service) SetGroupScheduleMirror(mirror GroupScheduleMirror) {
+	if s != nil {
+		s.groupScheduleMirror = mirror
+	}
 }
 
 // appendGroupIntrinsic keeps the group-visible subset of one intrinsic and
@@ -128,8 +152,11 @@ func groupScheduledCapabilityAllowed(capability coretask.ScheduledCapability) bo
 // groupScheduleIntrinsic is the group's own schedule tool: the durable schedule
 // a private conversation can create, narrowed to what a group may ask for and
 // attributed to the member who created it.
-func groupScheduleIntrinsic(store ConversationScheduleStore, bound TurnLease) ResolvedIntrinsic {
+func groupScheduleIntrinsic(store ConversationScheduleStore, bound TurnLease, mirror GroupScheduleMirror) ResolvedIntrinsic {
 	intrinsic := scheduleIntrinsic(store, bound)
+	intrinsic.Execute = func(ctx context.Context, request IntrinsicExecutionRequest) (IntrinsicExecutionResult, error) {
+		return executeScheduleIntrinsic(ctx, store, mirror, bound, request)
+	}
 	intrinsic.Tool.Description = "Create a durable scheduled task for this group. At the scheduled time the task runs in this room as an ordinary group request and its result is posted here for every member. It uses only this group's own tools and credentials, can never message another room or another member, and never reaches the owner's private conversations. Name is the sole schedule-card title and must be a concise human-readable task name extracted from the group's request. The schedule is attributed to the member who asked for it."
 	if properties, ok := intrinsic.Tool.InputSchema["properties"].(map[string]any); ok {
 		if capability, ok := properties["capability"].(map[string]any); ok {
@@ -169,7 +196,7 @@ func scheduleIntrinsic(store ConversationScheduleStore, bound TurnLease) Resolve
 			},
 		},
 		Execute: func(ctx context.Context, request IntrinsicExecutionRequest) (IntrinsicExecutionResult, error) {
-			return executeScheduleIntrinsic(ctx, store, bound, request)
+			return executeScheduleIntrinsic(ctx, store, nil, bound, request)
 		},
 	}
 }
@@ -209,7 +236,7 @@ func isReservedScheduleSuccessReceipt(content string) bool {
 	return false
 }
 
-func executeScheduleIntrinsic(ctx context.Context, store ConversationScheduleStore, bound TurnLease, request IntrinsicExecutionRequest) (IntrinsicExecutionResult, error) {
+func executeScheduleIntrinsic(ctx context.Context, store ConversationScheduleStore, mirror GroupScheduleMirror, bound TurnLease, request IntrinsicExecutionRequest) (IntrinsicExecutionResult, error) {
 	if ctx == nil || store == nil || request.Lease.Turn.ID != bound.Turn.ID || request.Lease.Turn.RequestID != bound.Turn.RequestID ||
 		request.Lease.LeaseID != bound.LeaseID || request.Lease.Epoch < bound.Epoch || request.Call.Name != coremodel.IntrinsicScheduleCreateToolName || request.Call.Validate() != nil ||
 		request.ConversationRevision == 0 || request.ConversationRevision == ^uint64(0) {
@@ -310,7 +337,36 @@ func executeScheduleIntrinsic(ctx context.Context, store ConversationScheduleSto
 	if _, err = store.CommitConversationSchedule(ctx, command); err != nil {
 		return IntrinsicExecutionResult{}, err
 	}
+	if turn.GroupOrigin != nil && mirror != nil {
+		// The schedule is already durable and will run either way. A mirror
+		// failure only costs the group its list entry, so it is reported and
+		// never rolls the schedule back.
+		record := GroupScheduleMirrorRecord{RoomID: turn.GroupOrigin.RoomID, ScheduleID: schedule.ID,
+			Name: schedule.Name, Capability: string(args.Capability), Cron: schedule.Cron,
+			Timezone: schedule.Timezone, CreatedBy: turn.GroupOrigin.ActorID,
+			RunAt: schedule.RunAt, NextRunAt: &schedule.NextRunAt}
+		if mirrorErr := mirror.RecordGroupSchedule(ctx, record); mirrorErr != nil {
+			slog.Warn("[core] group schedule mirror failed", "room_id", record.RoomID, "schedule_id", record.ScheduleID,
+				"error", boundedMirrorError(mirrorErr))
+		}
+	}
 	return IntrinsicExecutionResult{TurnCommitted: true}, nil
+}
+
+func boundedMirrorError(err error) string {
+	if err == nil {
+		return ""
+	}
+	summary := strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\r' || r == '\t' {
+			return ' '
+		}
+		return r
+	}, strings.TrimSpace(err.Error()))
+	if len(summary) > 200 {
+		return summary[:200]
+	}
+	return summary
 }
 
 func scheduledExtensionSnapshots(capability coretask.ScheduledCapability, snapshots []ExtensionExecutionSnapshot) ([]coretask.ScheduledExtensionSnapshot, error) {

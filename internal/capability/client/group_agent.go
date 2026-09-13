@@ -82,6 +82,37 @@ type GroupAgentPublish struct {
 	Status          string `json:"status"`
 }
 
+// GroupAgentScheduleMirror is one durable group schedule Product stores so every
+// member can read it from the group detail page.
+type GroupAgentScheduleMirror struct {
+	RoomID, ScheduleID, Name, Capability, Cron, Timezone, CreatedBy string
+	RunAt, NextRunAt                                                string
+}
+
+// RecordGroupSchedule mirrors one group schedule. It is idempotent per
+// (room, schedule), so a retried turn never duplicates the entry.
+func (c *Client) RecordGroupSchedule(ctx context.Context, schedule GroupAgentScheduleMirror) error {
+	if !validGroupRoomID(schedule.RoomID) || !validGroupRequestID(schedule.ScheduleID) || strings.TrimSpace(schedule.Name) == "" {
+		return errors.New("invalid group Agent schedule mirror")
+	}
+	key := uuid.NewSHA1(uuid.NameSpaceOID, []byte("group-agent:record-schedule:"+schedule.RoomID+":"+schedule.ScheduleID)).String()
+	_, err := c.groupAgentMutation(ctx, key, "record_schedule", map[string]any{
+		"room_id": schedule.RoomID, "schedule_id": schedule.ScheduleID, "name": schedule.Name,
+		"capability": schedule.Capability, "cron": schedule.Cron, "timezone": schedule.Timezone,
+		"created_by": schedule.CreatedBy, "run_at": schedule.RunAt, "next_run_at": schedule.NextRunAt,
+	})
+	return err
+}
+
+func (c *Client) RemoveGroupSchedule(ctx context.Context, roomID, scheduleID string) error {
+	if !validGroupRoomID(roomID) || !validGroupRequestID(scheduleID) {
+		return errors.New("invalid group Agent schedule mirror")
+	}
+	key := uuid.NewSHA1(uuid.NameSpaceOID, []byte("group-agent:remove-schedule:"+roomID+":"+scheduleID)).String()
+	_, err := c.groupAgentMutation(ctx, key, "remove_schedule", map[string]any{"room_id": roomID, "schedule_id": scheduleID})
+	return err
+}
+
 // GroupAgentScheduledRequest is one due group schedule the Agent asks Product to
 // raise as an ordinary request in its own room. The Agent never picks the
 // sender: Product re-checks the room, the binding and the actor's membership.

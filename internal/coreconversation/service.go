@@ -192,6 +192,7 @@ type Service struct {
 	store               Store
 	models              ModelRunner
 	extensions          ExtensionResolver
+	groupScheduleMirror GroupScheduleMirror
 	intrinsics          IntrinsicResolver
 	groupExtensions     ExtensionResolver
 	groupSummary        GroupSummaryReader

@@ -505,6 +505,9 @@ func serveCore(cfg config.Config) error {
 	if productCapabilityClient != nil {
 		groupLoop = newGroupAgentLoop(productCapabilityClient, conversation, profiles, uint64(cfg.ProductCapabilityAccountGeneration), conversationStore)
 		groupScheduledProduct = productCapabilityClient
+		// The group detail page reads the schedule list from Product, so every
+		// group schedule the Agent creates is mirrored there.
+		conversation.SetGroupScheduleMirror(groupScheduleMirror{product: productCapabilityClient})
 		// A group answers with the model its owner picked for that group, and
 		// with the owner's default conversation model when none was picked.
 		groupModelBindings = &groupModelBindingAdapter{store: postgres.NewCoreGroupModelBindingStore(store)}
