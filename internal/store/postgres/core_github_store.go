@@ -99,7 +99,7 @@ func (s *CoreGitHubStore) Resolve(ctx context.Context, scope coregithub.Scope) (
 	if row.credentialVersion <= 0 || len(row.nonce) == 0 || len(row.ciphertext) == 0 {
 		return coregithub.ResolvedConfig{}, coregithub.ErrRepository
 	}
-	plaintext, err := s.store.openDurableSecret(s.secretDomain(row.config.Provider), githubSecretRecordID(ownerID, accountGeneration), row.credentialVersion, githubSecretField, row.keyVersion, row.nonce, row.ciphertext)
+	plaintext, err := s.store.openDurableSecret(s.secretDomain(row.config.Provider), githubSecretRecordID(ownerID, accountGeneration, scope.RoomID), row.credentialVersion, githubSecretField, row.keyVersion, row.nonce, row.ciphertext)
 	if err != nil {
 		return coregithub.ResolvedConfig{}, coregithub.ErrRepository
 	}
@@ -185,7 +185,7 @@ func (s *CoreGitHubStore) Update(ctx context.Context, mutation coregithub.Mutati
 			credentialVersion = 1
 		}
 		plaintext := []byte(*mutation.GitHubToken)
-		envelope, sealErr := s.store.sealDurableSecret(s.secretDomain(provider), githubSecretRecordID(mutation.OwnerID, mutation.AccountGeneration), credentialVersion, githubSecretField, plaintext)
+		envelope, sealErr := s.store.sealDurableSecret(s.secretDomain(provider), githubSecretRecordID(mutation.OwnerID, mutation.AccountGeneration, mutation.Scope.RoomID), credentialVersion, githubSecretField, plaintext)
 		clearBytes(plaintext)
 		if sealErr != nil {
 			return coregithub.Config{}, coregithub.ErrRepository
@@ -223,7 +223,7 @@ func (s *CoreGitHubStore) Update(ctx context.Context, mutation coregithub.Mutati
 			if credentialVersion <= 0 || len(nonce) == 0 || len(ciphertext) == 0 {
 				return coregithub.Config{}, coregithub.ErrNotConfigured
 			}
-			plaintext, openErr := s.store.openDurableSecret(s.secretDomain(provider), githubSecretRecordID(mutation.OwnerID, mutation.AccountGeneration), credentialVersion, githubSecretField, keyVersion, nonce, ciphertext)
+			plaintext, openErr := s.store.openDurableSecret(s.secretDomain(provider), githubSecretRecordID(mutation.OwnerID, mutation.AccountGeneration, mutation.Scope.RoomID), credentialVersion, githubSecretField, keyVersion, nonce, ciphertext)
 			if openErr != nil {
 				return coregithub.Config{}, coregithub.ErrRepository
 			}
@@ -339,7 +339,7 @@ func (s *CoreGitHubStore) ResolveForDispatch(ctx context.Context, scope coregith
 		rollback()
 		return coregithub.ResolvedConfig{}, nil, coregithub.ErrDisabled
 	}
-	plaintext, err := s.store.openDurableSecret(s.secretDomain(row.config.Provider), githubSecretRecordID(ownerID, accountGeneration), row.credentialVersion, githubSecretField, row.keyVersion, row.nonce, row.ciphertext)
+	plaintext, err := s.store.openDurableSecret(s.secretDomain(row.config.Provider), githubSecretRecordID(ownerID, accountGeneration, scope.RoomID), row.credentialVersion, githubSecretField, row.keyVersion, row.nonce, row.ciphertext)
 	if err != nil {
 		rollback()
 		return coregithub.ResolvedConfig{}, nil, coregithub.ErrRepository
@@ -405,7 +405,17 @@ func checkGitHubAdmissionTx(ctx context.Context, tx pgx.Tx, ownerID string, acco
 	return nil
 }
 
-func githubSecretRecordID(ownerID string, accountGeneration int64) string {
+func githubSecretRecordID(ownerID string, accountGeneration int64, roomID string) string {
+	// The group scope is part of the durable-secret binding: without it two
+	// rows of the same owner/generation would share one envelope identity.
+	if trimmed := strings.TrimSpace(roomID); trimmed != "" {
+		return "owner=" + strconv.Itoa(len(ownerID)) + ":" + ownerID + ";generation=" +
+			strconv.FormatInt(accountGeneration, 10) + ";room=" + strconv.Itoa(len(trimmed)) + ":" + trimmed
+	}
+	return githubSecretRecordIDPersonal(ownerID, accountGeneration)
+}
+
+func githubSecretRecordIDPersonal(ownerID string, accountGeneration int64) string {
 	// The owner generation is immutable for the lifetime of this record. The
 	// credential version is bound separately by the durable-secret envelope;
 	// configuration revision is intentionally excluded so an enable/disable or

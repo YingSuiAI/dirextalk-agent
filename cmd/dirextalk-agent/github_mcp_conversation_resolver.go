@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 
@@ -75,6 +76,10 @@ func (r *githubMCPConversationResolver) ResolveExtensions(ctx context.Context, s
 		owner, gen = strings.TrimSpace(p.GetAuthenticatedOwnerId()), p.GetAccountGeneration()
 	}
 	snap, e := r.service.Resolve(ctx, githubScopeForTurn(ctx, owner, gen))
+	if origin, group := coreconversation.GroupOriginFromContext(ctx); group {
+		slog.Info("[github-mcp] group scope resolve", "room_id", origin.RoomID,
+			"scope_room", githubScopeForTurn(ctx, owner, gen).RoomID, "err", groupAgentErrorSummary(e))
+	}
 	if errors.Is(e, coregithub.ErrNotConfigured) || errors.Is(e, coregithub.ErrDisabled) {
 		return out, nil
 	}
