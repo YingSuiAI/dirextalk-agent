@@ -547,3 +547,22 @@ func TestGroupLoopCancelsTurnsWhoseBindingWasRevoked(t *testing.T) {
 		t.Fatalf("revoked running turn was not cancelled: %#v", turns.cancelled)
 	}
 }
+
+// TestGroupFailureReplyExplainsAnInterruptedModelCall pins the failure wording:
+// an interrupted model call says nothing ran, every other failure keeps the
+// generic retry message, and the reply follows the member's language.
+func TestGroupFailureReplyExplainsAnInterruptedModelCall(t *testing.T) {
+	interrupted := groupFailureReply(groupTurnInterruptedCode)
+	if !strings.Contains(interrupted, "中断") || !strings.Contains(interrupted, "没有产生任何结果") {
+		t.Fatalf("interrupted reply=%q", interrupted)
+	}
+	if strings.Contains(groupFailureReply("some_other_code"), "中断") {
+		t.Fatal("generic failure claimed an interruption")
+	}
+	if !strings.Contains(groupFailureReplyEN(groupTurnInterruptedCode), "interrupted") {
+		t.Fatal("english interrupted reply missing")
+	}
+	if strings.Contains(groupFailureReplyEN(""), "interrupted") {
+		t.Fatal("generic english failure claimed an interruption")
+	}
+}

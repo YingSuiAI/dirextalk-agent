@@ -352,7 +352,7 @@ func (l *groupAgentLoop) processRequest(ctx context.Context, request capabilityc
 		if turn.State == coreconversation.TurnFailed || body == "" {
 			status = "failed"
 			if body == "" {
-				body = groupReply(request.Body, "Ying 暂时未能完成这次请求。已完成的结果会保留在群主的任务记录中；请稍后重试。", "Ying could not finish this request. Completed work is retained in the owner's task history; please try again later.")
+				body = groupReply(request.Body, groupFailureReply(turn.TerminalCode), groupFailureReplyEN(turn.TerminalCode))
 			}
 		}
 		return l.publish(ctx, origin, body, "final", status)
@@ -368,6 +368,29 @@ func (l *groupAgentLoop) publish(ctx context.Context, origin coreconversation.Gr
 		body = groupReply(body, "任务结果已保存。内容过长，未完整发送到群里；请群主打开此任务查看完整结果。", "The result has been saved. It is too long to post in this group; the owner can open the task to view the complete result.")
 	}
 	return l.product.PublishGroupAgentReply(ctx, capabilityclient.GroupAgentPublish{RequestID: origin.RequestID, BindingRevision: origin.BindingRevision, Body: body, Kind: kind, Status: status})
+}
+
+// groupFailureReply explains one failed group turn in words the member can act
+// on. An interrupted model call (restart, network loss) never produced an
+// answer, so the group is told that plainly instead of a generic failure.
+const groupTurnInterruptedCode = "provider_uncertain"
+
+func groupFailureReply(terminalCode string) string {
+	switch strings.TrimSpace(terminalCode) {
+	case groupTurnInterruptedCode:
+		return "Ying 这次的回复被中断了（服务重启或网络中断），本次没有产生任何结果，也没有执行任何操作；请重新发一次。"
+	default:
+		return "Ying 暂时未能完成这次请求。已完成的结果会保留在群主的任务记录中；请稍后重试。"
+	}
+}
+
+func groupFailureReplyEN(terminalCode string) string {
+	switch strings.TrimSpace(terminalCode) {
+	case groupTurnInterruptedCode:
+		return "Ying's reply was interrupted (service restart or network loss). Nothing was produced or executed for that request; please send it again."
+	default:
+		return "Ying could not finish this request. Completed work is retained in the owner's task history; please try again later."
+	}
 }
 
 func groupReply(prompt, chinese, english string) string {
