@@ -84,6 +84,12 @@ func (r *githubMCPConversationResolver) ResolveExtensions(ctx context.Context, s
 		return out, nil
 	}
 	if e != nil {
+		// A group turn must never lose its answer because one scoped credential
+		// is unreadable: log it and continue without the GitHub tools.
+		if _, group := coreconversation.GroupOriginFromContext(ctx); group {
+			slog.Warn("[github-mcp] group credential unavailable; continuing without GitHub tools", "error", groupAgentErrorSummary(e))
+			return out, nil
+		}
 		return nil, e
 	}
 	if !snap.Enabled {
