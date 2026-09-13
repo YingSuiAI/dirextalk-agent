@@ -247,12 +247,12 @@ func (s githubMCPSecret) ResolveSecret(ctx context.Context, ref string) ([]byte,
 	if ref != githubMCPSecretRef {
 		return nil, mcphttp.ErrCredentialUnavailable
 	}
-	p, ok := capabilityclient.PermissionFromContext(ctx)
-	if !ok || p == nil {
+	scope, ok := githubSecretScope(ctx)
+	if !ok {
 		return nil, mcphttp.ErrCredentialUnavailable
 	}
 	var out []byte
-	e := s.service.WithTokenResolved(ctx, githubScopeForTurn(ctx, strings.TrimSpace(p.GetAuthenticatedOwnerId()), p.GetAccountGeneration()), s.snapshot, func(v string) error { out = []byte(v); return nil })
+	e := s.service.WithTokenResolved(ctx, scope, s.snapshot, func(v string) error { out = []byte(v); return nil })
 	return out, e
 }
 
@@ -262,11 +262,11 @@ func (s githubMCPSecret) WithSecret(ctx context.Context, ref string, fn func([]b
 	if ref != githubMCPSecretRef || fn == nil {
 		return mcphttp.ErrCredentialUnavailable
 	}
-	p, ok := capabilityclient.PermissionFromContext(ctx)
-	if !ok || p == nil {
+	scope, ok := githubSecretScope(ctx)
+	if !ok {
 		return mcphttp.ErrCredentialUnavailable
 	}
-	return s.service.WithTokenResolved(ctx, githubScopeForTurn(ctx, strings.TrimSpace(p.GetAuthenticatedOwnerId()), p.GetAccountGeneration()), s.snapshot, func(value string) error {
+	return s.service.WithTokenResolved(ctx, scope, s.snapshot, func(value string) error {
 		secret := []byte(value)
 		defer clear(secret)
 		return fn(secret)
@@ -294,4 +294,21 @@ func githubScopeForTurn(ctx context.Context, ownerID string, accountGeneration i
 		return coregithub.GroupScope(ownerID, accountGeneration, origin.RoomID)
 	}
 	return coregithub.PersonalScope(ownerID, accountGeneration)
+}
+
+// githubSecretScope resolves the credential scope for one dispatch: a group turn
+// uses that group's own credential set (no capability permission is present),
+// every other turn uses the owner's personal set.
+func githubSecretScope(ctx context.Context) (coregithub.Scope, bool) {
+	if origin, group := coreconversation.GroupOriginFromContext(ctx); group {
+		if origin.Validate() != nil || strings.TrimSpace(origin.OwnerID) == "" {
+			return coregithub.Scope{}, false
+		}
+		return coregithub.GroupScope(origin.OwnerID, int64(origin.AccountGeneration), origin.RoomID), true
+	}
+	p, ok := capabilityclient.PermissionFromContext(ctx)
+	if !ok || p == nil {
+		return coregithub.Scope{}, false
+	}
+	return coregithub.PersonalScope(strings.TrimSpace(p.GetAuthenticatedOwnerId()), p.GetAccountGeneration()), true
 }
