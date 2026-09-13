@@ -180,7 +180,9 @@ func scheduledGroupOccurrence(ctx context.Context, conversation scheduledConvers
 	if outcome.Validate() != nil {
 		return coreruntime.ManagedOutcome{Err: coreruntime.ErrScheduledSnapshotInvalid}, true
 	}
-	return coreruntime.ManagedOutcome{Result: outcome, TerminalOwned: true}, true
+	// The task executor still owns terminalizing this occurrence: the group
+	// answer arrives separately, after the group loop has run it.
+	return coreruntime.ManagedOutcome{Result: outcome}, true
 }
 
 func scheduledConversationSnapshots(in []coretask.ScheduledExtensionSnapshot) []coreconversation.ExtensionExecutionSnapshot {
