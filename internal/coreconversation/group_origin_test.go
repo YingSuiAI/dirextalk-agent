@@ -501,11 +501,9 @@ func TestGroupIntrinsicsUseSeparateWorkerOfferCatalogAndLiveGuard(t *testing.T) 
 			t.Fatal("group intrinsic resolver lost trusted origin")
 		}
 		return []ResolvedIntrinsic{
-			{Tool: coremodel.Tool{Name: coremodel.IntrinsicStaticSiteReadToolName, InputSchema: map[string]any{"type": "object"}}, ReadOnly: true},
 			{Tool: coremodel.Tool{Name: coremodel.IntrinsicScheduleCreateToolName, InputSchema: map[string]any{"type": "object"}}},
 			{Tool: coremodel.Tool{Name: coremodel.IntrinsicCloudWorkerDestroyToolName, InputSchema: map[string]any{"type": "object"}}},
-			{Tool: coremodel.Tool{Name: coremodel.IntrinsicCloudWorkerDomainBindToolName, InputSchema: map[string]any{"type": "object"}}},
-			{Tool: coremodel.Tool{Name: coremodel.IntrinsicCloudWorkerInventoryToolName, InputSchema: map[string]any{"type": "object"}}, ReadOnly: true,
+			{Tool: coremodel.Tool{Name: coremodel.IntrinsicCloudWorkerDomainUnbindToolName, InputSchema: map[string]any{"type": "object"}},
 				Execute: func(context.Context, IntrinsicExecutionRequest) (IntrinsicExecutionResult, error) {
 					executions++
 					return IntrinsicExecutionResult{}, nil
@@ -519,12 +517,12 @@ func TestGroupIntrinsicsUseSeparateWorkerOfferCatalogAndLiveGuard(t *testing.T) 
 	}))
 	lease := TurnLease{Turn: store.turn, LeaseID: "test", Epoch: 1}
 	resolved, err := service.resolveIntrinsicTools(context.Background(), lease)
-	if err != nil || len(resolved) != 2 || resolved[0].Tool.Name != coremodel.IntrinsicCloudWorkerInventoryToolName ||
+	if err != nil || len(resolved) != 2 || resolved[0].Tool.Name != coremodel.IntrinsicCloudWorkerDomainUnbindToolName ||
 		resolved[1].Tool.Name != coremodel.IntrinsicCloudWorkerProposeToolName {
 		t.Fatalf("private intrinsic was exposed: count=%d err=%v", len(resolved), err)
 	}
-	// The group may read the Worker inventory to answer whether earlier Worker
-	// work exists; destroying one or binding a hostname stays with the owner.
+	// A member may rebind a Worker's hostname, but the private schedule tool and
+	// destroying the owner's machine stay out of this member's turn.
 	if _, err := resolved[0].Execute(context.Background(), IntrinsicExecutionRequest{Lease: lease}); err != nil {
 		t.Fatal(err)
 	}
@@ -541,6 +539,88 @@ func TestGroupIntrinsicsUseSeparateWorkerOfferCatalogAndLiveGuard(t *testing.T) 
 // capability as if it were unavailable was the bug this pins. The owner's own
 // confirmation still gates every paid resource, and a group message never
 // supplies that confirmation.
+// Every member may use the owner's Worker tooling except the two irreversible
+// paid decisions: creating a machine stays an owner confirmation, and only the
+// owner's own group request may destroy one.
+func TestGroupWorkerToolsSplitMemberAndOwnerAuthority(t *testing.T) {
+	member := testGroupOrigin()
+	owner := member
+	owner.ActorID = owner.OwnerID
+
+	for _, allowed := range []string{
+		coremodel.IntrinsicCloudWorkerProposeToolName,
+		coremodel.IntrinsicCloudWorkerRunToolName,
+		coremodel.IntrinsicCloudWorkerInventoryToolName,
+		coremodel.IntrinsicCloudWorkerDomainBindToolName,
+		coremodel.IntrinsicCloudWorkerDomainUnbindToolName,
+		coremodel.IntrinsicStaticSiteReadToolName,
+		coremodel.IntrinsicStaticSitePublishToolName,
+	} {
+		if !groupIntrinsicAllowed(allowed, member) {
+			t.Fatalf("member cannot use %s", allowed)
+		}
+		if !groupIntrinsicAllowed(allowed, owner) {
+			t.Fatalf("owner cannot use %s", allowed)
+		}
+	}
+	if groupIntrinsicAllowed(coremodel.IntrinsicCloudWorkerDestroyToolName, member) {
+		t.Fatal("a member could destroy the owner's Worker")
+	}
+	if !groupIntrinsicAllowed(coremodel.IntrinsicCloudWorkerDestroyToolName, owner) {
+		t.Fatal("the owner cannot destroy their own Worker from the group")
+	}
+	for _, refused := range []string{
+		coremodel.IntrinsicScheduleCreateToolName,
+		coremodel.IntrinsicCloudWorkerProposeToolName + "other",
+		"",
+	} {
+		if groupIntrinsicAllowed(refused, owner) {
+			t.Fatalf("owner-only turn exposed %q", refused)
+		}
+	}
+}
+
+// The rule has to hold where the tools are actually assembled, not only in the
+// predicate: a member's turn must never be offered the destroy tool at all.
+func TestGroupWorkerToolAssemblyFollowsTheActorRule(t *testing.T) {
+	for _, ownerActor := range []bool{false, true} {
+		service, store, _, origin := newIsolatedGroupExecution(t)
+		if ownerActor {
+			origin.ActorID = origin.OwnerID
+			store.turn.GroupOrigin.ActorID = origin.OwnerID
+		}
+		service.SetGroupIntrinsicResolver(intrinsicResolverFunc(func(context.Context, TurnLease) ([]ResolvedIntrinsic, error) {
+			return []ResolvedIntrinsic{
+				{Tool: coremodel.Tool{Name: coremodel.IntrinsicCloudWorkerDestroyToolName, InputSchema: map[string]any{"type": "object"}},
+					Execute: func(context.Context, IntrinsicExecutionRequest) (IntrinsicExecutionResult, error) {
+						return IntrinsicExecutionResult{}, nil
+					}},
+				{Tool: coremodel.Tool{Name: coremodel.IntrinsicCloudWorkerInventoryToolName, InputSchema: map[string]any{"type": "object"}}, ReadOnly: true,
+					Execute: func(context.Context, IntrinsicExecutionRequest) (IntrinsicExecutionResult, error) {
+						return IntrinsicExecutionResult{}, nil
+					}},
+			}, nil
+		}))
+		resolved, err := service.resolveIntrinsicTools(context.Background(), TurnLease{Turn: store.turn, LeaseID: "test", Epoch: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		names := make([]string, 0, len(resolved))
+		for _, intrinsic := range resolved {
+			names = append(names, intrinsic.Tool.Name)
+		}
+		if ownerActor {
+			if strings.Join(names, ",") != coremodel.IntrinsicCloudWorkerDestroyToolName+","+coremodel.IntrinsicCloudWorkerInventoryToolName {
+				t.Fatalf("owner tools = %v", names)
+			}
+			continue
+		}
+		if strings.Join(names, ",") != coremodel.IntrinsicCloudWorkerInventoryToolName {
+			t.Fatalf("member tools = %v", names)
+		}
+	}
+}
+
 func TestGroupGuidanceAllowsProposingAndKeepsTheOwnerApprovalGate(t *testing.T) {
 	for _, required := range []string{
 		"call cloud_worker_propose to build the new-machine proposal",
@@ -550,7 +630,10 @@ func TestGroupGuidanceAllowsProposingAndKeepsTheOwnerApprovalGate(t *testing.T) 
 		"cloud_worker_run, which never creates or resizes a machine",
 		"Read the current Worker inventory with cloud_worker_inventory",
 		"never deny a completed Worker run, or repeat an approval demand the owner already satisfied, from memory alone",
-		"waits for the owner's own confirmation",
+		"Any member may work on a Worker the owner already keeps, bind or unbind its hostname, and publish a static page",
+		"Creating and destroying a machine is the owner's own decision",
+		"only the owner's own request may destroy a Worker",
+		"a group message never supplies that confirmation",
 		"tell the group the task is waiting for the owner",
 		"Do not claim access or successful actions without authoritative tool receipts",
 	} {

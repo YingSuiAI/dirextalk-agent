@@ -49,7 +49,7 @@ func (s *Service) resolveIntrinsicTools(ctx context.Context, lease TurnLease) ([
 		}
 		tools := make([]ResolvedIntrinsic, 0, len(external))
 		for _, intrinsic := range external {
-			if !groupIntrinsicAllowed(intrinsic.Tool.Name) {
+			if !groupIntrinsicAllowed(intrinsic.Tool.Name, origin) {
 				continue
 			}
 			execute := intrinsic.Execute
@@ -63,6 +63,29 @@ func (s *Service) resolveIntrinsicTools(ctx context.Context, lease TurnLease) ([
 				return execute(WithGroupOrigin(runCtx, origin), request)
 			}
 			tools = append(tools, intrinsic)
+		}
+		// A group member may publish a self-contained page to the same durable
+		// site origin the owner uses. The site identity derives from the owner
+		// plus this group's conversation, and the group revalidates its
+		// authorization on every call like any other group intrinsic.
+		if sites, ok := s.turns.(ConversationStaticSiteStore); ok && s.staticSites != nil &&
+			strings.TrimSpace(lease.Turn.OwnerID) != "" && lease.Turn.AccountGeneration != 0 {
+			for _, intrinsic := range []ResolvedIntrinsic{
+				staticSiteReadIntrinsic(sites, s.staticSites, lease),
+				staticSiteIntrinsic(sites, s.staticSites, s.staticSiteOrigin, lease),
+			} {
+				if !groupIntrinsicAllowed(intrinsic.Tool.Name, origin) {
+					continue
+				}
+				execute := intrinsic.Execute
+				intrinsic.Execute = func(runCtx context.Context, request IntrinsicExecutionRequest) (IntrinsicExecutionResult, error) {
+					if err := s.validateGroupAuthorization(runCtx, &origin); err != nil {
+						return IntrinsicExecutionResult{}, err
+					}
+					return execute(WithGroupOrigin(runCtx, origin), request)
+				}
+				tools = append(tools, intrinsic)
+			}
 		}
 		return tools, nil
 	}

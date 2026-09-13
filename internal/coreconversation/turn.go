@@ -739,7 +739,7 @@ func (s TurnRuntimeSnapshot) Validate() error {
 			return ErrInvalid
 		}
 		for _, tool := range s.IntrinsicTools {
-			if !groupIntrinsicAllowed(tool.Name) {
+			if !groupIntrinsicAllowed(tool.Name, *s.GroupOrigin) {
 				return ErrInvalid
 			}
 		}

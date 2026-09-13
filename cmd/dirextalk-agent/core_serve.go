@@ -516,17 +516,21 @@ func serveCore(cfg config.Config) error {
 			bindings: groupExtensionBindings,
 		})
 		if cloudComposition != nil {
-			// Group work may request a new isolated Worker with owner approval,
-			// and may read the retained Worker inventory so it can answer whether
-			// earlier Worker work exists and finished instead of guessing.
-			// Deliberately do not attach private GitHub, reuse or domain
-			// management to this resolver; the private owner's resolver is intact.
+			// Group work reuses the owner's Worker tooling: members may read the
+			// inventory, run work, bind or unbind a hostname and destroy nothing.
+			// Creating a machine stays an owner confirmation and destroying one
+			// stays the owner's own request, which the group filter enforces by
+			// actor. Deliberately do not attach the private GitHub binding or
+			// persistent-Worker reuse to this resolver.
 			groupWorker, groupErr := cloudworker.NewProposeIntrinsic(cloudComposition.domain, conversationStore, conversationStore, conversationStore)
 			if groupErr != nil {
 				return fmt.Errorf("initialize group Worker proposal: %w", groupErr)
 			}
-			if err := groupWorker.EnableRetainedWorkerInventory(cloudComposition.executor); err != nil {
-				return fmt.Errorf("initialize group Worker inventory: %w", err)
+			if err := groupWorker.EnableRetainedWorkerManagement(cloudComposition.executor, conversationStore); err != nil {
+				return fmt.Errorf("initialize group Worker inventory and destruction: %w", err)
+			}
+			if err := groupWorker.EnableRetainedWorkerDomains(cloudComposition.executor); err != nil {
+				return fmt.Errorf("initialize group Worker domains: %w", err)
 			}
 			conversation.SetGroupIntrinsicResolver(groupWorker)
 			cloudComposition.executor.groupAuthorization = groupLoop
