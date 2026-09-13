@@ -501,7 +501,11 @@ func TestGroupIntrinsicsUseSeparateWorkerOfferCatalogAndLiveGuard(t *testing.T) 
 			t.Fatal("group intrinsic resolver lost trusted origin")
 		}
 		return []ResolvedIntrinsic{
-			{Tool: coremodel.Tool{Name: coremodel.IntrinsicScheduleCreateToolName, InputSchema: map[string]any{"type": "object"}}},
+			{Tool: coremodel.Tool{Name: coremodel.IntrinsicScheduleCreateToolName, InputSchema: map[string]any{"type": "object"}},
+				Execute: func(context.Context, IntrinsicExecutionRequest) (IntrinsicExecutionResult, error) {
+					executions++
+					return IntrinsicExecutionResult{}, nil
+				}},
 			{Tool: coremodel.Tool{Name: coremodel.IntrinsicCloudWorkerDestroyToolName, InputSchema: map[string]any{"type": "object"}}},
 			{Tool: coremodel.Tool{Name: coremodel.IntrinsicCloudWorkerDomainUnbindToolName, InputSchema: map[string]any{"type": "object"}},
 				Execute: func(context.Context, IntrinsicExecutionRequest) (IntrinsicExecutionResult, error) {
@@ -517,12 +521,32 @@ func TestGroupIntrinsicsUseSeparateWorkerOfferCatalogAndLiveGuard(t *testing.T) 
 	}))
 	lease := TurnLease{Turn: store.turn, LeaseID: "test", Epoch: 1}
 	resolved, err := service.resolveIntrinsicTools(context.Background(), lease)
-	if err != nil || len(resolved) != 2 || resolved[0].Tool.Name != coremodel.IntrinsicCloudWorkerDomainUnbindToolName ||
-		resolved[1].Tool.Name != coremodel.IntrinsicCloudWorkerProposeToolName {
-		t.Fatalf("private intrinsic was exposed: count=%d err=%v", len(resolved), err)
+	if err != nil {
+		t.Fatal(err)
 	}
-	// A member may rebind a Worker's hostname, but the private schedule tool and
-	// destroying the owner's machine stay out of this member's turn.
+	names := map[string]int{}
+	for _, intrinsic := range resolved {
+		names[intrinsic.Tool.Name]++
+	}
+	// A member may rebind a Worker's hostname and schedule work for this group,
+	// but destroying the owner's machine stays out of this member's turn.
+	for _, required := range []string{
+		coremodel.IntrinsicScheduleCreateToolName,
+		coremodel.IntrinsicCloudWorkerDomainUnbindToolName,
+		coremodel.IntrinsicCloudWorkerProposeToolName,
+	} {
+		if names[required] != 1 {
+			t.Fatalf("group intrinsic %s was not exposed exactly once: %#v", required, names)
+		}
+	}
+	if names[coremodel.IntrinsicCloudWorkerDestroyToolName] != 0 {
+		t.Fatalf("a member's turn was offered the destroy tool: %#v", names)
+	}
+	for _, intrinsic := range resolved {
+		if intrinsic.Execute == nil {
+			t.Fatalf("group intrinsic %s has no executor", intrinsic.Tool.Name)
+		}
+	}
 	if _, err := resolved[0].Execute(context.Background(), IntrinsicExecutionRequest{Lease: lease}); err != nil {
 		t.Fatal(err)
 	}
@@ -535,12 +559,8 @@ func TestGroupIntrinsicsUseSeparateWorkerOfferCatalogAndLiveGuard(t *testing.T) 
 	}
 }
 
-// A group request must be able to prepare real compute; refusing the whole
-// capability as if it were unavailable was the bug this pins. The owner's own
-// confirmation still gates every paid resource, and a group message never
-// supplies that confirmation.
-// Every member may use the owner's Worker tooling except the two irreversible
-// paid decisions: creating a machine stays an owner confirmation, and only the
+// Every member may use the owner's tooling except the two irreversible paid
+// decisions: creating a machine stays an owner confirmation, and only the
 // owner's own group request may destroy one.
 func TestGroupWorkerToolsSplitMemberAndOwnerAuthority(t *testing.T) {
 	member := testGroupOrigin()
@@ -555,6 +575,7 @@ func TestGroupWorkerToolsSplitMemberAndOwnerAuthority(t *testing.T) {
 		coremodel.IntrinsicCloudWorkerDomainUnbindToolName,
 		coremodel.IntrinsicStaticSiteReadToolName,
 		coremodel.IntrinsicStaticSitePublishToolName,
+		coremodel.IntrinsicScheduleCreateToolName,
 	} {
 		if !groupIntrinsicAllowed(allowed, member) {
 			t.Fatalf("member cannot use %s", allowed)
@@ -570,7 +591,6 @@ func TestGroupWorkerToolsSplitMemberAndOwnerAuthority(t *testing.T) {
 		t.Fatal("the owner cannot destroy their own Worker from the group")
 	}
 	for _, refused := range []string{
-		coremodel.IntrinsicScheduleCreateToolName,
 		coremodel.IntrinsicCloudWorkerProposeToolName + "other",
 		"",
 	} {

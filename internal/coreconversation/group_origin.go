@@ -336,7 +336,7 @@ func groupIntrinsicAllowed(name string, origin GroupOrigin) bool {
 	case coremodel.IntrinsicCloudWorkerProposeToolName, coremodel.IntrinsicCloudWorkerRunToolName,
 		coremodel.IntrinsicCloudWorkerInventoryToolName, coremodel.IntrinsicCloudWorkerDomainBindToolName,
 		coremodel.IntrinsicCloudWorkerDomainUnbindToolName, coremodel.IntrinsicStaticSiteReadToolName,
-		coremodel.IntrinsicStaticSitePublishToolName:
+		coremodel.IntrinsicStaticSitePublishToolName, coremodel.IntrinsicScheduleCreateToolName:
 		return true
 	case coremodel.IntrinsicCloudWorkerDestroyToolName:
 		return origin.ActorID == origin.OwnerID

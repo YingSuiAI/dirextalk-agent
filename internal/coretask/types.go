@@ -135,12 +135,18 @@ type ScheduledConversationOrigin struct {
 	Capability         ScheduledCapability          `json:"capability"`
 	Timezone           string                       `json:"timezone"`
 	ExtensionSnapshots []ScheduledExtensionSnapshot `json:"extension_snapshots"`
+	// ActorID attributes a group schedule to the member who created it. It is
+	// empty for the owner's own private schedules, and it is never a member
+	// ticket: the scheduled run revalidates the group binding by itself.
+	ActorID string `json:"actor_id,omitempty"`
 }
 
 func (o ScheduledConversationOrigin) Validate() error {
 	capability := ScheduledCapability(strings.TrimSpace(string(o.Capability)))
 	timezone := strings.TrimSpace(o.Timezone)
-	if capability != o.Capability || timezone != o.Timezone || timezone == "" || len([]byte(timezone)) > 128 || !utf8.ValidString(timezone) {
+	if capability != o.Capability || timezone != o.Timezone || timezone == "" || len([]byte(timezone)) > 128 || !utf8.ValidString(timezone) ||
+		o.ActorID != strings.TrimSpace(o.ActorID) || len(o.ActorID) > 1024 || !utf8.ValidString(o.ActorID) ||
+		(o.ActorID != "" && !strings.HasPrefix(o.ActorID, "@")) {
 		return ErrInvalid
 	}
 	if _, err := time.LoadLocation(timezone); err != nil {

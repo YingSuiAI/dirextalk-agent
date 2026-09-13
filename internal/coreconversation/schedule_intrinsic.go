@@ -49,20 +49,10 @@ func (s *Service) resolveIntrinsicTools(ctx context.Context, lease TurnLease) ([
 		}
 		tools := make([]ResolvedIntrinsic, 0, len(external))
 		for _, intrinsic := range external {
-			if !groupIntrinsicAllowed(intrinsic.Tool.Name, origin) {
-				continue
+			tools, err = s.appendGroupIntrinsic(tools, intrinsic, origin)
+			if err != nil {
+				return nil, err
 			}
-			execute := intrinsic.Execute
-			if execute == nil {
-				return nil, ErrInvalid
-			}
-			intrinsic.Execute = func(runCtx context.Context, request IntrinsicExecutionRequest) (IntrinsicExecutionResult, error) {
-				if err := s.validateGroupAuthorization(runCtx, &origin); err != nil {
-					return IntrinsicExecutionResult{}, err
-				}
-				return execute(WithGroupOrigin(runCtx, origin), request)
-			}
-			tools = append(tools, intrinsic)
 		}
 		// A group member may publish a self-contained page to the same durable
 		// site origin the owner uses. The site identity derives from the owner
@@ -74,18 +64,17 @@ func (s *Service) resolveIntrinsicTools(ctx context.Context, lease TurnLease) ([
 				staticSiteReadIntrinsic(sites, s.staticSites, lease),
 				staticSiteIntrinsic(sites, s.staticSites, s.staticSiteOrigin, lease),
 			} {
-				if !groupIntrinsicAllowed(intrinsic.Tool.Name, origin) {
-					continue
+				tools, err = s.appendGroupIntrinsic(tools, intrinsic, origin)
+				if err != nil {
+					return nil, err
 				}
-				execute := intrinsic.Execute
-				intrinsic.Execute = func(runCtx context.Context, request IntrinsicExecutionRequest) (IntrinsicExecutionResult, error) {
-					if err := s.validateGroupAuthorization(runCtx, &origin); err != nil {
-						return IntrinsicExecutionResult{}, err
-					}
-					return execute(WithGroupOrigin(runCtx, origin), request)
-				}
-				tools = append(tools, intrinsic)
 			}
+		}
+		// A group member may schedule work for this group. The narrowed tool
+		// keeps every scheduled result inside this room.
+		if schedules, ok := s.turns.(ConversationScheduleStore); ok &&
+			strings.TrimSpace(lease.Turn.OwnerID) != "" && lease.Turn.AccountGeneration != 0 {
+			return s.appendGroupIntrinsic(tools, groupScheduleIntrinsic(schedules, lease), origin)
 		}
 		return tools, nil
 	}
@@ -105,6 +94,50 @@ func (s *Service) resolveIntrinsicTools(ctx context.Context, lease TurnLease) ([
 		tools = append(tools, external...)
 	}
 	return tools, nil
+}
+
+// appendGroupIntrinsic keeps the group-visible subset of one intrinsic and
+// revalidates the group binding before every execution, so a revoked binding
+// stops a tool that was already published to the model.
+func (s *Service) appendGroupIntrinsic(tools []ResolvedIntrinsic, intrinsic ResolvedIntrinsic, origin GroupOrigin) ([]ResolvedIntrinsic, error) {
+	if !groupIntrinsicAllowed(intrinsic.Tool.Name, origin) {
+		return tools, nil
+	}
+	execute := intrinsic.Execute
+	if execute == nil {
+		return nil, ErrInvalid
+	}
+	intrinsic.Execute = func(runCtx context.Context, request IntrinsicExecutionRequest) (IntrinsicExecutionResult, error) {
+		if err := s.validateGroupAuthorization(runCtx, &origin); err != nil {
+			return IntrinsicExecutionResult{}, err
+		}
+		return execute(WithGroupOrigin(runCtx, origin), request)
+	}
+	return append(tools, intrinsic), nil
+}
+
+// groupScheduledCapabilityAllowed is the closed capability set a group schedule
+// may use. A group schedule runs as an ordinary request in its own room, so its
+// result can only ever land in this group: no delivery workflow that addresses
+// another room, another member, or the owner's private conversations is
+// reachable from a group schedule.
+func groupScheduledCapabilityAllowed(capability coretask.ScheduledCapability) bool {
+	return capability == coretask.ScheduledCapabilityScheduledNote
+}
+
+// groupScheduleIntrinsic is the group's own schedule tool: the durable schedule
+// a private conversation can create, narrowed to what a group may ask for and
+// attributed to the member who created it.
+func groupScheduleIntrinsic(store ConversationScheduleStore, bound TurnLease) ResolvedIntrinsic {
+	intrinsic := scheduleIntrinsic(store, bound)
+	intrinsic.Tool.Description = "Create a durable scheduled task for this group. At the scheduled time the task runs in this room as an ordinary group request and its result is posted here for every member. It uses only this group's own tools and credentials, can never message another room or another member, and never reaches the owner's private conversations. Name is the sole schedule-card title and must be a concise human-readable task name extracted from the group's request. The schedule is attributed to the member who asked for it."
+	if properties, ok := intrinsic.Tool.InputSchema["properties"].(map[string]any); ok {
+		if capability, ok := properties["capability"].(map[string]any); ok {
+			capability["enum"] = []any{string(coretask.ScheduledCapabilityScheduledNote)}
+			capability["description"] = "The only workflow a group schedule may use: it writes the result from the scheduled goal and posts it in this group. Every other workflow is refused because it could address another room or person."
+		}
+	}
+	return intrinsic
 }
 
 func scheduleIntrinsic(store ConversationScheduleStore, bound TurnLease) ResolvedIntrinsic {
@@ -207,12 +240,21 @@ func executeScheduleIntrinsic(ctx context.Context, store ConversationScheduleSto
 	}
 	scheduleID := uuid.NewSHA1(uuid.NameSpaceOID, []byte("conversation-schedule:"+turn.ID+":"+turn.RequestID+":"+request.Call.ID)).String()
 	idempotencyKey := uuid.NewSHA1(uuid.NameSpaceOID, []byte("conversation-schedule-create:"+turn.ID+":"+turn.RequestID+":"+request.Call.ID)).String()
+	origin := coretask.ScheduledConversationOrigin{Capability: args.Capability, Timezone: scheduleTimezone, ExtensionSnapshots: scheduledSnapshots}
+	if turn.GroupOrigin != nil {
+		// A group schedule may only use the group-safe workflow, and it stays
+		// attributed to the member who created it.
+		if !groupScheduledCapabilityAllowed(args.Capability) {
+			return IntrinsicExecutionResult{}, ErrInvalid
+		}
+		origin.ActorID = turn.GroupOrigin.ActorID
+	}
 	schedule := coretask.Schedule{
 		ID: scheduleID, Name: args.Name,
 		Spec: coretask.TaskTemplate{
 			Kind: coretask.TaskKindAgent, Payload: coretask.TaskPayload{Agent: &coretask.AgentTaskPayload{
 				OwnerID: strings.TrimSpace(turn.OwnerID), AccountGeneration: turn.AccountGeneration,
-				ScheduledConversation: &coretask.ScheduledConversationOrigin{Capability: args.Capability, Timezone: scheduleTimezone, ExtensionSnapshots: scheduledSnapshots},
+				ScheduledConversation: &origin,
 			}},
 			Goal: args.Goal, ConversationID: turn.ConversationID, TimeoutSeconds: args.TimeoutSeconds,
 		},
