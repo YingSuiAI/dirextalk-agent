@@ -15,6 +15,62 @@ import (
 	"github.com/google/uuid"
 )
 
+// A due group schedule must never run as a private turn: the durable store
+// refuses that, and a group turn needs Product's request row. The handler
+// therefore asks Product to raise the occurrence as an ordinary group request,
+// attributed to the member who created the schedule.
+func TestScheduledGroupOccurrenceIsRaisedThroughProduct(t *testing.T) {
+	profileID := uuid.NewString()
+	resolver := &scheduledProfileStub{profile: coremodel.Profile{
+		ID: profileID, DisplayName: "scheduled", Provider: coremodel.ProviderOpenAICompatible,
+		RequestDialect: coremodel.DialectOpenAICompatibleChatV1, ModelKind: coremodel.ModelKindConversation,
+		BaseURL: "https://model.invalid/v1", Model: "test", APIKey: "secret", Revision: 4, CredentialVersion: 4,
+	}}
+	task := scheduledTaskFixture(profileID)
+	origin := coreconversation.GroupOrigin{RequestID: uuid.NewString(), RoomID: "!group:example.test",
+		EventID: "$event", ActorID: "@member:example.test", OwnerID: "@owner:example.test",
+		AgentMXID: "@ying:example.test", AccountGeneration: 7, BindingRevision: 3}
+	scope := origin.Scope()
+	conversation := &scheduledConversationStub{turns: map[string]coreconversation.Turn{}, markdown: "unused",
+		rooms: map[string]coreconversation.Conversation{task.Spec.ConversationID: {
+			ID: task.Spec.ConversationID, Revision: 1, GroupScope: &scope,
+		}}}
+	task.Spec.Payload.Agent.ScheduledConversation.ActorID = origin.ActorID
+	enqueuer := &scheduledGroupEnqueuerStub{}
+	handler := scheduledAgentTaskHandler(conversation, resolver, func() groupScheduledEnqueuer { return enqueuer })
+
+	outcome := handler(context.Background(), task)
+	if outcome.Err != nil || !strings.Contains(outcome.Result.Text, "queued") {
+		t.Fatalf("outcome=%+v", outcome)
+	}
+	if len(conversation.commands) != 0 {
+		t.Fatal("a group schedule started a private turn")
+	}
+	if len(enqueuer.requests) != 1 {
+		t.Fatalf("requests=%#v", enqueuer.requests)
+	}
+	request := enqueuer.requests[0]
+	if request.RoomID != origin.RoomID || request.ActorMXID != origin.ActorID ||
+		request.RequestID != scheduledAgentUUID("scheduled-group-request:"+task.ID) ||
+		!strings.Contains(request.Body, task.Spec.Goal) {
+		t.Fatalf("scheduled group request = %#v", request)
+	}
+	// A retried delivery of the same due occurrence stays one request.
+	if outcome := handler(context.Background(), task); outcome.Err != nil || len(enqueuer.requests) != 2 ||
+		enqueuer.requests[1].RequestID != request.RequestID {
+		t.Fatalf("retry outcome=%+v requests=%#v", outcome, enqueuer.requests)
+	}
+}
+
+type scheduledGroupEnqueuerStub struct {
+	requests []capabilityclient.GroupAgentScheduledRequest
+}
+
+func (s *scheduledGroupEnqueuerStub) EnqueueScheduledGroupRequest(_ context.Context, request capabilityclient.GroupAgentScheduledRequest) (capabilityclient.GroupAgentScheduledResult, error) {
+	s.requests = append(s.requests, request)
+	return capabilityclient.GroupAgentScheduledResult{Status: "enqueued"}, nil
+}
+
 func TestScheduledAgentTaskUsesDeterministicNativeTurnAndReturnsMarkdownOnly(t *testing.T) {
 	profileID := uuid.NewString()
 	resolver := &scheduledProfileStub{profile: coremodel.Profile{
@@ -314,6 +370,7 @@ func (s *scheduledProfileStub) ResolveExecutionProfile(ctx context.Context, _ co
 
 type scheduledConversationStub struct {
 	turns      map[string]coreconversation.Turn
+	rooms      map[string]coreconversation.Conversation
 	commands   []coreconversation.TurnStartCommand
 	ctxs       []context.Context
 	markdown   string
@@ -322,6 +379,17 @@ type scheduledConversationStub struct {
 	gets       int
 	driftOwner bool
 	startErr   error
+}
+
+// GetConversation reports the durable scope of the schedule's conversation. An
+// unknown conversation is an error, which the handler treats as "not a group
+// schedule" and keeps the private path.
+func (s *scheduledConversationStub) GetConversation(_ context.Context, id string) (coreconversation.Conversation, error) {
+	conversation, found := s.rooms[id]
+	if !found {
+		return coreconversation.Conversation{}, coreconversation.ErrConflict
+	}
+	return conversation, nil
 }
 
 func (s *scheduledConversationStub) StartTurn(ctx context.Context, command coreconversation.TurnStartCommand) (coreconversation.Turn, error) {

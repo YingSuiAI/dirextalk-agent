@@ -82,6 +82,46 @@ type GroupAgentPublish struct {
 	Status          string `json:"status"`
 }
 
+// GroupAgentScheduledRequest is one due group schedule the Agent asks Product to
+// raise as an ordinary request in its own room. The Agent never picks the
+// sender: Product re-checks the room, the binding and the actor's membership.
+type GroupAgentScheduledRequest struct {
+	RequestID string
+	RoomID    string
+	ActorMXID string
+	Body      string
+}
+
+type GroupAgentScheduledResult struct {
+	Status   string `json:"status"`
+	Replayed bool   `json:"replayed"`
+}
+
+// EnqueueScheduledGroupRequest is idempotent per occurrence: Product keys the
+// request row by the occurrence's own request id, so a retried delivery of the
+// same due task never runs the group twice.
+func (c *Client) EnqueueScheduledGroupRequest(ctx context.Context, request GroupAgentScheduledRequest) (GroupAgentScheduledResult, error) {
+	var result GroupAgentScheduledResult
+	if !validGroupRequestID(request.RequestID) || !validGroupRoomID(request.RoomID) ||
+		!validGroupMXID(request.ActorMXID) || strings.TrimSpace(request.Body) == "" ||
+		len(request.Body) > groupScheduledBodyMaxBytes {
+		return result, errors.New("invalid scheduled group request")
+	}
+	err := c.groupAgentQuery(ctx, "enqueue", map[string]any{
+		"request_id": request.RequestID, "room_id": request.RoomID,
+		"actor_mxid": request.ActorMXID, "body": request.Body,
+	}, &result)
+	if err != nil {
+		return GroupAgentScheduledResult{}, err
+	}
+	if result.Status != "enqueued" {
+		return GroupAgentScheduledResult{}, errors.New("scheduled group request was refused")
+	}
+	return result, nil
+}
+
+const groupScheduledBodyMaxBytes = 16000
+
 func (c *Client) PullGroupAgentRequests(ctx context.Context, after string) (GroupAgentPage, error) {
 	var result GroupAgentPage
 	input := map[string]any{"limit": 10}

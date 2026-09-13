@@ -230,7 +230,13 @@ func serveCore(cfg config.Config) error {
 		return fmt.Errorf("initialize task executor: %w", err)
 	}
 	taskExecutor.SetAgentLedger(taskStore)
-	taskExecutor.SetScheduledAgentHandler(scheduledAgentTaskHandler(conversation, store))
+	// A due group schedule is raised through Product's group delivery, which is
+	// wired after the Product capability client exists. The handler therefore
+	// resolves it lazily and keeps the private path for the owner's own work.
+	var groupScheduledProduct groupScheduledEnqueuer
+	taskExecutor.SetScheduledAgentHandler(scheduledAgentTaskHandler(conversation, store, func() groupScheduledEnqueuer {
+		return groupScheduledProduct
+	}))
 	var cloudComposition *coreCloudWorkerComposition
 	if retainedWorkers != nil {
 		cloudComposition, err = composeDynamicCloudWorkerProposal(cfg, store, conversationStore, retainedWorkers.store, githubService)
@@ -498,6 +504,7 @@ func serveCore(cfg config.Config) error {
 	var groupUsage *groupUsageAdapter
 	if productCapabilityClient != nil {
 		groupLoop = newGroupAgentLoop(productCapabilityClient, conversation, profiles, uint64(cfg.ProductCapabilityAccountGeneration), conversationStore)
+		groupScheduledProduct = productCapabilityClient
 		// A group answers with the model its owner picked for that group, and
 		// with the owner's default conversation model when none was picked.
 		groupModelBindings = &groupModelBindingAdapter{store: postgres.NewCoreGroupModelBindingStore(store)}
