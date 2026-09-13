@@ -122,6 +122,24 @@ func (c *Client) EnqueueScheduledGroupRequest(ctx context.Context, request Group
 
 const groupScheduledBodyMaxBytes = 16000
 
+// boundedGroupAgentError keeps one Product refusal readable in an operator log
+// without letting a peer's text grow the line or inject a break.
+func boundedGroupAgentError(message string) string {
+	trimmed := strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\r' || r == '\t' {
+			return ' '
+		}
+		return r
+	}, strings.TrimSpace(message))
+	if trimmed == "" {
+		return "refused without a reason"
+	}
+	if len(trimmed) > 200 {
+		return trimmed[:200]
+	}
+	return trimmed
+}
+
 func (c *Client) PullGroupAgentRequests(ctx context.Context, after string) (GroupAgentPage, error) {
 	var result GroupAgentPage
 	input := map[string]any{"limit": 10}
@@ -278,8 +296,13 @@ func (c *Client) groupAgentQuery(ctx context.Context, op string, input, result a
 	if err != nil {
 		return err
 	}
-	if response == nil || response.Error != nil || len(response.ResultJson) > 1<<20 {
+	if response == nil || len(response.ResultJson) > 1<<20 {
 		return errors.New("group Agent Product query failed")
+	}
+	if response.Error != nil {
+		// Keep the refusal reason: an operator reading the bounded agent log has
+		// no other way to tell a rejected enqueue from a transport failure.
+		return fmt.Errorf("group Agent Product query failed: %s", boundedGroupAgentError(response.Error.Message))
 	}
 	decoder := json.NewDecoder(bytes.NewReader(response.ResultJson))
 	if err = decoder.Decode(result); err != nil {
