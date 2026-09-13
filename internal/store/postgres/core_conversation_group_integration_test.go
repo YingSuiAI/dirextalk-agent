@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -151,14 +152,30 @@ func TestGroupConversationCannotAdoptPrivateScopeOrChangedEpochPostgres(t *testi
 	if _, err := h.pool.Exec(ctx, `INSERT INTO core_conversations(conversation_id,title) VALUES($1,'private')`, command.ConversationID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.store.StartTurnWithRuntime(ctx, command, groupTurnRuntimePG(t, command)); !errors.Is(err, core.ErrGroupAuthorization) {
-		t.Fatalf("private conversation was adopted as group context: %v", err)
+	// Enabling/disabling the switch is an authorization epoch, not a new group:
+	// the derived conversation id does not change, so no epoch can launder the
+	// private conversation into group context.
+	for _, revision := range []int64{command.GroupOrigin.BindingRevision, command.GroupOrigin.BindingRevision + 1} {
+		attempt := command
+		next := *command.GroupOrigin
+		next.BindingRevision = revision
+		attempt.GroupOrigin = &next
+		attempt.ConversationID = next.ConversationID()
+		if _, err := h.store.StartTurnWithRuntime(ctx, attempt, groupTurnRuntimePG(t, attempt)); !errors.Is(err, core.ErrGroupAuthorization) {
+			t.Fatalf("private conversation was adopted as group context at epoch %d: %v", revision, err)
+		}
 	}
-	next := *command.GroupOrigin
-	next.BindingRevision++
-	command.GroupOrigin = &next
-	command.ConversationID = next.ConversationID()
-	turn, err := h.store.StartTurnWithRuntime(ctx, command, groupTurnRuntimePG(t, command))
+	// A genuinely group-owned conversation still admits the turn.
+	if _, err := h.pool.Exec(ctx, `DELETE FROM core_conversations WHERE conversation_id=$1`, command.ConversationID); err != nil {
+		t.Fatal(err)
+	}
+	fresh := command
+	fresh.RequestID = uuid.NewString()
+	freshOrigin := *command.GroupOrigin
+	freshOrigin.RequestID, freshOrigin.EventID = fresh.RequestID, "$fresh-group-event"
+	fresh.GroupOrigin = &freshOrigin
+	fresh.ConversationID = freshOrigin.ConversationID()
+	turn, err := h.store.StartTurnWithRuntime(ctx, fresh, groupTurnRuntimePG(t, fresh))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -214,14 +231,20 @@ func TestGroupConversationServiceAdmissionMultipleActorsReplayAndNewEpochPostgre
 	fresh := next
 	fresh.RequestID, fresh.ConversationID = newEpoch.RequestID, ""
 	third, err := service.StartGroupTurn(ctx, fresh, newEpoch)
-	if err != nil || third.ConversationID == first.ConversationID {
-		t.Fatalf("new binding retained old context: err=%v", err)
+	if err != nil || third.ConversationID != first.ConversationID {
+		t.Fatalf("re-enabled binding forked the group conversation: err=%v", err)
 	}
 	waitConversationTurnState(t, h.store, third.ID, core.TurnCompleted, 5*time.Second)
 	model.mu.Lock()
 	defer model.mu.Unlock()
-	if len(model.requests) != 3 || len(model.requests[0].Conversation.Messages) != 1 || len(model.requests[1].Conversation.Messages) != 3 || len(model.requests[2].Conversation.Messages) != 1 {
-		t.Fatalf("group context windows or replay count changed: requests=%d", len(model.requests))
+	// One continuous shared thread across members and across an enable/disable
+	// epoch: every turn sees the whole group transcript so far.
+	windows := make([]int, 0, len(model.requests))
+	for _, request := range model.requests {
+		windows = append(windows, len(request.Conversation.Messages))
+	}
+	if len(model.requests) != 3 || !slices.Equal(windows, []int{1, 3, 5}) {
+		t.Fatalf("group context windows or replay count changed: requests=%d windows=%v", len(model.requests), windows)
 	}
 	for _, request := range model.requests {
 		if request.Snapshot.SystemPrompt != "" || strings.Contains(request.Profile.SystemPrompt, "PRIVATE OWNER GLOBAL PROMPT") {
