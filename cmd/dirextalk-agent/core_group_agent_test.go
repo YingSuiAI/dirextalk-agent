@@ -304,6 +304,48 @@ func TestGroupLoopSerializesTurnsInsideOneGroupConversation(t *testing.T) {
 	}
 }
 
+func TestGroupLoopTellsTheGroupItsTaskWaitsForTheOwnerExactlyOnce(t *testing.T) {
+	loop, product, turns, _ := newGroupLoopFixture(t)
+	request := groupRequestFixture()
+	origin := coreconversation.GroupOrigin{RequestID: request.RequestID, RoomID: request.RoomID, EventID: request.EventID,
+		ActorID: request.SenderMXID, OwnerID: request.OwnerMXID, AgentMXID: request.AgentMXID,
+		AccountGeneration: request.AccountGeneration, BindingRevision: request.BindingRevision}
+	product.page = capabilityclient.GroupAgentPage{Requests: []capabilityclient.GroupAgentRequest{request}}
+	parked := coreconversation.Turn{ID: request.RequestID, ConversationID: origin.ConversationID(),
+		State: coreconversation.TurnWaitingConfirmation, GroupOrigin: &origin}
+	turns.turn = &parked
+	turns.active = []coreconversation.Turn{parked}
+
+	// The turn is parked on the owner's confirmation, so the pending request is
+	// delivered again on every tick. The group learns it is waiting, and the
+	// owner is asked once instead of once per tick.
+	for tick := 0; tick < 3; tick++ {
+		if err := loop.tick(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(product.published) != 1 || product.published[0].Status != "waiting_owner" ||
+		product.published[0].Kind != "progress" || !strings.Contains(product.published[0].Body, "群主") {
+		t.Fatalf("parked group turn published %#v", product.published)
+	}
+	if len(turns.started) != 0 {
+		t.Fatalf("parked conversation started work: %#v", turns.started)
+	}
+
+	// The owner's decision ends the wait; the same conversation then publishes
+	// the finished answer instead of asking again.
+	parked.State = coreconversation.TurnCompleted
+	parked.Response = &coreconversation.ChatResponse{Message: coreconversation.Message{Content: "已批准的答案"}}
+	turns.active = nil
+	if err := loop.tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(product.published) != 2 || product.published[1].Body != "已批准的答案" ||
+		product.published[1].Status != "completed" {
+		t.Fatalf("approved turn published %#v", product.published)
+	}
+}
+
 func TestGroupLoopStartsOneTurnPerConversationPerTick(t *testing.T) {
 	loop, product, turns, _ := newGroupLoopFixture(t)
 	first := groupRequestFixture()

@@ -68,13 +68,20 @@ type groupAgentLoop struct {
 	summarySweepAt       time.Time
 	summarySweepBusy     bool
 	summaryMu            sync.Mutex
-	once                 sync.Once
-	done                 chan struct{}
+	// waitingMu guards waitingNotices, the set of parked group turns whose
+	// owner-approval notice this process already posted. The Product dedupes
+	// the notice per request, so this only stops a two-second tick from
+	// repeating the call.
+	waitingMu      sync.Mutex
+	waitingNotices map[string]struct{}
+	once           sync.Once
+	done           chan struct{}
 }
 
 func newGroupAgentLoop(product groupProduct, turns groupTurns, profiles groupModelProfiles, generation uint64, summaries groupSummaryStore) *groupAgentLoop {
 	loop := &groupAgentLoop{product: product, turns: turns, profiles: profiles, summaries: summaries,
-		generation: generation, interval: 2 * time.Second, summaryInterval: groupSummarySweepInterval, done: make(chan struct{})}
+		generation: generation, interval: 2 * time.Second, summaryInterval: groupSummarySweepInterval,
+		waitingNotices: make(map[string]struct{}), done: make(chan struct{})}
 	if summaries != nil {
 		if service, ok := turns.(interface {
 			SetGroupSummaryReader(coreconversation.GroupSummaryReader)
@@ -164,10 +171,11 @@ func (l *groupAgentLoop) tick(ctx context.Context) error {
 	// One group shares one conversation, so two answers cannot be committed at
 	// the same revision. A request for a conversation that is still answering
 	// stays pending and is delivered on the next tick.
-	busy, err := l.busyGroupConversations(ctx)
+	busy, err := l.activeGroupTurns(ctx)
 	if err != nil {
 		return err
 	}
+	l.retainWaitingNotices(busy)
 	l.scheduleSummarySweep(ctx)
 	var failures []error
 	// A single tick can still deliver several members' requests: only the first
@@ -182,7 +190,25 @@ func (l *groupAgentLoop) tick(ctx context.Context) error {
 		}
 		for _, request := range page.Requests {
 			conversationID := groupRequestConversationID(request)
-			if conversationID != "" && (busy[conversationID] || started[conversationID]) {
+			if turn, parked := busy[conversationID]; conversationID != "" && parked {
+				// A turn parked on the owner's confirmation still owns the
+				// conversation, so no second answer may race the one the owner
+				// is about to approve. The group has to learn it is waiting
+				// instead of seeing only "working", and the same delivery path
+				// produces that notice.
+				if turn.State == coreconversation.TurnWaitingConfirmation && turn.ID == request.RequestID &&
+					!l.waitingNoticeSent(turn.ID) {
+					requestCtx, requestCancel := context.WithTimeout(ctx, 10*time.Second)
+					if err = l.processRequest(requestCtx, request); err != nil {
+						failures = append(failures, err)
+					} else {
+						l.markWaitingNotice(turn.ID)
+					}
+					requestCancel()
+				}
+				continue
+			}
+			if conversationID != "" && started[conversationID] {
 				continue
 			}
 			requestCtx, requestCancel := context.WithTimeout(ctx, 15*time.Second)
@@ -234,19 +260,57 @@ func (l *groupAgentLoop) scheduleSummarySweep(ctx context.Context) {
 	}()
 }
 
-func (l *groupAgentLoop) busyGroupConversations(ctx context.Context) (map[string]bool, error) {
+// activeGroupTurns indexes the turns that still own a group conversation by
+// conversation id. A parked waiting_confirmation turn keeps owning its
+// conversation: its commit may still arrive once the owner approves, and a
+// second answer in the same conversation would race that revision.
+func (l *groupAgentLoop) activeGroupTurns(ctx context.Context) (map[string]coreconversation.Turn, error) {
 	turns, err := l.turns.ListActiveGroupTurns(ctx)
 	if err != nil {
 		return nil, err
 	}
-	busy := make(map[string]bool, len(turns))
+	active := make(map[string]coreconversation.Turn, len(turns))
 	for _, turn := range turns {
 		if turn.GroupOrigin == nil || strings.TrimSpace(turn.ConversationID) == "" {
 			continue
 		}
-		busy[turn.ConversationID] = true
+		active[turn.ConversationID] = turn
 	}
-	return busy, nil
+	return active, nil
+}
+
+// retainWaitingNotices forgets parked turns that already stopped waiting, so
+// the notice set stays bounded by the group's currently parked turns.
+func (l *groupAgentLoop) retainWaitingNotices(active map[string]coreconversation.Turn) {
+	parked := make(map[string]struct{}, len(active))
+	for _, turn := range active {
+		if turn.State == coreconversation.TurnWaitingConfirmation {
+			parked[turn.ID] = struct{}{}
+		}
+	}
+	l.waitingMu.Lock()
+	defer l.waitingMu.Unlock()
+	for turnID := range l.waitingNotices {
+		if _, ok := parked[turnID]; !ok {
+			delete(l.waitingNotices, turnID)
+		}
+	}
+}
+
+func (l *groupAgentLoop) waitingNoticeSent(turnID string) bool {
+	l.waitingMu.Lock()
+	defer l.waitingMu.Unlock()
+	_, sent := l.waitingNotices[turnID]
+	return sent
+}
+
+func (l *groupAgentLoop) markWaitingNotice(turnID string) {
+	l.waitingMu.Lock()
+	defer l.waitingMu.Unlock()
+	if l.waitingNotices == nil {
+		l.waitingNotices = make(map[string]struct{})
+	}
+	l.waitingNotices[turnID] = struct{}{}
 }
 
 // groupRequestConversationID derives the identity of the shared group
