@@ -516,12 +516,17 @@ func serveCore(cfg config.Config) error {
 			bindings: groupExtensionBindings,
 		})
 		if cloudComposition != nil {
-			// Group work may request a new isolated Worker with owner approval.
-			// Deliberately do not attach private GitHub, inventory, reuse or domain
+			// Group work may request a new isolated Worker with owner approval,
+			// and may read the retained Worker inventory so it can answer whether
+			// earlier Worker work exists and finished instead of guessing.
+			// Deliberately do not attach private GitHub, reuse or domain
 			// management to this resolver; the private owner's resolver is intact.
 			groupWorker, groupErr := cloudworker.NewProposeIntrinsic(cloudComposition.domain, conversationStore, conversationStore, conversationStore)
 			if groupErr != nil {
 				return fmt.Errorf("initialize group Worker proposal: %w", groupErr)
+			}
+			if err := groupWorker.EnableRetainedWorkerInventory(cloudComposition.executor); err != nil {
+				return fmt.Errorf("initialize group Worker inventory: %w", err)
 			}
 			conversation.SetGroupIntrinsicResolver(groupWorker)
 			cloudComposition.executor.groupAuthorization = groupLoop

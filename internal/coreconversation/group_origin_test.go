@@ -503,6 +503,13 @@ func TestGroupIntrinsicsUseSeparateWorkerOfferCatalogAndLiveGuard(t *testing.T) 
 		return []ResolvedIntrinsic{
 			{Tool: coremodel.Tool{Name: coremodel.IntrinsicStaticSiteReadToolName, InputSchema: map[string]any{"type": "object"}}, ReadOnly: true},
 			{Tool: coremodel.Tool{Name: coremodel.IntrinsicScheduleCreateToolName, InputSchema: map[string]any{"type": "object"}}},
+			{Tool: coremodel.Tool{Name: coremodel.IntrinsicCloudWorkerDestroyToolName, InputSchema: map[string]any{"type": "object"}}},
+			{Tool: coremodel.Tool{Name: coremodel.IntrinsicCloudWorkerDomainBindToolName, InputSchema: map[string]any{"type": "object"}}},
+			{Tool: coremodel.Tool{Name: coremodel.IntrinsicCloudWorkerInventoryToolName, InputSchema: map[string]any{"type": "object"}}, ReadOnly: true,
+				Execute: func(context.Context, IntrinsicExecutionRequest) (IntrinsicExecutionResult, error) {
+					executions++
+					return IntrinsicExecutionResult{}, nil
+				}},
 			{Tool: coremodel.Tool{Name: coremodel.IntrinsicCloudWorkerProposeToolName, InputSchema: map[string]any{"type": "object"}},
 				Execute: func(context.Context, IntrinsicExecutionRequest) (IntrinsicExecutionResult, error) {
 					executions++
@@ -512,14 +519,20 @@ func TestGroupIntrinsicsUseSeparateWorkerOfferCatalogAndLiveGuard(t *testing.T) 
 	}))
 	lease := TurnLease{Turn: store.turn, LeaseID: "test", Epoch: 1}
 	resolved, err := service.resolveIntrinsicTools(context.Background(), lease)
-	if err != nil || len(resolved) != 1 || resolved[0].Tool.Name != coremodel.IntrinsicCloudWorkerProposeToolName {
+	if err != nil || len(resolved) != 2 || resolved[0].Tool.Name != coremodel.IntrinsicCloudWorkerInventoryToolName ||
+		resolved[1].Tool.Name != coremodel.IntrinsicCloudWorkerProposeToolName {
 		t.Fatalf("private intrinsic was exposed: count=%d err=%v", len(resolved), err)
 	}
+	// The group may read the Worker inventory to answer whether earlier Worker
+	// work exists; destroying one or binding a hostname stays with the owner.
 	if _, err := resolved[0].Execute(context.Background(), IntrinsicExecutionRequest{Lease: lease}); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := resolved[1].Execute(context.Background(), IntrinsicExecutionRequest{Lease: lease}); err != nil {
+		t.Fatal(err)
+	}
 	allowed = false
-	if _, err := resolved[0].Execute(context.Background(), IntrinsicExecutionRequest{Lease: lease}); !errors.Is(err, ErrGroupAuthorization) || executions != 1 {
+	if _, err := resolved[1].Execute(context.Background(), IntrinsicExecutionRequest{Lease: lease}); !errors.Is(err, ErrGroupAuthorization) || executions != 2 {
 		t.Fatalf("revoked Worker offer executed: calls=%d err=%v", executions, err)
 	}
 }
@@ -535,6 +548,8 @@ func TestGroupGuidanceAllowsProposingAndKeepsTheOwnerApprovalGate(t *testing.T) 
 		"a group member's request is enough to propose",
 		"must not decline the capability as if it were unavailable",
 		"cloud_worker_run, which never creates or resizes a machine",
+		"Read the current Worker inventory with cloud_worker_inventory",
+		"never deny a completed Worker run, or repeat an approval demand the owner already satisfied, from memory alone",
 		"waits for the owner's own confirmation",
 		"tell the group the task is waiting for the owner",
 		"Do not claim access or successful actions without authoritative tool receipts",
