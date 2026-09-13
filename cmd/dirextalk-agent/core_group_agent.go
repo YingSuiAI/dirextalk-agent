@@ -20,6 +20,7 @@ type groupProduct interface {
 	PullGroupAgentRequests(context.Context, string) (capabilityclient.GroupAgentPage, error)
 	ListGroupAgentBindings(context.Context) (capabilityclient.GroupAgentBindings, error)
 	ReadGroupAgentTranscript(context.Context, string, int64, int64, int, string) (capabilityclient.GroupAgentHistory, error)
+	ReadGroupAgentMembers(context.Context, string, int64, int) (capabilityclient.GroupAgentMembers, error)
 	ValidateGroupAgentRequest(context.Context, string, int64) (capabilityclient.GroupAgentBindingCheck, error)
 	ReadGroupAgentHistory(context.Context, string, int64, int, string) (capabilityclient.GroupAgentHistory, error)
 	PublishGroupAgentReply(context.Context, capabilityclient.GroupAgentPublish) error

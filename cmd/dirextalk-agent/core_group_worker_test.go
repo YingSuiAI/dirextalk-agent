@@ -175,3 +175,24 @@ func TestGroupHistoryToolResultIsAValidObservation(t *testing.T) {
 		t.Fatalf("unexpected observation: %#v", result)
 	}
 }
+
+func TestGroupMembersToolResultIsAValidObservation(t *testing.T) {
+	result, err := groupMembersToolResult(
+		coreconversation.ToolCall{ID: uuid.NewString(), Name: groupMembersTool},
+		capabilityclient.GroupAgentMembers{Total: 3, Members: []capabilityclient.GroupAgentMember{
+			{MXID: "@owner:example.test", DisplayName: "Ott", Role: "owner"},
+			{MXID: "@member:example.test", DisplayName: "Demo5", Role: "member"},
+			{MXID: "@ying:example.test", DisplayName: "Ying", Role: "agent"},
+		}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := result.ModelObservationJSON(); err != nil {
+		t.Fatalf("group roster observation rejected: %v", err)
+	}
+	if result.Outcome != coreconversation.ToolOutcomeSuccess || result.IsError ||
+		!strings.Contains(result.Content, "Demo5") || !strings.Contains(result.Summary, "3") {
+		t.Fatalf("unexpected roster observation: %#v", result)
+	}
+}

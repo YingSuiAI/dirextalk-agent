@@ -25,10 +25,25 @@ type groupProductFake struct {
 	transcriptErr      error
 	transcriptRoom     string
 	transcriptRevision int64
+	members            capabilityclient.GroupAgentMembers
+	membersErr         error
+	membersRequestID   string
+	membersRevision    int64
+	membersLimit       int
 }
 
 func (f *groupProductFake) PullGroupAgentRequests(context.Context, string) (capabilityclient.GroupAgentPage, error) {
 	return f.page, nil
+}
+
+func (f *groupProductFake) ReadGroupAgentMembers(_ context.Context, requestID string, revision int64, limit int) (capabilityclient.GroupAgentMembers, error) {
+	if f.membersErr != nil {
+		return capabilityclient.GroupAgentMembers{}, f.membersErr
+	}
+	if requestID != f.membersRequestID || revision != f.membersRevision || limit != f.membersLimit {
+		return capabilityclient.GroupAgentMembers{}, errors.New("unexpected member scope")
+	}
+	return f.members, nil
 }
 
 func (f *groupProductFake) ListGroupAgentBindings(context.Context) (capabilityclient.GroupAgentBindings, error) {

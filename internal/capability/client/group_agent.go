@@ -157,6 +157,7 @@ func (c *Client) ReadGroupAgentTranscript(ctx context.Context, roomID string, re
 const (
 	groupHistoryMaxLimit  = 200
 	groupBindingsMaxCount = 50
+	groupMembersMaxLimit  = 200
 	groupCursorMaxBytes   = 4096
 )
 
@@ -280,4 +281,45 @@ func (c *Client) groupAgentMutation(ctx context.Context, id, op string, input an
 		return errors.New("group Agent Product mutation failed")
 	}
 	return nil
+}
+
+// GroupAgentMember is one currently joined group member as the Agent may see it.
+type GroupAgentMember struct {
+	MXID        string `json:"mxid"`
+	DisplayName string `json:"display_name,omitempty"`
+	Role        string `json:"role"`
+}
+
+type GroupAgentMembers struct {
+	Members []GroupAgentMember `json:"members"`
+	Total   int                `json:"total"`
+	HasMore bool               `json:"has_more"`
+}
+
+// ReadGroupAgentMembers reads the live joined roster of the request's own room.
+// It is room-scoped and request-scoped: no other room, contact list or private
+// member data is reachable.
+func (c *Client) ReadGroupAgentMembers(ctx context.Context, requestID string, revision int64, limit int) (GroupAgentMembers, error) {
+	var result GroupAgentMembers
+	if !validGroupRequestID(requestID) || revision <= 0 || limit < 1 || limit > groupMembersMaxLimit {
+		return result, errors.New("invalid group member reference")
+	}
+	err := c.groupAgentQuery(ctx, "members", map[string]any{"request_id": requestID, "binding_revision": revision, "limit": limit}, &result)
+	if err != nil {
+		return result, err
+	}
+	if result.Total < 0 || len(result.Members) > limit || result.Total < len(result.Members) {
+		return GroupAgentMembers{}, errors.New("invalid group member page")
+	}
+	for _, member := range result.Members {
+		if !validGroupMXID(member.MXID) {
+			return GroupAgentMembers{}, errors.New("invalid group member entry")
+		}
+		switch member.Role {
+		case "owner", "member", "agent":
+		default:
+			return GroupAgentMembers{}, errors.New("invalid group member role")
+		}
+	}
+	return result, nil
 }
