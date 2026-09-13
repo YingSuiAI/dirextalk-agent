@@ -496,7 +496,12 @@ func serveCore(cfg config.Config) error {
 		groupLoop = newGroupAgentLoop(productCapabilityClient, conversation, profiles, uint64(cfg.ProductCapabilityAccountGeneration), conversationStore)
 		groupCleaner = groupLoop
 		conversation.SetGroupAuthorizationGuard(groupLoop)
-		conversation.SetGroupExtensionResolver(&webSearchConversationResolver{base: groupMessageResolver{product: productCapabilityClient}, service: webSearchService})
+		// The group resolver chain mirrors the personal one: the same read-only
+		// GitHub tools, resolved with this group's own credential scope.
+		conversation.SetGroupExtensionResolver(&webSearchConversationResolver{
+			base:    &githubMCPConversationResolver{base: groupMessageResolver{product: productCapabilityClient}, service: githubService},
+			service: webSearchService,
+		})
 		if cloudComposition != nil {
 			// Group work may request a new isolated Worker with owner approval.
 			// Deliberately do not attach private GitHub, inventory, reuse or domain
