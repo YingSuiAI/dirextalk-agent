@@ -134,3 +134,30 @@ func groupHistoryToolResult(call coreconversation.ToolCall, history capabilitycl
 		Summary: fmt.Sprintf("Group history returned %d message(s)", len(history.Messages))}
 	return result.WithObservation(coreconversation.ToolOutcomeSuccess, result.Summary, coreconversation.ToolMutationNone), nil
 }
+
+// groupToolChain serves a group turn with the owner's whole tool chain plus the
+// room-scoped group tools. Private-context sources are filtered centrally by the
+// conversation service, so this chain deliberately mirrors the personal one.
+type groupToolChain struct {
+	base  coreconversation.ExtensionResolver
+	group coreconversation.ExtensionResolver
+}
+
+func (c groupToolChain) ResolveExtensions(ctx context.Context, selections []coreconversation.ExtensionSelection) ([]coreconversation.ResolvedExtension, error) {
+	out := make([]coreconversation.ResolvedExtension, 0)
+	if c.base != nil {
+		resolved, err := c.base.ResolveExtensions(ctx, selections)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, resolved...)
+	}
+	if c.group != nil {
+		resolved, err := c.group.ResolveExtensions(ctx, selections)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, resolved...)
+	}
+	return out, nil
+}

@@ -831,7 +831,7 @@ func (c TurnStartCommand) Validate() error {
 	if c.GroupOrigin != nil && (c.GroupOrigin.Validate() != nil || c.RequestID != c.GroupOrigin.RequestID ||
 		c.OwnerID != c.GroupOrigin.OwnerID || c.AccountGeneration != c.GroupOrigin.AccountGeneration ||
 		c.ConversationID != c.GroupOrigin.ConversationID() || len(c.AcceptedAttachmentIDs) != 0 ||
-		len(c.AttachmentSources) != 0 || c.ProfileSnapshot.SystemPrompt != "" || !c.ConstrainedWorkflow.IsZero() || validateGroupExtensions(c.ExtensionSnapshots) != nil) {
+		len(c.AttachmentSources) != 0 || c.ProfileSnapshot.SystemPrompt != "" || !c.ConstrainedWorkflow.IsZero() || len(filterGroupExtensions(c.ExtensionSnapshots)) != len(c.ExtensionSnapshots)) {
 		return ErrInvalid
 	}
 	if (c.TurnID != "" && !validUUID(c.TurnID)) || !validUUID(c.RequestID) || !validUUID(c.ProfileID) || (c.ConversationID != "" && !validUUID(c.ConversationID)) || c.ExpectedProfileRevision <= 0 || c.ExpectedCredentialVersion <= 0 {

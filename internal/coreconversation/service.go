@@ -2965,9 +2965,7 @@ func recordIntrinsicOrderCorrection(ctx context.Context, store OrderedConversati
 
 func (s *Service) resolveAcceptedTurnExtensions(ctx context.Context, snapshots []ExtensionExecutionSnapshot) ([]ResolvedExtension, error) {
 	if _, group := GroupOriginFromContext(ctx); group {
-		if err := validateGroupExtensions(snapshots); err != nil {
-			return nil, err
-		}
+		snapshots = filterGroupExtensions(snapshots)
 	}
 	if len(snapshots) == 0 {
 		return nil, nil

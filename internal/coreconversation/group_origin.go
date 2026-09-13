@@ -176,22 +176,43 @@ func (s *Service) extensionResolverForContext(ctx context.Context) ExtensionReso
 	return s.extensions
 }
 
-func validateGroupExtensions(snapshots []ExtensionExecutionSnapshot) error {
+// groupExtensionAllowed reports whether one extension may serve a group turn.
+//
+// The group reuses the owner's tool list: every non-private capability the
+// personal Agent has is available in the group too, resolved with that group's
+// own credentials. Only two things are excluded, and neither depends on a
+// credential:
+//
+//   - tools whose data is the owner's private context (private chats, other
+//     rooms, contacts, Knowledge, long-term memory, sending as the owner), and
+//   - tools that mutate or need an interactive confirmation; those keep the
+//     owner's private approval path.
+func groupExtensionAllowed(snapshot ExtensionExecutionSnapshot) bool {
+	if snapshot.Selection.Kind != ExtensionMCP || snapshot.SkillInstructions != "" ||
+		!snapshot.ReadOnly || snapshot.RequiresConfirmation {
+		return false
+	}
+	switch snapshot.Source {
+	case "group-message", "builtin:web_search:tavily", "github-mcp":
+		// "github-mcp" and "builtin:web_search:tavily" are scoped to the group's
+		// own credential; "group-message" is the room-scoped read tool.
+	default:
+		return false
+	}
+	return true
+}
+
+// filterGroupExtensions keeps the group-visible subset of the owner's tool list
+// and drops private-context tools instead of failing the turn: a tool that is
+// not available in a group must never stop the group Agent from answering.
+func filterGroupExtensions(snapshots []ExtensionExecutionSnapshot) []ExtensionExecutionSnapshot {
+	kept := make([]ExtensionExecutionSnapshot, 0, len(snapshots))
 	for _, snapshot := range snapshots {
-		if snapshot.Selection.Kind != ExtensionMCP || snapshot.SkillInstructions != "" ||
-			!snapshot.ReadOnly || snapshot.RequiresConfirmation {
-			return ErrGroupAuthorization
-		}
-		switch snapshot.Source {
-		case "group-message", "builtin:web_search:tavily", "github-mcp":
-			// "github-mcp" is allowed because the group resolver resolves it
-			// with the group's own credential scope; the owner's personal
-			// credential is never reachable from a group turn.
-		default:
-			return ErrGroupAuthorization
+		if groupExtensionAllowed(snapshot) {
+			kept = append(kept, snapshot)
 		}
 	}
-	return nil
+	return kept
 }
 
 func groupIntrinsicAllowed(name string) bool {

@@ -489,18 +489,21 @@ func serveCore(cfg config.Config) error {
 	if knowledgeComposition != nil {
 		conversationResolver = &knowledgeConversationResolver{base: conversationResolver, search: knowledgeComposition.domain}
 	}
-	conversation.SetExtensionResolver(&webSearchConversationResolver{base: &githubMCPConversationResolver{base: conversationResolver, service: githubService}, service: webSearchService})
+	fullResolver := &webSearchConversationResolver{base: &githubMCPConversationResolver{base: conversationResolver, service: githubService}, service: webSearchService}
+	conversation.SetExtensionResolver(fullResolver)
 	var groupLoop *groupAgentLoop
 	var groupCleaner coreLifecycleCleaner
 	if productCapabilityClient != nil {
 		groupLoop = newGroupAgentLoop(productCapabilityClient, conversation, profiles, uint64(cfg.ProductCapabilityAccountGeneration), conversationStore)
 		groupCleaner = groupLoop
 		conversation.SetGroupAuthorizationGuard(groupLoop)
-		// The group resolver chain mirrors the personal one: the same read-only
-		// GitHub tools, resolved with this group's own credential scope.
-		conversation.SetGroupExtensionResolver(&webSearchConversationResolver{
-			base:    &githubMCPConversationResolver{base: groupMessageResolver{product: productCapabilityClient}, service: githubService},
-			service: webSearchService,
+		// The group reuses the owner's whole tool chain. Credentials resolve by
+		// turn scope (the group's own set), and the conversation service drops
+		// private-context tools centrally, so a new tool never has to be wired
+		// twice.
+		conversation.SetGroupExtensionResolver(groupToolChain{
+			base:  fullResolver,
+			group: groupMessageResolver{product: productCapabilityClient},
 		})
 		if cloudComposition != nil {
 			// Group work may request a new isolated Worker with owner approval.

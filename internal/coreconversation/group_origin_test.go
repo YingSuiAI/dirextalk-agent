@@ -316,8 +316,9 @@ func TestGroupCapabilitiesDenyPrivateSourcesAndRevalidateBeforeEachTool(t *testi
 	snapshot := ExtensionExecutionSnapshot{Selection: selection, InstallationID: selection.ID, VersionID: "v1", Source: "group-message",
 		ContentDigest: selection.Digest, ArtifactDigest: selection.Digest, ReadOnly: true, ToolNames: []string{"group_read"}}
 	toolCalls := 0
+	current := snapshot
 	service.SetGroupExtensionResolver(extensionResolverFunc(func(context.Context, []ExtensionSelection) ([]ResolvedExtension, error) {
-		return []ResolvedExtension{{Selection: selection, Snapshot: snapshot, Tools: []coremodel.Tool{{Name: "group_read", InputSchema: map[string]any{"type": "object"}}},
+		return []ResolvedExtension{{Selection: current.Selection, Snapshot: current, Tools: []coremodel.Tool{{Name: "group_read", InputSchema: map[string]any{"type": "object"}}},
 			Execute: func(context.Context, ToolExecutionRequest) (ToolResult, error) { toolCalls++; return ToolResult{}, nil }}}, nil
 	}))
 	ctx := withGroupOrigin(context.Background(), origin)
@@ -332,11 +333,40 @@ func TestGroupCapabilitiesDenyPrivateSourcesAndRevalidateBeforeEachTool(t *testi
 	if _, err := resolved[0].Execute(ctx, ToolExecutionRequest{}); !errors.Is(err, ErrGroupAuthorization) || toolCalls != 1 {
 		t.Fatalf("revoked tool executed: calls=%d err=%v", toolCalls, err)
 	}
-	for _, source := range []string{"message-mcp", "github-mcp", "product-capability", "builtin:knowledge:semantic", "third-party"} {
+	// The group reuses the owner's tool list: a private-context source is
+	// dropped from the group turn instead of failing it.
+	for _, source := range []string{"message-mcp", "product-capability", "builtin:knowledge:semantic", "third-party"} {
 		private := snapshot
 		private.Source = source
-		if _, err := service.resolveAcceptedTurnExtensions(ctx, []ExtensionExecutionSnapshot{private}); !errors.Is(err, ErrGroupAuthorization) {
-			t.Fatalf("private source %q accepted: %v", source, err)
+		current = private
+		resolvedPrivate, err := service.resolveAcceptedTurnExtensions(ctx, []ExtensionExecutionSnapshot{private})
+		if err != nil || len(resolvedPrivate) != 0 {
+			t.Fatalf("private source %q reached the group: count=%d err=%v", source, len(resolvedPrivate), err)
+		}
+	}
+	// A non-private source stays available: the same credential scope rule
+	// applies, not source-by-source wiring.
+	for _, source := range []string{"github-mcp", "builtin:web_search:tavily", "group-message"} {
+		shared := snapshot
+		shared.Source = source
+		current = shared
+		resolvedShared, err := service.resolveAcceptedTurnExtensions(ctx, []ExtensionExecutionSnapshot{shared})
+		if err != nil || len(resolvedShared) != 1 {
+			t.Fatalf("shared source %q was dropped: count=%d err=%v", source, len(resolvedShared), err)
+		}
+	}
+	// A mutating or confirmation-gated tool stays on the owner's private path.
+	for _, mutate := range []func(*ExtensionExecutionSnapshot){
+		func(s *ExtensionExecutionSnapshot) { s.ReadOnly = false },
+		func(s *ExtensionExecutionSnapshot) { s.RequiresConfirmation = true },
+	} {
+		mutating := snapshot
+		mutating.Source = "github-mcp"
+		mutate(&mutating)
+		current = mutating
+		resolvedMutating, err := service.resolveAcceptedTurnExtensions(ctx, []ExtensionExecutionSnapshot{mutating})
+		if err != nil || len(resolvedMutating) != 0 {
+			t.Fatalf("mutating tool reached the group: count=%d err=%v", len(resolvedMutating), err)
 		}
 	}
 	if _, err := service.commitAuthorizedTurn(ctx, TurnLease{Turn: Turn{GroupOrigin: &origin}}, ChatResponse{}); !errors.Is(err, ErrGroupAuthorization) {
