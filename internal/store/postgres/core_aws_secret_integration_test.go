@@ -227,7 +227,7 @@ func TestCoreAWSPostgresNeutralCredentialTestReplaySurvivesRestart(t *testing.T)
 	firstAt := createdAt.Add(time.Minute)
 	service := coreaws.NewService(credentialStore, provider, func() time.Time { return firstAt })
 	const key = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
-	first, err := service.TestCredentialIdempotent(ctx, credentialID, 1, key)
+	first, err := service.TestCredentialIdempotent(ctx, coreaws.PersonalScope(), credentialID, 1, key)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -238,14 +238,14 @@ func TestCoreAWSPostgresNeutralCredentialTestReplaySurvivesRestart(t *testing.T)
 	if !leaseExpiresAt.After(firstAt) || completionGraceUntil.Before(leaseExpiresAt) {
 		t.Fatalf("claim lease window lease=%v grace=%v first_at=%v", leaseExpiresAt, completionGraceUntil, firstAt)
 	}
-	replay, err := service.TestCredentialIdempotent(ctx, credentialID, 1, key)
+	replay, err := service.TestCredentialIdempotent(ctx, coreaws.PersonalScope(), credentialID, 1, key)
 	if err != nil || replay != first {
 		t.Fatalf("same-process replay=%+v first=%+v err=%v", replay, first, err)
 	}
 	if provider.Calls() != 1 {
 		t.Fatalf("same-process provider calls=%d", provider.Calls())
 	}
-	if _, err := service.TestCredentialIdempotent(ctx, credentialID, 2, key); !errors.Is(err, coreaws.ErrIdempotencyConflict) {
+	if _, err := service.TestCredentialIdempotent(ctx, coreaws.PersonalScope(), credentialID, 2, key); !errors.Is(err, coreaws.ErrIdempotencyConflict) {
 		t.Fatalf("changed binding error=%v", err)
 	}
 	var replayText string
@@ -262,7 +262,7 @@ func TestCoreAWSPostgresNeutralCredentialTestReplaySurvivesRestart(t *testing.T)
 	}
 	restartedStore := NewCoreAWSStore(restartedRawStore)
 	restarted := coreaws.NewService(restartedStore, provider, func() time.Time { return firstAt.Add(time.Hour) })
-	afterRestart, err := restarted.TestCredentialIdempotent(ctx, credentialID, 1, key)
+	afterRestart, err := restarted.TestCredentialIdempotent(ctx, coreaws.PersonalScope(), credentialID, 1, key)
 	if err != nil || afterRestart != first {
 		t.Fatalf("restart replay=%+v first=%+v err=%v", afterRestart, first, err)
 	}
@@ -295,7 +295,7 @@ func TestCoreAWSPostgresNeutralCredentialTestClaimFailsClosedAfterCrash(t *testi
 	}
 	provider := &countingCredentialTestSTS{identity: coreaws.Identity{AccountID: "123456789012", UserARN: "arn:aws:iam::123456789012:user/claim", PrincipalID: "claim"}}
 	service := coreaws.NewService(credentialStore, provider, func() time.Time { return createdAt.Add(time.Minute) })
-	if _, err := service.TestCredentialIdempotent(ctx, credentialID, 1, key); !errors.Is(err, coreaws.ErrResponseUncertain) {
+	if _, err := service.TestCredentialIdempotent(ctx, coreaws.PersonalScope(), credentialID, 1, key); !errors.Is(err, coreaws.ErrResponseUncertain) {
 		t.Fatalf("retry after abandoned claim=%v, want response uncertain", err)
 	}
 	if provider.Calls() != 0 {
@@ -305,7 +305,7 @@ func TestCoreAWSPostgresNeutralCredentialTestClaimFailsClosedAfterCrash(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	replayed, err := service.TestCredentialIdempotent(ctx, credentialID, 1, key)
+	replayed, err := service.TestCredentialIdempotent(ctx, coreaws.PersonalScope(), credentialID, 1, key)
 	if err != nil || replayed != completed {
 		t.Fatalf("completed replay=%+v completed=%+v err=%v", replayed, completed, err)
 	}
@@ -335,7 +335,7 @@ func TestCoreAWSPostgresNeutralCredentialTestSameKeyWaitersReplayAfterSlowProvid
 		wg.Add(1)
 		go func(index int) {
 			defer wg.Done()
-			results[index], errs[index] = service.TestCredentialIdempotent(ctx, credentialID, 1, key)
+			results[index], errs[index] = service.TestCredentialIdempotent(ctx, coreaws.PersonalScope(), credentialID, 1, key)
 		}(i)
 		if i == 0 {
 			select {

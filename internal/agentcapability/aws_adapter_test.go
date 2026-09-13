@@ -88,7 +88,7 @@ func TestCoreAWSCapabilityTestCredentialIsDurablyIdempotent(t *testing.T) {
 	sts := &countingAWSTestSTS{identity: coreaws.Identity{AccountID: "123456789012", UserARN: "arn:aws:iam::123456789012:user/test", PrincipalID: "principal"}}
 	now := time.Date(2026, time.August, 6, 1, 2, 3, 0, time.UTC)
 	service := coreaws.NewService(coreaws.NewMemoryRepository(), sts, func() time.Time { return now })
-	if _, err := service.SaveCredential(ctx, coreaws.CredentialInput{ID: credentialID, Name: "prod", Region: "us-east-1", AccessKeyID: "access", SecretAccessKey: "secret", IdempotencyKey: "44444444-4444-4444-8444-444444444444"}); err != nil {
+	if _, err := service.SaveCredential(ctx, coreaws.PersonalScope(), coreaws.CredentialInput{ID: credentialID, Name: "prod", Region: "us-east-1", AccessKeyID: "access", SecretAccessKey: "secret", IdempotencyKey: "44444444-4444-4444-8444-444444444444"}); err != nil {
 		t.Fatal(err)
 	}
 	capability := NewCoreAWSCapability(service)

@@ -3,6 +3,7 @@ package postgres
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -74,47 +75,62 @@ func TestCoreAWSCredentialScopeListingIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := NewCoreAWSStore(s)
-	now := time.Now().UTC().Truncate(time.Microsecond)
-	personal := coreaws.RehydrateCredentials(uuid.NewString(), "scope-test", "us-east-1",
-		"123456789012", "arn:aws:iam::123456789012:user/scope-test",
-		[]byte("access"), []byte("secret"), nil, 1, 1, now, now)
-	personal.TestedAt = now
-	if _, err := store.CreateCredential(ctx, personal); err != nil {
-		t.Fatalf("create personal credential: %v", err)
-	}
-	// One durable row per scope: the group credential is the same envelope in a
-	// different scope, which the listing boundary must keep separate.
-	const roomID = "!group-room:example.test"
-	groupID := uuid.NewString()
-	if _, err := pool.Exec(ctx, `INSERT INTO core_aws_credentials(credential_id,name,region,secret_key_version,access_key_id_nonce,access_key_id_ciphertext,secret_access_key_nonce,secret_access_key_ciphertext,session_token_nonce,session_token_ciphertext,session_token_configured,account_id,user_arn,verified_revision,revision,tested_at,created_at,updated_at,scope,room_id)
-		SELECT $1,name,region,secret_key_version,access_key_id_nonce,access_key_id_ciphertext,secret_access_key_nonce,secret_access_key_ciphertext,session_token_nonce,session_token_ciphertext,session_token_configured,account_id,user_arn,verified_revision,revision,tested_at,created_at,updated_at,'group',$2
-		FROM core_aws_credentials WHERE credential_id=$3`, groupID, roomID, personal.ID); err != nil {
-		t.Fatalf("insert group credential: %v", err)
-	}
+	service := coreaws.NewService(store, nil, func() time.Time { return time.Now().UTC() })
 
-	personalPage, err := store.ListCredentialsScoped(ctx, "", 10, "")
+	const roomID = "!group-room:example.test"
+	create := func(scope coreaws.Scope, name string) coreaws.CredentialView {
+		view, err := service.SaveCredential(ctx, scope, coreaws.CredentialInput{
+			IdempotencyKey: uuid.NewString(), Name: name, Region: "us-east-1",
+			AccessKeyID: "access", SecretAccessKey: "secret",
+		})
+		if err != nil {
+			t.Fatalf("create %s credential: %v", name, err)
+		}
+		return view
+	}
+	// One active credential per scope: the owner's own set and each group keep
+	// their own row, created through the owner-facing service path.
+	personal := create(coreaws.PersonalScope(), "personal")
+	group := create(coreaws.GroupScope(roomID), "group")
+
+	personalPage, err := service.ListCredentials(ctx, coreaws.PersonalScope(), 10, "")
 	if err != nil || len(personalPage.Items) != 1 || personalPage.Items[0].ID != personal.ID {
 		t.Fatalf("personal scope page=%+v err=%v", personalPage, err)
 	}
-	groupPage, err := store.ListCredentialsScoped(ctx, roomID, 10, "")
-	if err != nil || len(groupPage.Items) != 1 || groupPage.Items[0].ID != groupID {
+	groupPage, err := service.ListCredentials(ctx, coreaws.GroupScope(roomID), 10, "")
+	if err != nil || len(groupPage.Items) != 1 || groupPage.Items[0].ID != group.ID {
 		t.Fatalf("group scope page=%+v err=%v", groupPage, err)
 	}
 	for _, other := range []string{"!another-room:example.test", "!third-room:example.test"} {
-		page, err := store.ListCredentialsScoped(ctx, other, 10, "")
+		page, err := service.ListCredentials(ctx, coreaws.GroupScope(other), 10, "")
 		if err != nil || len(page.Items) != 0 {
 			t.Fatalf("room %q saw another scope's credential: %+v err=%v", other, page, err)
 		}
 	}
-	// The default listing stays the owner's own scope.
-	legacy, err := store.ListCredentials(ctx, 10, "")
-	if err != nil || len(legacy.Items) != 1 || legacy.Items[0].ID != personal.ID {
-		t.Fatalf("default listing=%+v err=%v", legacy, err)
+	// Another scope can neither read nor mutate this group's credential.
+	if _, err := service.GetCredential(ctx, coreaws.PersonalScope(), group.ID); !errors.Is(err, coreaws.ErrNotFound) {
+		t.Fatalf("personal scope read the group credential: %v", err)
 	}
-	// One active credential per scope is a durable invariant.
-	if _, err := pool.Exec(ctx, `INSERT INTO core_aws_credentials(credential_id,name,region,secret_key_version,access_key_id_nonce,access_key_id_ciphertext,secret_access_key_nonce,secret_access_key_ciphertext,session_token_nonce,session_token_ciphertext,session_token_configured,account_id,user_arn,verified_revision,revision,tested_at,created_at,updated_at,scope,room_id)
-		SELECT $1,name,region,secret_key_version,access_key_id_nonce,access_key_id_ciphertext,secret_access_key_nonce,secret_access_key_ciphertext,session_token_nonce,session_token_ciphertext,session_token_configured,account_id,user_arn,verified_revision,revision,tested_at,created_at,updated_at,'group',$2
-		FROM core_aws_credentials WHERE credential_id=$3`, uuid.NewString(), roomID, personal.ID); err == nil {
-		t.Fatal("a second active credential in the same group scope was accepted")
+	if err := service.DeleteCredential(ctx, coreaws.PersonalScope(), group.ID, group.Revision, uuid.NewString()); !errors.Is(err, coreaws.ErrNotFound) {
+		t.Fatalf("personal scope deleted the group credential: %v", err)
 	}
+	if _, err := service.GetCredential(ctx, coreaws.GroupScope("!other-room:example.test"), group.ID); !errors.Is(err, coreaws.ErrNotFound) {
+		t.Fatalf("another room read the group credential: %v", err)
+	}
+	// The group disables its own credential without touching the owner's.
+	if err := service.DeleteCredential(ctx, coreaws.GroupScope(roomID), group.ID, group.Revision, uuid.NewString()); err != nil {
+		t.Fatalf("group delete: %v", err)
+	}
+	if page, err := service.ListCredentials(ctx, coreaws.GroupScope(roomID), 10, ""); err != nil || len(page.Items) != 0 {
+		t.Fatalf("group scope still lists its credential: %+v err=%v", page, err)
+	}
+	if view, err := service.GetCredential(ctx, coreaws.PersonalScope(), personal.ID); err != nil || view.ID != personal.ID {
+		t.Fatalf("personal credential changed: %+v err=%v", view, err)
+	}
+	// Deleting the owner's credential is still possible in its own scope, and
+	// then that scope may hold a new active credential again.
+	if err := service.DeleteCredential(ctx, coreaws.PersonalScope(), personal.ID, personal.Revision, uuid.NewString()); err != nil {
+		t.Fatalf("personal delete: %v", err)
+	}
+	_ = create(coreaws.PersonalScope(), "personal-again")
 }

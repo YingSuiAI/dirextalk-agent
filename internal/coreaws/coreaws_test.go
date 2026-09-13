@@ -47,23 +47,23 @@ func (guard credentialDeleteGuardStub) DeleteCredentialIfUnused(_ context.Contex
 func TestDeleteCredentialRejectsRetainedWorkerReference(t *testing.T) {
 	repository := NewMemoryRepository()
 	service := NewService(repository, nil, nil)
-	credential, err := service.SaveCredential(context.Background(), CredentialInput{IdempotencyKey: newUUID(), Name: "worker", Region: "us-east-1", AccessKeyID: "access", SecretAccessKey: "secret"})
+	credential, err := service.SaveCredential(context.Background(), PersonalScope(), CredentialInput{IdempotencyKey: newUUID(), Name: "worker", Region: "us-east-1", AccessKeyID: "access", SecretAccessKey: "secret"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	service.SetCredentialDeleteGuard(credentialDeleteGuardStub{retained: true})
-	if err = service.DeleteCredential(context.Background(), credential.ID, credential.Revision, newUUID()); !errors.Is(err, ErrCredentialInUse) {
+	if err = service.DeleteCredential(context.Background(), PersonalScope(), credential.ID, credential.Revision, newUUID()); !errors.Is(err, ErrCredentialInUse) {
 		t.Fatalf("delete error=%v", err)
 	}
-	if _, err = service.GetCredential(context.Background(), credential.ID); err != nil {
+	if _, err = service.GetCredential(context.Background(), PersonalScope(), credential.ID); err != nil {
 		t.Fatalf("guard deleted credential: %v", err)
 	}
 	readErr := errors.New("worker state unavailable")
 	service.SetCredentialDeleteGuard(credentialDeleteGuardStub{err: readErr})
-	if err = service.DeleteCredential(context.Background(), credential.ID, credential.Revision, newUUID()); !errors.Is(err, readErr) {
+	if err = service.DeleteCredential(context.Background(), PersonalScope(), credential.ID, credential.Revision, newUUID()); !errors.Is(err, readErr) {
 		t.Fatalf("guard read error=%v", err)
 	}
-	if _, err = service.GetCredential(context.Background(), credential.ID); err != nil {
+	if _, err = service.GetCredential(context.Background(), PersonalScope(), credential.ID); err != nil {
 		t.Fatalf("read error deleted credential: %v", err)
 	}
 }

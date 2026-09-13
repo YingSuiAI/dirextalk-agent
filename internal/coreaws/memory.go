@@ -204,7 +204,11 @@ func (r *MemoryRepository) GetCredentialRevision(_ context.Context, id string, r
 	}
 	return cloneCredential(c), nil
 }
-func (r *MemoryRepository) ListCredentials(_ context.Context, size int, token string) (CredentialPage, error) {
+func (r *MemoryRepository) ListCredentials(ctx context.Context, size int, token string) (CredentialPage, error) {
+	return r.ListCredentialsScoped(ctx, "", size, token)
+}
+
+func (r *MemoryRepository) ListCredentialsScoped(_ context.Context, roomID string, size int, token string) (CredentialPage, error) {
 	if size < 0 || size > 100 {
 		return CredentialPage{}, ErrInvalid
 	}
@@ -213,6 +217,9 @@ func (r *MemoryRepository) ListCredentials(_ context.Context, size int, token st
 	ids := make([]string, 0, len(r.credentials))
 	for id := range r.credentials {
 		if !r.disabledCredentials[id].IsZero() {
+			continue
+		}
+		if r.credentials[id].Scope.normalized().RoomID != strings.TrimSpace(roomID) {
 			continue
 		}
 		ids = append(ids, id)

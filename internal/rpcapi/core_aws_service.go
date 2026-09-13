@@ -28,7 +28,7 @@ func (s *CoreCloudControlService) CreateCredential(ctx context.Context, r *agent
 	if r == nil || !validCoreUUID(r.GetIdempotencyKey()) {
 		return nil, status.Error(codes.InvalidArgument, "idempotency_key is invalid")
 	}
-	v, err := s.service.SaveCredential(ctx, coreaws.CredentialInput{Name: r.GetName(), Region: r.GetRegion(), AccessKeyID: r.GetAccessKeyId(), SecretAccessKey: r.GetSecretAccessKey(), SessionToken: r.GetSessionToken(), IdempotencyKey: r.GetIdempotencyKey()})
+	v, err := s.service.SaveCredential(ctx, coreaws.PersonalScope(), coreaws.CredentialInput{Name: r.GetName(), Region: r.GetRegion(), AccessKeyID: r.GetAccessKeyId(), SecretAccessKey: r.GetSecretAccessKey(), SessionToken: r.GetSessionToken(), IdempotencyKey: r.GetIdempotencyKey()})
 	if err != nil {
 		return nil, coreAWSRPCError(err)
 	}
@@ -39,7 +39,7 @@ func (s *CoreCloudControlService) GetCredential(ctx context.Context, r *agentv1.
 	if r == nil || !validCoreUUID(r.GetCredentialId()) {
 		return nil, status.Error(codes.InvalidArgument, "credential_id is invalid")
 	}
-	v, err := s.service.GetCredential(ctx, r.GetCredentialId())
+	v, err := s.service.GetCredential(ctx, coreaws.PersonalScope(), r.GetCredentialId())
 	if err != nil {
 		return nil, coreAWSRPCError(err)
 	}
@@ -54,7 +54,7 @@ func (s *CoreCloudControlService) ListCredentials(ctx context.Context, r *agentv
 	if err != nil {
 		return nil, err
 	}
-	p, err := s.service.ListCredentials(ctx, limit, r.GetPageToken())
+	p, err := s.service.ListCredentials(ctx, coreaws.PersonalScope(), limit, r.GetPageToken())
 	if err != nil {
 		return nil, coreAWSRPCError(err)
 	}
@@ -73,7 +73,7 @@ func (s *CoreCloudControlService) UpdateCredential(ctx context.Context, r *agent
 	// private payload while replacing only values explicitly supplied here.
 	name, region := r.GetName(), r.GetRegion()
 	if name == "" || region == "" {
-		old, err := s.service.GetCredential(ctx, r.GetCredentialId())
+		old, err := s.service.GetCredential(ctx, coreaws.PersonalScope(), r.GetCredentialId())
 		if err != nil {
 			return nil, coreAWSRPCError(err)
 		}
@@ -84,7 +84,7 @@ func (s *CoreCloudControlService) UpdateCredential(ctx context.Context, r *agent
 			region = old.Region
 		}
 	}
-	v, err := s.service.ReplaceCredential(ctx, coreaws.CredentialInput{ID: r.GetCredentialId(), Name: name, Region: region, AccessKeyID: r.GetAccessKeyId(), SecretAccessKey: r.GetSecretAccessKey(), SessionToken: r.GetSessionToken()}, r.GetExpectedRevision(), r.GetIdempotencyKey())
+	v, err := s.service.ReplaceCredential(ctx, coreaws.PersonalScope(), coreaws.CredentialInput{ID: r.GetCredentialId(), Name: name, Region: region, AccessKeyID: r.GetAccessKeyId(), SecretAccessKey: r.GetSecretAccessKey(), SessionToken: r.GetSessionToken()}, r.GetExpectedRevision(), r.GetIdempotencyKey())
 	if err != nil {
 		return nil, coreAWSRPCError(err)
 	}
@@ -95,7 +95,7 @@ func (s *CoreCloudControlService) DeleteCredential(ctx context.Context, r *agent
 	if r == nil || !validCoreUUID(r.GetCredentialId()) || !validCoreUUID(r.GetIdempotencyKey()) || r.GetExpectedRevision() < 1 {
 		return nil, status.Error(codes.InvalidArgument, "invalid credential deletion")
 	}
-	if err := s.service.DeleteCredential(ctx, r.GetCredentialId(), r.GetExpectedRevision(), r.GetIdempotencyKey()); err != nil {
+	if err := s.service.DeleteCredential(ctx, coreaws.PersonalScope(), r.GetCredentialId(), r.GetExpectedRevision(), r.GetIdempotencyKey()); err != nil {
 		return nil, coreAWSRPCError(err)
 	}
 	return &agentv1.CoreCloudControlServiceDeleteCredentialResponse{}, nil

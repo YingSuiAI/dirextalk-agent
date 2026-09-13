@@ -50,6 +50,36 @@ func (e *CredentialTestInProgressError) Is(target error) bool {
 	return target == ErrCredentialTestInProgress
 }
 
+// Scope identifies one independent cloud credential set: the owner's own
+// (RoomID empty) or one group the owner shares Ying with. The room comes from
+// the authenticated owner's request, never from a model or a group member.
+type Scope struct {
+	RoomID string
+}
+
+// PersonalScope is the owner's own cloud credential set.
+func PersonalScope() Scope { return Scope{} }
+
+// GroupScope is one group's independent cloud credential set.
+func GroupScope(roomID string) Scope { return Scope{RoomID: strings.TrimSpace(roomID)} }
+
+// Normalize trims the room so persistence and comparison agree.
+func (s Scope) Normalize() Scope { return Scope{RoomID: strings.TrimSpace(s.RoomID)} }
+
+func (s Scope) normalized() Scope { return s.Normalize() }
+
+// Personal reports whether this scope is the owner's own credentials.
+func (s Scope) Personal() bool { return s.normalized().RoomID == "" }
+
+// Equal reports whether two scopes address the same credential set.
+func (s Scope) Equal(other Scope) bool { return s.normalized() == other.normalized() }
+
+// valid reports whether this scope may address a credential set.
+func (s Scope) valid() bool {
+	room := s.normalized().RoomID
+	return room == "" || (strings.HasPrefix(room, "!") && len(room) <= 1024)
+}
+
 type Credentials struct {
 	ID               string
 	Name             string
@@ -62,6 +92,9 @@ type Credentials struct {
 	TestedAt         time.Time
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
+	// Scope is the credential set this row belongs to. It is never exposed
+	// through an ordinary API view.
+	Scope Scope
 }
 
 // RehydrateCredentials reconstructs durable credentials inside the trusted

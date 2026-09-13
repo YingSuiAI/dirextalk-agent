@@ -56,7 +56,7 @@ func TestMemoryCredentialTestClaimFailsClosedAfterUncertainCrash(t *testing.T) {
 	}
 	sts := &credentialSTSStub{identity: Identity{AccountID: "123456789012", UserARN: "arn:aws:iam::123456789012:user/claim", PrincipalID: "claim"}}
 	service := NewService(repo, sts, func() time.Time { return time.Unix(2, 0) })
-	if _, err := service.TestCredentialIdempotent(context.Background(), credentialID, 1, key); !errors.Is(err, ErrResponseUncertain) {
+	if _, err := service.TestCredentialIdempotent(context.Background(), PersonalScope(), credentialID, 1, key); !errors.Is(err, ErrResponseUncertain) {
 		t.Fatalf("retry after abandoned claim=%v, want response uncertain", err)
 	}
 	if sts.calls != 0 {
@@ -66,7 +66,7 @@ func TestMemoryCredentialTestClaimFailsClosedAfterUncertainCrash(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	replayed, err := service.TestCredentialIdempotent(context.Background(), credentialID, 1, key)
+	replayed, err := service.TestCredentialIdempotent(context.Background(), PersonalScope(), credentialID, 1, key)
 	if err != nil || replayed != completed {
 		t.Fatalf("completed replay=%+v completed=%+v err=%v", replayed, completed, err)
 	}
@@ -86,7 +86,7 @@ func TestMemoryCredentialTestProviderRunsOutsideRepositoryMutex(t *testing.T) {
 	service := NewService(repo, provider, func() time.Time { return time.Unix(2, 0) })
 	result := make(chan error, 1)
 	go func() {
-		_, err := service.TestCredentialIdempotent(context.Background(), credentialID, 1, key)
+		_, err := service.TestCredentialIdempotent(context.Background(), PersonalScope(), credentialID, 1, key)
 		result <- err
 	}()
 	select {
@@ -131,7 +131,7 @@ func TestMemoryCredentialTestSameKeyWaitersReplayAfterSlowProvider(t *testing.T)
 		wg.Add(1)
 		go func(index int) {
 			defer wg.Done()
-			results[index], errs[index] = service.TestCredentialIdempotent(context.Background(), credentialID, 1, key)
+			results[index], errs[index] = service.TestCredentialIdempotent(context.Background(), PersonalScope(), credentialID, 1, key)
 		}(i)
 		if i == 0 {
 			select {
@@ -196,7 +196,7 @@ func TestMemoryCredentialTestFinalizeUsesBoundedContextAndKeepsFence(t *testing.
 			service := NewService(repo, testCase.provider, time.Now)
 			service.credentialTestFinalizeTimeout = 20 * time.Millisecond
 			started := time.Now()
-			if _, err := service.TestCredentialIdempotent(context.Background(), credentialID, 1, key); !errors.Is(err, ErrResponseUncertain) {
+			if _, err := service.TestCredentialIdempotent(context.Background(), PersonalScope(), credentialID, 1, key); !errors.Is(err, ErrResponseUncertain) {
 				t.Fatalf("finalize error=%v, want response uncertain", err)
 			}
 			if elapsed := time.Since(started); elapsed > time.Second {
@@ -225,7 +225,7 @@ func TestMemoryCredentialTestInProgressCancellationDoesNotMutateClaim(t *testing
 	service := NewService(repo, provider, time.Now)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := service.TestCredentialIdempotent(ctx, credentialID, 1, key); !errors.Is(err, ErrResponseUncertain) {
+	if _, err := service.TestCredentialIdempotent(ctx, PersonalScope(), credentialID, 1, key); !errors.Is(err, ErrResponseUncertain) {
 		t.Fatalf("canceled in-progress retry=%v, want response uncertain", err)
 	}
 	if provider.calls != 0 {
@@ -245,10 +245,10 @@ func TestMemoryCredentialTestProviderFailureHasExactReplayReceipt(t *testing.T) 
 	}
 	provider := &credentialSTSStub{err: errors.New("provider unavailable")}
 	service := NewService(repo, provider, time.Now)
-	if _, err := service.TestCredentialIdempotent(context.Background(), credentialID, 1, key); !errors.Is(err, ErrProvider) {
+	if _, err := service.TestCredentialIdempotent(context.Background(), PersonalScope(), credentialID, 1, key); !errors.Is(err, ErrProvider) {
 		t.Fatalf("first provider failure=%v, want provider error", err)
 	}
-	if _, err := service.TestCredentialIdempotent(context.Background(), credentialID, 1, key); !errors.Is(err, ErrProvider) {
+	if _, err := service.TestCredentialIdempotent(context.Background(), PersonalScope(), credentialID, 1, key); !errors.Is(err, ErrProvider) {
 		t.Fatalf("replayed provider failure=%v, want exact provider error", err)
 	}
 	if provider.calls != 1 {

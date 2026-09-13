@@ -12,7 +12,14 @@ const (
 	credentialTestFinalizeTimeout = 5 * time.Second
 )
 
-func (s *Service) SaveCredential(ctx context.Context, in CredentialInput) (CredentialView, error) {
+// SaveCredential creates one credential in the given scope. The owner's own
+// Agent uses the personal scope; a group's scope is chosen by the authenticated
+// owner request and never by a model or a group member.
+func (s *Service) SaveCredential(ctx context.Context, scope Scope, in CredentialInput) (CredentialView, error) {
+	scope = scope.normalized()
+	if !scope.valid() {
+		return CredentialView{}, ErrInvalid
+	}
 	if s == nil || s.repo == nil {
 		return CredentialView{}, ErrInvalid
 	}
@@ -39,7 +46,7 @@ func (s *Service) SaveCredential(ctx context.Context, in CredentialInput) (Crede
 		id = newUUID()
 	}
 	now := s.now().UTC()
-	c := Credentials{ID: id, Name: strings.TrimSpace(in.Name), Region: strings.TrimSpace(in.Region), private: &credentialPayload{accessKeyID: in.AccessKeyID, secretAccessKey: in.SecretAccessKey, sessionToken: in.SessionToken}, Revision: 1, CreatedAt: now, UpdatedAt: now}
+	c := Credentials{ID: id, Name: strings.TrimSpace(in.Name), Region: strings.TrimSpace(in.Region), private: &credentialPayload{accessKeyID: in.AccessKeyID, secretAccessKey: in.SecretAccessKey, sessionToken: in.SessionToken}, Revision: 1, CreatedAt: now, UpdatedAt: now, Scope: scope}
 	if err := c.Validate(); err != nil {
 		return CredentialView{}, err
 	}
@@ -50,17 +57,28 @@ func (s *Service) SaveCredential(ctx context.Context, in CredentialInput) (Crede
 	v, e := s.repo.CreateCredential(ctx, c)
 	return v.View(), e
 }
-func (s *Service) GetCredential(ctx context.Context, id string) (CredentialView, error) {
+func (s *Service) GetCredential(ctx context.Context, scope Scope, id string) (CredentialView, error) {
 	c, e := s.repo.GetCredential(ctx, id)
 	if e != nil {
 		return CredentialView{}, e
 	}
+	if !c.Scope.Equal(scope) {
+		return CredentialView{}, ErrNotFound
+	}
 	return c.View(), nil
 }
-func (s *Service) ListCredentials(ctx context.Context, size int, token string) (CredentialPage, error) {
-	return s.repo.ListCredentials(ctx, size, token)
+func (s *Service) ListCredentials(ctx context.Context, scope Scope, size int, token string) (CredentialPage, error) {
+	scope = scope.normalized()
+	if !scope.valid() {
+		return CredentialPage{}, ErrInvalid
+	}
+	return s.repo.ListCredentialsScoped(ctx, scope.RoomID, size, token)
 }
-func (s *Service) ReplaceCredential(ctx context.Context, in CredentialInput, expected int64, idem ...string) (CredentialView, error) {
+func (s *Service) ReplaceCredential(ctx context.Context, scope Scope, in CredentialInput, expected int64, idem ...string) (CredentialView, error) {
+	scope = scope.normalized()
+	if !scope.valid() {
+		return CredentialView{}, ErrInvalid
+	}
 	key := ""
 	if len(idem) > 0 {
 		key = idem[0]
@@ -93,7 +111,11 @@ func (s *Service) ReplaceCredential(ctx context.Context, in CredentialInput, exp
 	if e != nil {
 		return CredentialView{}, e
 	}
+	if !old.Scope.Equal(scope) {
+		return CredentialView{}, ErrNotFound
+	}
 	c := old
+	c.Scope = scope
 	c.Name = strings.TrimSpace(in.Name)
 	c.Region = strings.TrimSpace(in.Region)
 	if c.private == nil {
@@ -125,7 +147,11 @@ func (s *Service) ReplaceCredential(ctx context.Context, in CredentialInput, exp
 	view := v.View()
 	return view, nil
 }
-func (s *Service) DeleteCredential(ctx context.Context, id string, expected int64, idem ...string) error {
+func (s *Service) DeleteCredential(ctx context.Context, scope Scope, id string, expected int64, idem ...string) error {
+	scope = scope.normalized()
+	if !scope.valid() {
+		return ErrInvalid
+	}
 	key := ""
 	if len(idem) > 0 {
 		key = idem[0]
@@ -138,6 +164,13 @@ func (s *Service) DeleteCredential(ctx context.Context, id string, expected int6
 	}
 	if !validUUID(id) || expected < 1 {
 		return ErrInvalid
+	}
+	existing, e := s.repo.GetCredential(ctx, id)
+	if e != nil {
+		return e
+	}
+	if !existing.Scope.Equal(scope) {
+		return ErrNotFound
 	}
 	digest := canonicalDigest(struct {
 		ID       string
@@ -158,13 +191,16 @@ func (s *Service) DeleteCredential(ctx context.Context, id string, expected int6
 	}
 	return err
 }
-func (s *Service) TestCredential(ctx context.Context, id string) (CredentialTest, error) {
+func (s *Service) TestCredential(ctx context.Context, scope Scope, id string) (CredentialTest, error) {
 	if s.sts == nil {
 		return CredentialTest{}, ErrProvider
 	}
 	c, e := s.repo.GetCredential(ctx, id)
 	if e != nil {
 		return CredentialTest{}, e
+	}
+	if !c.Scope.Equal(scope) {
+		return CredentialTest{}, ErrNotFound
 	}
 	identity, e := s.sts.GetCallerIdentity(ctx, c.handle())
 	if e != nil {
@@ -186,9 +222,16 @@ func (s *Service) TestCredential(ctx context.Context, id string) (CredentialTest
 // row lock, or process-global mutex held.  A crash or failed completion leaves
 // the claim in an uncertain state and future retries fail closed rather than
 // issuing a second provider request.
-func (s *Service) TestCredentialIdempotent(ctx context.Context, id string, expectedRevision int64, idempotencyKey string) (CredentialTest, error) {
+func (s *Service) TestCredentialIdempotent(ctx context.Context, scope Scope, id string, expectedRevision int64, idempotencyKey string) (CredentialTest, error) {
 	if s == nil || s.repo == nil || !validUUID(id) || !validUUID(idempotencyKey) || expectedRevision < 1 {
 		return CredentialTest{}, ErrInvalid
+	}
+	scoped, e := s.repo.GetCredential(ctx, id)
+	if e != nil {
+		return CredentialTest{}, e
+	}
+	if !scoped.Scope.Equal(scope) {
+		return CredentialTest{}, ErrNotFound
 	}
 	if s.sts == nil {
 		return CredentialTest{}, ErrProvider

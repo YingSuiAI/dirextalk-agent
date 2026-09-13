@@ -15,6 +15,7 @@ import (
 type capabilityWebSearchRepo struct {
 	owner      string
 	generation int64
+	resetRoom  string
 	resolved   corewebsearch.ResolvedConfig
 }
 
@@ -41,7 +42,8 @@ func (r *capabilityWebSearchRepo) Update(_ context.Context, mutation corewebsear
 	r.generation = mutation.AccountGeneration
 	return r.resolved.Config, nil
 }
-func (r *capabilityWebSearchRepo) DeleteGroupScope(context.Context, corewebsearch.Scope, string) error {
+func (r *capabilityWebSearchRepo) DeleteGroupScope(_ context.Context, scope corewebsearch.Scope, _ string) error {
+	r.resetRoom = scope.RoomID
 	return nil
 }
 
@@ -67,12 +69,15 @@ func TestWebSearchCapabilityUsesAuthenticatedOwnerAndExactSchemas(t *testing.T) 
 	}
 	capability := NewCoreWebSearchCapability(service)
 	descriptor := capability.Descriptor()
-	if descriptor.GetCapabilityId() != "agent.web_search.v1" || len(descriptor.GetOperations()) != 3 {
+	if descriptor.GetCapabilityId() != "agent.web_search.v1" || len(descriptor.GetOperations()) != 4 {
 		t.Fatalf("descriptor=%#v", descriptor)
 	}
 	operations := map[string]*capv1.OperationDescriptor{}
 	for _, operation := range descriptor.GetOperations() {
 		operations[operation.GetOperationId()] = operation
+	}
+	if !strings.Contains(operations["reset_group_config"].GetInputSchemaJson(), `"room_id"`) {
+		t.Fatal("group reset schema did not require a room scope")
 	}
 	if operations["test"].GetOperationType() != capv1.OperationType_OPERATION_TYPE_MUTATION {
 		t.Fatal("test writes tested_at and must use mutation operation semantics")
@@ -83,6 +88,13 @@ func TestWebSearchCapabilityUsesAuthenticatedOwnerAndExactSchemas(t *testing.T) 
 	result, err := capability.HandleOperation(capabilityTestContext(), "get_config", []byte(`{}`))
 	if err != nil || repository.owner != "owner-1" || repository.generation != 1 || strings.Contains(string(result), "tvly-secret") {
 		t.Fatalf("get result=%s owner=%q generation=%d err=%v", result, repository.owner, repository.generation, err)
+	}
+	reset, _ := json.Marshal(map[string]any{"idempotency_key": uuid.NewString(), "room_id": "!group-room:example.test"})
+	if _, err = capability.HandleOperation(capabilityTestContext(), "reset_group_config", reset); err != nil {
+		t.Fatalf("group reset: %v", err)
+	}
+	if repository.resetRoom != "!group-room:example.test" {
+		t.Fatalf("group reset used scope %q", repository.resetRoom)
 	}
 	enabled := true
 	update, _ := json.Marshal(map[string]any{"idempotency_key": uuid.NewString(), "expected_revision": 2, "enabled": enabled, "provider": "tavily", "api_key": "tvly-rotate"})

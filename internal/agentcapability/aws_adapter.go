@@ -76,6 +76,10 @@ func (c *coreAWSCapability) HandleOperation(ctx context.Context, operationID str
 	if c.service == nil {
 		return nil, coreaws.ErrInvalid
 	}
+	// The owner configures both scopes explicitly: an empty room_id is the
+	// owner's own credential set, a room_id is that group's. A group member or a
+	// model can never choose the scope.
+	scope := coreaws.GroupScope(stringValue(in, "room_id"))
 	switch operationID {
 	case "create_credential":
 		key, err := requiredAWSUUID(in, "idempotency_key")
@@ -90,17 +94,17 @@ func (c *coreAWSCapability) HandleOperation(ctx context.Context, operationID str
 		if err != nil {
 			return nil, err
 		}
-		view, err := c.service.SaveCredential(ctx, coreaws.CredentialInput{IdempotencyKey: key, Name: stringValue(in, "name"), Region: stringValue(in, "region"), AccessKeyID: access, SecretAccessKey: secret, SessionToken: stringValue(in, "session_token")})
+		view, err := c.service.SaveCredential(ctx, scope, coreaws.CredentialInput{IdempotencyKey: key, Name: stringValue(in, "name"), Region: stringValue(in, "region"), AccessKeyID: access, SecretAccessKey: secret, SessionToken: stringValue(in, "session_token")})
 		return marshalResult(map[string]any{"credential": awsCredentialView(view)}, err)
 	case "get_credential":
 		id, err := requiredAWSUUID(in, "credential_id")
 		if err != nil {
 			return nil, err
 		}
-		view, err := c.service.GetCredential(ctx, id)
+		view, err := c.service.GetCredential(ctx, scope, id)
 		return marshalResult(map[string]any{"credential": awsCredentialView(view)}, err)
 	case "list_credentials":
-		page, err := c.service.ListCredentials(ctx, awsPageLimit(in), stringValue(in, "page_token"))
+		page, err := c.service.ListCredentials(ctx, scope, awsPageLimit(in), stringValue(in, "page_token"))
 		if err != nil {
 			return nil, err
 		}
@@ -122,7 +126,7 @@ func (c *coreAWSCapability) HandleOperation(ctx context.Context, operationID str
 		if expected < 1 {
 			return nil, coreaws.ErrInvalid
 		}
-		current, err := c.service.GetCredential(ctx, id)
+		current, err := c.service.GetCredential(ctx, scope, id)
 		if err != nil {
 			return nil, err
 		}
@@ -133,7 +137,7 @@ func (c *coreAWSCapability) HandleOperation(ctx context.Context, operationID str
 		if region == "" {
 			region = current.Region
 		}
-		view, err := c.service.ReplaceCredential(ctx, coreaws.CredentialInput{ID: id, Name: name, Region: region, AccessKeyID: unmaskAWSString(in, "access_key_id"), SecretAccessKey: unmaskAWSString(in, "secret_access_key"), SessionToken: unmaskAWSString(in, "session_token")}, expected, key)
+		view, err := c.service.ReplaceCredential(ctx, scope, coreaws.CredentialInput{ID: id, Name: name, Region: region, AccessKeyID: unmaskAWSString(in, "access_key_id"), SecretAccessKey: unmaskAWSString(in, "secret_access_key"), SessionToken: unmaskAWSString(in, "session_token")}, expected, key)
 		return marshalResult(map[string]any{"credential": awsCredentialView(view)}, err)
 	case "delete_credential":
 		id, err := requiredAWSUUID(in, "credential_id")
@@ -148,7 +152,7 @@ func (c *coreAWSCapability) HandleOperation(ctx context.Context, operationID str
 		if expected < 1 {
 			return nil, coreaws.ErrInvalid
 		}
-		if err := c.service.DeleteCredential(ctx, id, expected, key); err != nil {
+		if err := c.service.DeleteCredential(ctx, scope, id, expected, key); err != nil {
 			return nil, err
 		}
 		return marshalResult(map[string]any{"credential_id": id, "deleted": true}, nil)
@@ -165,7 +169,7 @@ func (c *coreAWSCapability) HandleOperation(ctx context.Context, operationID str
 		if expected < 1 {
 			return nil, coreaws.ErrInvalid
 		}
-		test, err := c.service.TestCredentialIdempotent(ctx, id, expected, key)
+		test, err := c.service.TestCredentialIdempotent(ctx, scope, id, expected, key)
 		return marshalResult(awsCredentialTest(test), err)
 	default:
 		return nil, coreaws.ErrInvalid
@@ -187,10 +191,10 @@ func decodeAWSInput(raw []byte, allowed map[string]struct{}) (map[string]json.Ra
 
 func awsFields(operation string) map[string]struct{} {
 	values := map[string][]string{
-		"create_credential": {"idempotency_key", "name", "region", "access_key_id", "secret_access_key", "session_token"},
-		"get_credential":    {"credential_id"}, "list_credentials": {"page_size", "page_token"},
-		"update_credential": {"idempotency_key", "credential_id", "expected_revision", "name", "region", "access_key_id", "secret_access_key", "session_token"},
-		"delete_credential": {"idempotency_key", "credential_id", "expected_revision"}, "test_credential": {"credential_id", "expected_revision", "idempotency_key"},
+		"create_credential": {"idempotency_key", "name", "region", "access_key_id", "secret_access_key", "session_token", "room_id"},
+		"get_credential":    {"credential_id", "room_id"}, "list_credentials": {"page_size", "page_token", "room_id"},
+		"update_credential": {"idempotency_key", "credential_id", "expected_revision", "name", "region", "access_key_id", "secret_access_key", "session_token", "room_id"},
+		"delete_credential": {"idempotency_key", "credential_id", "expected_revision", "room_id"}, "test_credential": {"credential_id", "expected_revision", "idempotency_key", "room_id"},
 	}
 	out := map[string]struct{}{}
 	for _, key := range values[operation] {
