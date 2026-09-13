@@ -47,6 +47,7 @@ func TestBundleContainsCoreV1Migrations(t *testing.T) {
 	wantEntries = append(wantEntries, "000036_credential_scopes.up.sql")
 	wantEntries = append(wantEntries, "000037_web_search_credential_scopes.up.sql")
 	wantEntries = append(wantEntries, "000038_group_model_bindings.up.sql")
+	wantEntries = append(wantEntries, "000039_aws_credential_scopes.up.sql")
 	if !reflect.DeepEqual(entries, wantEntries) {
 		t.Fatalf("entries=%v, want the immutable baseline plus provenance, AWS claim, and Cloud Worker migrations", entries)
 	}

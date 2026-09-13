@@ -3047,3 +3047,15 @@ CREATE TABLE core_group_model_bindings (
     PRIMARY KEY (owner_id, account_generation, room_id)
 );
 -- dirextalk-agent migration end 000038_group_model_bindings.up.sql
+-- dirextalk-agent migration begin 000039_aws_credential_scopes.up.sql
+-- AWS credentials follow the same scope model as GitHub and Web search: the
+-- owner keeps one personal cloud credential, and every group the owner shares
+-- Ying with can keep its own. Existing rows stay personal. A group with its own
+-- row uses only that row; a group without one keeps today's behaviour of
+-- inheriting the owner's credential, and a group row that exists but cannot be
+-- used fails closed instead of silently spending on the personal credential.
+ALTER TABLE core_aws_credentials ADD COLUMN scope text NOT NULL DEFAULT 'personal' CHECK (scope IN ('personal','group'));
+ALTER TABLE core_aws_credentials ADD COLUMN room_id text NOT NULL DEFAULT '' CHECK (length(room_id) <= 1024);
+ALTER TABLE core_aws_credentials ADD CONSTRAINT core_aws_credentials_scope_room CHECK ((scope = 'group') = (room_id <> ''));
+CREATE UNIQUE INDEX core_aws_credentials_scope_room_idx ON core_aws_credentials(scope, room_id) WHERE disabled_at IS NULL;
+-- dirextalk-agent migration end 000039_aws_credential_scopes.up.sql

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreaws"
@@ -199,10 +200,21 @@ func (s *CoreAWSStore) GetCredentialRevision(ctx context.Context, id string, rev
 	return s.scanCredentialRow(s.store.pool.QueryRow(ctx, `SELECT c.credential_id::text,c.name,r.region,r.secret_key_version,r.access_key_id_nonce,r.access_key_id_ciphertext,r.secret_access_key_nonce,r.secret_access_key_ciphertext,r.session_token_nonce,r.session_token_ciphertext,COALESCE(e.account_id,''),COALESCE(e.user_arn,''),CASE WHEN e.tested_at IS NULL THEN 0 ELSE r.revision END,r.revision,e.tested_at,r.created_at,COALESCE(e.tested_at,r.created_at) FROM core_aws_credentials c JOIN core_aws_credential_revisions r ON r.credential_id=c.credential_id LEFT JOIN core_aws_credential_revision_evidence e ON e.credential_id=r.credential_id AND e.revision=r.revision WHERE c.credential_id=$1 AND r.revision=$2`, id, revision))
 }
 func (s *CoreAWSStore) ListCredentials(ctx context.Context, size int, token string) (coreaws.CredentialPage, error) {
+	return s.ListCredentialsScoped(ctx, "", size, token)
+}
+
+// ListCredentialsScoped lists the credentials of one scope: the owner's own
+// (roomID empty) or one group's. Scope is never taken from a model or tool
+// argument, only from the authenticated caller.
+func (s *CoreAWSStore) ListCredentialsScoped(ctx context.Context, roomID string, size int, token string) (coreaws.CredentialPage, error) {
 	if size < 0 || size > 100 {
 		return coreaws.CredentialPage{}, coreaws.ErrInvalid
 	}
-	rows, e := s.store.pool.Query(ctx, `SELECT credential_id::text,name,region,account_id,user_arn,verified_revision,revision,tested_at,created_at,updated_at,TRUE,TRUE,session_token_configured FROM core_aws_credentials WHERE disabled_at IS NULL AND credential_id::text>$1 ORDER BY credential_id LIMIT $2`, token, size+1)
+	scopeKind, scopedRoom := "personal", ""
+	if trimmed := strings.TrimSpace(roomID); trimmed != "" {
+		scopeKind, scopedRoom = "group", trimmed
+	}
+	rows, e := s.store.pool.Query(ctx, `SELECT credential_id::text,name,region,account_id,user_arn,verified_revision,revision,tested_at,created_at,updated_at,TRUE,TRUE,session_token_configured FROM core_aws_credentials WHERE disabled_at IS NULL AND scope=$1 AND room_id=$2 AND credential_id::text>$3 ORDER BY credential_id LIMIT $4`, scopeKind, scopedRoom, token, size+1)
 	if e != nil {
 		return coreaws.CredentialPage{}, e
 	}

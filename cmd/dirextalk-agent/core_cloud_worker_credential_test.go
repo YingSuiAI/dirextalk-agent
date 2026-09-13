@@ -74,7 +74,7 @@ func cloudWorkerCredentialAuthorityFixture(t *testing.T) (*cloudWorkerCredential
 		ID: binding.CredentialID, Region: binding.Region, AccountID: binding.AccountID,
 		Revision: int64(binding.CredentialRevision), VerifiedRevision: int64(binding.CredentialRevision), TestedAt: time.Now().UTC(),
 	}}
-	authority, err := newCloudWorkerCredentialAuthority(resolver, resolver, resolver, fixtureCloudWorkerHostRegion, func(context.Context, int, string) (coreaws.CredentialPage, error) {
+	authority, err := newCloudWorkerCredentialAuthority(resolver, resolver, resolver, fixtureCloudWorkerHostRegion, func(context.Context, string, int, string) (coreaws.CredentialPage, error) {
 		return coreaws.CredentialPage{Items: resolver.views}, nil
 	})
 	if err != nil {
@@ -115,7 +115,7 @@ func TestCloudWorkerCredentialAuthorityDoubleFencesRevisionAndIdentity(t *testin
 func TestCloudWorkerCredentialAuthorityRejectsMalformedHostAndEmptyWorkerRegion(t *testing.T) {
 	_, resolver := cloudWorkerCredentialAuthorityFixture(t)
 	for _, region := range []string{" us-east-1", "local-1"} {
-		if _, err := newCloudWorkerCredentialAuthority(resolver, resolver, resolver, region, func(context.Context, int, string) (coreaws.CredentialPage, error) {
+		if _, err := newCloudWorkerCredentialAuthority(resolver, resolver, resolver, region, func(context.Context, string, int, string) (coreaws.CredentialPage, error) {
 			return coreaws.CredentialPage{Items: resolver.views}, nil
 		}); !errors.Is(err, cloudworker.ErrInvalid) {
 			t.Fatalf("host region %q returned %v", region, err)
@@ -147,10 +147,73 @@ func TestCloudWorkerCredentialReadinessTracksCurrentVerifiedView(t *testing.T) {
 	}
 }
 
+// TestCloudWorkerGroupCredentialScopeIsChosenByTurn pins the group cloud
+// credential rule: a group with its own usable credential uses it, a group with
+// none inherits the owner's, a group whose own credential exists but is unusable
+// fails closed (the owner's credential is never silently spent), and the owner's
+// own work never looks at a group credential.
+func TestCloudWorkerGroupCredentialScopeIsChosenByTurn(t *testing.T) {
+	const roomID = "!group-room:example.test"
+	personalView := coreaws.CredentialView{ID: "11111111-1111-4111-8111-111111111111", Region: "us-east-1",
+		AccountID: "123456789012", Revision: 3, VerifiedRevision: 3, TestedAt: time.Now().UTC()}
+	groupView := personalView
+	groupView.ID = "22222222-2222-4222-8222-222222222222"
+	unusableGroupView := groupView
+	unusableGroupView.VerifiedRevision = 2
+
+	for _, tc := range []struct {
+		name        string
+		views       map[string][]coreaws.CredentialView
+		room        string
+		wantID      string
+		wantErr     error
+		wantLookups []string
+	}{
+		{name: "personal turn reads only the personal scope", views: map[string][]coreaws.CredentialView{"": {personalView}},
+			wantID: personalView.ID, wantLookups: []string{""}},
+		{name: "group with its own credential uses it", views: map[string][]coreaws.CredentialView{"": {personalView}, roomID: {groupView}},
+			room: roomID, wantID: groupView.ID, wantLookups: []string{roomID}},
+		{name: "group without its own credential inherits the owner's", views: map[string][]coreaws.CredentialView{"": {personalView}},
+			room: roomID, wantID: personalView.ID, wantLookups: []string{roomID, ""}},
+		{name: "group credential exists but is unusable fails closed", views: map[string][]coreaws.CredentialView{"": {personalView}, roomID: {unusableGroupView}},
+			room: roomID, wantErr: cloudworker.ErrStaleAuthorization, wantLookups: []string{roomID}},
+		{name: "group credential set is ambiguous fails closed", views: map[string][]coreaws.CredentialView{"": {personalView}, roomID: {groupView, groupView}},
+			room: roomID, wantErr: cloudworker.ErrStaleAuthorization, wantLookups: []string{roomID}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var lookups []string
+			authority, err := newCloudWorkerCredentialAuthority(nil, nil, nil, fixtureCloudWorkerHostRegion, nil)
+			if err == nil {
+				t.Fatal("authority accepted missing credential resolvers")
+			}
+			authority = &cloudWorkerCredentialAuthority{
+				credentials: &cloudWorkerCredentialResolverFake{handle: workaws.CredentialHandle{ReferenceID: tc.wantID, AccountID: personalView.AccountID, Region: personalView.Region, PrincipalARN: "arn:aws:iam::123456789012:role/cloud-worker", AccessKeyID: "a", SecretAccessKey: "s"}},
+				exact:       &cloudWorkerCredentialResolverFake{},
+				list: func(_ context.Context, room string, _ int, _ string) (coreaws.CredentialPage, error) {
+					lookups = append(lookups, room)
+					return coreaws.CredentialPage{Items: tc.views[room]}, nil
+				},
+			}
+			authority.revisions = &cloudWorkerCredentialResolverFake{revisions: []uint64{3, 3}}
+			view, err := authority.currentCredentialViewFor(context.Background(), tc.room)
+			if tc.wantErr != nil {
+				if !errors.Is(err, tc.wantErr) {
+					t.Fatalf("err=%v want %v", err, tc.wantErr)
+				}
+			} else if err != nil || view.ID != tc.wantID {
+				t.Fatalf("view=%+v err=%v", view, err)
+			}
+			if strings.Join(lookups, ",") != strings.Join(tc.wantLookups, ",") {
+				t.Fatalf("scope lookups=%v want %v", lookups, tc.wantLookups)
+			}
+		})
+	}
+}
+
 func TestCloudWorkerCredentialPlacementIsLazyVerifiedAndIndependentOfUploadedRegion(t *testing.T) {
 	_, resolver := cloudWorkerCredentialAuthorityFixture(t)
 	for _, host := range []string{"", "zz-unknown-1"} {
-		authority, err := newCloudWorkerCredentialAuthority(resolver, resolver, resolver, host, func(context.Context, int, string) (coreaws.CredentialPage, error) {
+		authority, err := newCloudWorkerCredentialAuthority(resolver, resolver, resolver, host, func(context.Context, string, int, string) (coreaws.CredentialPage, error) {
 			return coreaws.CredentialPage{Items: resolver.views}, nil
 		})
 		if err != nil {
