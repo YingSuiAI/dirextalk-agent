@@ -523,3 +523,32 @@ func TestGroupIntrinsicsUseSeparateWorkerOfferCatalogAndLiveGuard(t *testing.T) 
 		t.Fatalf("revoked Worker offer executed: calls=%d err=%v", executions, err)
 	}
 }
+
+// A group request must be able to prepare real compute; refusing the whole
+// capability as if it were unavailable was the bug this pins. The owner's own
+// confirmation still gates every paid resource, and a group message never
+// supplies that confirmation.
+func TestGroupGuidanceAllowsProposingAndKeepsTheOwnerApprovalGate(t *testing.T) {
+	for _, required := range []string{
+		"call cloud_worker_propose to build the new-machine proposal",
+		"it starts nothing and costs nothing",
+		"a group member's request is enough to propose",
+		"must not decline the capability as if it were unavailable",
+		"cloud_worker_run, which never creates or resizes a machine",
+		"waits for the owner's own confirmation",
+		"tell the group the task is waiting for the owner",
+		"Do not claim access or successful actions without authoritative tool receipts",
+	} {
+		if !strings.Contains(groupSystemGuidance, required) {
+			t.Fatalf("group guidance is missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{
+		"Heavy Worker work requires the owner's explicit private approval",
+		"a group member's request is not that approval",
+	} {
+		if strings.Contains(groupSystemGuidance, forbidden) {
+			t.Fatalf("group guidance still blocks proposing from a group request: %q", forbidden)
+		}
+	}
+}
