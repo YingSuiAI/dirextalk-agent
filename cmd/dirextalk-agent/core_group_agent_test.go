@@ -160,6 +160,68 @@ func newGroupLoopFixture(t *testing.T) (*groupAgentLoop, *groupProductFake, *gro
 	return newGroupAgentLoop(product, turns, profiles, 9, nil), product, turns, profiles
 }
 
+type groupModelOverridesFake struct {
+	profileID  string
+	found      bool
+	err        error
+	calls      int
+	ownerID    string
+	roomID     string
+	generation uint64
+}
+
+func (f *groupModelOverridesFake) ResolveGroupConversationModel(_ context.Context, ownerID string, generation uint64, roomID string) (string, bool, error) {
+	f.calls++
+	f.ownerID, f.generation, f.roomID = ownerID, generation, roomID
+	return f.profileID, f.found, f.err
+}
+
+// TestGroupLoopUsesTheGroupsOwnModelOnlyWhenConfigured pins the model rule: a
+// group with the owner's per-group choice answers with that model, a group
+// without one inherits the owner's default conversation model, and an unreadable
+// choice falls back to the default instead of failing the member's request.
+func TestGroupLoopUsesTheGroupsOwnModelOnlyWhenConfigured(t *testing.T) {
+	groupModel := uuid.NewString()
+	for _, tc := range []struct {
+		name   string
+		models *groupModelOverridesFake
+		want   string
+	}{
+		{name: "configured group model", models: &groupModelOverridesFake{profileID: groupModel, found: true}, want: groupModel},
+		{name: "no binding inherits the owner default", models: &groupModelOverridesFake{}, want: ""},
+		{name: "unreadable binding inherits the owner default", models: &groupModelOverridesFake{err: errors.New("store unavailable")}, want: ""},
+		{name: "no resolver wired inherits the owner default", models: nil, want: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			loop, _, turns, profiles := newGroupLoopFixture(t)
+			if tc.models != nil {
+				loop.SetGroupModelOverrides(tc.models)
+			}
+			request := groupRequestFixture()
+			if err := loop.processRequest(context.Background(), request); err != nil {
+				t.Fatal(err)
+			}
+			if len(turns.started) != 1 {
+				t.Fatalf("started turns = %d", len(turns.started))
+			}
+			want := tc.want
+			if want == "" {
+				want = profiles.id
+			}
+			if turns.started[0].ProfileID != want {
+				t.Fatalf("group turn used profile %q, want %q", turns.started[0].ProfileID, want)
+			}
+			if tc.models == nil {
+				return
+			}
+			if tc.models.calls != 1 || tc.models.ownerID != request.OwnerMXID ||
+				tc.models.generation != uint64(request.AccountGeneration) || tc.models.roomID != request.RoomID {
+				t.Fatalf("override lookup drifted: %+v", tc.models)
+			}
+		})
+	}
+}
+
 func TestGroupLoopStartsOneIsolatedTurnAndPublishesProgress(t *testing.T) {
 	loop, product, turns, _ := newGroupLoopFixture(t)
 	request := groupRequestFixture()

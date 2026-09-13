@@ -3032,3 +3032,18 @@ ALTER TABLE core_web_search_configs DROP CONSTRAINT core_web_search_configs_pkey
 ALTER TABLE core_web_search_configs ADD PRIMARY KEY (owner_id, account_generation, scope, room_id);
 ALTER TABLE core_web_search_configs ADD CONSTRAINT core_web_search_configs_scope_room CHECK ((scope = 'group') = (room_id <> ''));
 -- dirextalk-agent migration end 000037_web_search_credential_scopes.up.sql
+-- dirextalk-agent migration begin 000038_group_model_bindings.up.sql
+-- One group can answer with a model the owner picked for that group instead of
+-- their own default conversation model. Absent row = inherit the owner's
+-- default; the binding is a pointer to an existing profile, so no credential is
+-- duplicated or re-encrypted here.
+CREATE TABLE core_group_model_bindings (
+    owner_id text NOT NULL CHECK (length(owner_id) BETWEEN 1 AND 512),
+    account_generation bigint NOT NULL CHECK (account_generation > 0),
+    room_id text NOT NULL CHECK (length(room_id) BETWEEN 2 AND 1024),
+    profile_id uuid NOT NULL REFERENCES core_model_profiles(profile_id) ON DELETE RESTRICT,
+    revision bigint NOT NULL DEFAULT 1 CHECK (revision > 0),
+    updated_at timestamptz NOT NULL,
+    PRIMARY KEY (owner_id, account_generation, room_id)
+);
+-- dirextalk-agent migration end 000038_group_model_bindings.up.sql

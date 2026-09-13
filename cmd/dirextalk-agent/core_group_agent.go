@@ -40,6 +40,13 @@ type groupModelProfiles interface {
 	ResolveDefaultToolProfile(context.Context) (coremodel.Profile, error)
 }
 
+// groupModelOverrides resolves an optional per-group conversation model. A
+// group with an override answers with the model its owner picked for that group;
+// without one it inherits the owner's default conversation model.
+type groupModelOverrides interface {
+	ResolveGroupConversationModel(context.Context, string, uint64, string) (string, bool, error)
+}
+
 // groupAgentLoop observes the Product-owned event references and the
 // Agent-owned durable turns. The original request UUID is always the turn UUID,
 // including after a lost acknowledgement or either process restarting.
@@ -48,6 +55,7 @@ type groupAgentLoop struct {
 	product    groupProduct
 	turns      groupTurns
 	profiles   groupModelProfiles
+	models     groupModelOverrides
 	summaries  groupSummaryStore
 	generation uint64
 	interval   time.Duration
@@ -75,6 +83,32 @@ func newGroupAgentLoop(product groupProduct, turns groupTurns, profiles groupMod
 		}
 	}
 	return loop
+}
+
+// SetGroupModelOverrides wires the owner's per-group conversation model choice.
+// The loop keeps inheriting the owner's default when a group has no binding.
+func (l *groupAgentLoop) SetGroupModelOverrides(overrides groupModelOverrides) {
+	if l != nil {
+		l.models = overrides
+	}
+}
+
+// resolveConversationProfileID returns the profile one group turn answers with:
+// the group's own choice when the owner configured one, otherwise the owner's
+// default conversation model.
+func (l *groupAgentLoop) resolveConversationProfileID(ctx context.Context, origin coreconversation.GroupOrigin) (string, error) {
+	if l.models != nil {
+		profileID, ok, err := l.models.ResolveGroupConversationModel(ctx, origin.OwnerID, origin.AccountGeneration, origin.RoomID)
+		if err != nil {
+			// The per-group choice is optional: an unreadable override must not
+			// stop a member's request, so the group falls back to the owner's
+			// default conversation model.
+			slog.Warn("[group-agent] group model override unavailable; using the owner default", "error", groupAgentErrorSummary(err))
+		} else if ok {
+			return profileID, nil
+		}
+	}
+	return l.profiles.ResolveDefaultProfileID(ctx, coremodel.ModelKindConversation)
 }
 
 func (l *groupAgentLoop) ValidateGroupOrigin(ctx context.Context, origin coreconversation.GroupOrigin) error {
@@ -284,7 +318,7 @@ func (l *groupAgentLoop) processRequest(ctx context.Context, request capabilityc
 	// Core's durable lookup reports ErrConflict for an absent request. The
 	// atomic admission rechecks that UUID before creating anything.
 	if errors.Is(err, coreconversation.ErrConflict) {
-		profileID, profileErr := l.profiles.ResolveDefaultProfileID(ctx, coremodel.ModelKindConversation)
+		profileID, profileErr := l.resolveConversationProfileID(ctx, origin)
 		if profileErr != nil {
 			return l.publish(ctx, origin, groupReply(request.Body, "请群主先配置 Ying 的默认对话模型，然后重新提问。", "Ask the group owner to configure Ying's default conversation model, then send the request again."), "final", "failed")
 		}
