@@ -18,22 +18,22 @@ type capabilityWebSearchRepo struct {
 	resolved   corewebsearch.ResolvedConfig
 }
 
-func (r *capabilityWebSearchRepo) Get(_ context.Context, owner string, generation int64) (corewebsearch.Config, error) {
-	r.owner = owner
-	r.generation = generation
+func (r *capabilityWebSearchRepo) Get(_ context.Context, scope corewebsearch.Scope) (corewebsearch.Config, error) {
+	r.owner, r.generation = scope.OwnerID, scope.AccountGeneration
 	return r.resolved.Config, nil
 }
-func (r *capabilityWebSearchRepo) Resolve(_ context.Context, owner string, generation int64) (corewebsearch.ResolvedConfig, error) {
-	r.owner = owner
-	r.generation = generation
-	return r.resolved, nil
-}
-func (r *capabilityWebSearchRepo) ResolveForDispatch(_ context.Context, owner string, generation int64, _ corewebsearch.ResolvedConfig) (corewebsearch.ResolvedConfig, func() error, error) {
-	r.owner = owner
-	r.generation = generation
+func (r *capabilityWebSearchRepo) Resolve(_ context.Context, scope corewebsearch.Scope) (corewebsearch.ResolvedConfig, error) {
+	r.owner, r.generation = scope.OwnerID, scope.AccountGeneration
 	value := r.resolved
-	value.OwnerID = owner
-	value.AccountGeneration = generation
+	value.RoomID = scope.RoomID
+	return value, nil
+}
+func (r *capabilityWebSearchRepo) ResolveForDispatch(_ context.Context, scope corewebsearch.Scope, _ corewebsearch.ResolvedConfig) (corewebsearch.ResolvedConfig, func() error, error) {
+	r.owner, r.generation = scope.OwnerID, scope.AccountGeneration
+	value := r.resolved
+	value.OwnerID = scope.OwnerID
+	value.AccountGeneration = scope.AccountGeneration
+	value.RoomID = scope.RoomID
 	return value, func() error { return nil }, nil
 }
 func (r *capabilityWebSearchRepo) Update(_ context.Context, mutation corewebsearch.Mutation) (corewebsearch.Config, error) {
@@ -41,9 +41,8 @@ func (r *capabilityWebSearchRepo) Update(_ context.Context, mutation corewebsear
 	r.generation = mutation.AccountGeneration
 	return r.resolved.Config, nil
 }
-func (r *capabilityWebSearchRepo) MarkTested(_ context.Context, owner string, generation, _ int64, at time.Time) (corewebsearch.Config, error) {
-	r.owner = owner
-	r.generation = generation
+func (r *capabilityWebSearchRepo) MarkTested(_ context.Context, scope corewebsearch.Scope, _ int64, at time.Time) (corewebsearch.Config, error) {
+	r.owner, r.generation = scope.OwnerID, scope.AccountGeneration
 	value := r.resolved.Config
 	value.TestedAt = &at
 	return value, nil

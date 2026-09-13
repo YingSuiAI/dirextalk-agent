@@ -17,23 +17,24 @@ type serviceRepositoryFake struct {
 	marked   bool
 }
 
-func (r *serviceRepositoryFake) Get(context.Context, string, int64) (Config, error) {
+func (r *serviceRepositoryFake) Get(context.Context, Scope) (Config, error) {
 	return r.public, nil
 }
-func (r *serviceRepositoryFake) Resolve(context.Context, string, int64) (ResolvedConfig, error) {
+func (r *serviceRepositoryFake) Resolve(context.Context, Scope) (ResolvedConfig, error) {
 	return r.resolved, nil
 }
-func (r *serviceRepositoryFake) ResolveForDispatch(_ context.Context, owner string, generation int64, _ ResolvedConfig) (ResolvedConfig, func() error, error) {
+func (r *serviceRepositoryFake) ResolveForDispatch(_ context.Context, scope Scope, _ ResolvedConfig) (ResolvedConfig, func() error, error) {
 	value := r.resolved
-	value.OwnerID = owner
-	value.AccountGeneration = generation
+	value.OwnerID = scope.OwnerID
+	value.AccountGeneration = scope.AccountGeneration
+	value.RoomID = scope.RoomID
 	return value, func() error { return nil }, nil
 }
 func (r *serviceRepositoryFake) Update(_ context.Context, mutation Mutation) (Config, error) {
 	r.mutation = mutation
 	return r.public, nil
 }
-func (r *serviceRepositoryFake) MarkTested(_ context.Context, _ string, _ int64, revision int64, at time.Time) (Config, error) {
+func (r *serviceRepositoryFake) MarkTested(_ context.Context, _ Scope, revision int64, at time.Time) (Config, error) {
 	if revision != r.resolved.Revision || at.IsZero() {
 		return Config{}, ErrRevisionConflict
 	}
@@ -64,11 +65,11 @@ func TestServiceUsesStoredCredentialAndReturnsOnlySafeState(t *testing.T) {
 		t.Fatal(err)
 	}
 	service.now = func() time.Time { return now.Add(time.Minute) }
-	result, err := service.Test(context.Background(), "owner", 1)
+	result, err := service.Test(context.Background(), PersonalScope("owner", 1))
 	if err != nil || !result.OK || result.ResultCount != 1 || searcher.key != "tvly-stored" || !repository.marked {
 		t.Fatalf("test result=%#v key=%q marked=%v err=%v", result, searcher.key, repository.marked, err)
 	}
-	public, err := service.Get(context.Background(), "owner", 1)
+	public, err := service.Get(context.Background(), PersonalScope("owner", 1))
 	if err != nil || public.APIKeyHint != "configured" || strings.Contains(public.APIKeyHint, "tvly") {
 		t.Fatalf("public config=%#v err=%v", public, err)
 	}

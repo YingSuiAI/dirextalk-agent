@@ -44,13 +44,15 @@ func (c *coreWebSearchCapability) HandleOperation(ctx context.Context, operation
 	accountGeneration := permission.GetAccountGeneration()
 	switch operationID {
 	case "get_config":
-		if err := requireEmptyObject(raw); err != nil {
+		scope, err := webSearchScopeFromRequest(ownerID, accountGeneration, raw)
+		if err != nil {
 			return nil, err
 		}
-		value, err := c.service.Get(ctx, ownerID, accountGeneration)
+		value, err := c.service.Get(ctx, scope)
 		return marshalResult(value, err)
 	case "update_config":
 		var request struct {
+			RoomID           string  `json:"room_id,omitempty"`
 			IdempotencyKey   string  `json:"idempotency_key"`
 			ExpectedRevision int64   `json:"expected_revision"`
 			Enabled          *bool   `json:"enabled,omitempty"`
@@ -67,17 +69,41 @@ func (c *coreWebSearchCapability) HandleOperation(ctx context.Context, operation
 			provider = &value
 		}
 		value, err := c.service.Update(ctx, corewebsearch.UpdateCommand{
+			Scope:   webSearchScope(ownerID, accountGeneration, request.RoomID),
 			OwnerID: ownerID, AccountGeneration: accountGeneration, IdempotencyKey: request.IdempotencyKey, ExpectedRevision: request.ExpectedRevision,
 			Enabled: request.Enabled, Provider: provider, APIKey: request.APIKey, APIKeyClear: request.APIKeyClear,
 		})
 		return marshalResult(value, err)
 	case "test":
-		if err := requireEmptyObject(raw); err != nil {
+		scope, err := webSearchScopeFromRequest(ownerID, accountGeneration, raw)
+		if err != nil {
 			return nil, err
 		}
-		value, err := c.service.Test(ctx, ownerID, accountGeneration)
+		value, err := c.service.Test(ctx, scope)
 		return marshalResult(value, err)
 	default:
 		return nil, fmt.Errorf("unknown web search operation %q", operationID)
 	}
+}
+
+// webSearchScope maps an optional room_id onto the credential scope. The owner
+// configures both scopes; a group scope is never selected by a model or by a
+// group member.
+func webSearchScope(ownerID string, accountGeneration int64, roomID string) corewebsearch.Scope {
+	if strings.TrimSpace(roomID) == "" {
+		return corewebsearch.PersonalScope(ownerID, accountGeneration)
+	}
+	return corewebsearch.GroupScope(ownerID, accountGeneration, strings.TrimSpace(roomID))
+}
+
+// webSearchScopeFromRequest accepts either an empty object (personal scope) or
+// one with an optional room_id (that group's scope).
+func webSearchScopeFromRequest(ownerID string, accountGeneration int64, raw []byte) (corewebsearch.Scope, error) {
+	var request struct {
+		RoomID string `json:"room_id,omitempty"`
+	}
+	if err := decodeStrictObject(raw, &request); err != nil {
+		return corewebsearch.Scope{}, err
+	}
+	return webSearchScope(ownerID, accountGeneration, request.RoomID), nil
 }

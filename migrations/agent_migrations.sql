@@ -3021,3 +3021,14 @@ ALTER TABLE core_github_configs DROP CONSTRAINT core_github_configs_pkey;
 ALTER TABLE core_github_configs ADD PRIMARY KEY (owner_id, account_generation, scope, room_id);
 ALTER TABLE core_github_configs ADD CONSTRAINT core_github_configs_scope_room CHECK ((scope = 'group') = (room_id <> ''));
 -- dirextalk-agent migration end 000036_credential_scopes.up.sql
+-- dirextalk-agent migration begin 000037_web_search_credential_scopes.up.sql
+-- The Web Search credential follows the same scope model as GitHub: the owner
+-- keeps one personal set, every group the owner shares Ying with can keep its
+-- own. A group without its own row inherits the owner's configured provider
+-- (search stays allowed by default in groups).
+ALTER TABLE core_web_search_configs ADD COLUMN scope text NOT NULL DEFAULT 'personal' CHECK (scope IN ('personal','group'));
+ALTER TABLE core_web_search_configs ADD COLUMN room_id text NOT NULL DEFAULT '' CHECK (length(room_id) <= 1024);
+ALTER TABLE core_web_search_configs DROP CONSTRAINT core_web_search_configs_pkey;
+ALTER TABLE core_web_search_configs ADD PRIMARY KEY (owner_id, account_generation, scope, room_id);
+ALTER TABLE core_web_search_configs ADD CONSTRAINT core_web_search_configs_scope_room CHECK ((scope = 'group') = (room_id <> ''));
+-- dirextalk-agent migration end 000037_web_search_credential_scopes.up.sql

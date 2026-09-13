@@ -16,6 +16,46 @@ type Provider string
 
 const ProviderTavily Provider = "tavily"
 
+// Scope identifies one independent search credential set: the personal Agent
+// (RoomID empty) or one group the owner shares Ying with. The room scope comes
+// from the authenticated turn origin, never from a model or tool argument.
+type Scope struct {
+	OwnerID           string
+	AccountGeneration int64
+	RoomID            string
+}
+
+// PersonalScope is the owner's own Agent credentials.
+func PersonalScope(ownerID string, accountGeneration int64) Scope {
+	return Scope{OwnerID: ownerID, AccountGeneration: accountGeneration}
+}
+
+// GroupScope is one group's independent credential set.
+func GroupScope(ownerID string, accountGeneration int64, roomID string) Scope {
+	return Scope{OwnerID: ownerID, AccountGeneration: accountGeneration, RoomID: roomID}
+}
+
+func (s Scope) normalized() Scope {
+	return Scope{
+		OwnerID:           strings.TrimSpace(s.OwnerID),
+		AccountGeneration: s.AccountGeneration,
+		RoomID:            strings.TrimSpace(s.RoomID),
+	}
+}
+
+func (s Scope) valid() bool {
+	if !validIdentity(s.OwnerID, s.AccountGeneration) {
+		return false
+	}
+	if s.RoomID == "" {
+		return true
+	}
+	return strings.HasPrefix(s.RoomID, "!") && len(s.RoomID) <= 1024
+}
+
+// Personal reports whether this scope is the owner's own Agent.
+func (s Scope) Personal() bool { return s.RoomID == "" }
+
 var (
 	ErrInvalid             = errors.New("invalid web search request")
 	ErrNotConfigured       = errors.New("web search is not configured")
@@ -45,6 +85,8 @@ type ResolvedConfig struct {
 	CredentialVersion int64  `json:"-"`
 	OwnerID           string `json:"-"`
 	AccountGeneration int64  `json:"-"`
+	// RoomID is empty for the personal scope and set for one group's scope.
+	RoomID string `json:"-"`
 }
 
 func (c ResolvedConfig) String() string {
@@ -55,6 +97,7 @@ func (c ResolvedConfig) String() string {
 func (c ResolvedConfig) GoString() string { return c.String() }
 
 type UpdateCommand struct {
+	Scope             Scope
 	OwnerID           string
 	AccountGeneration int64
 	IdempotencyKey    string
@@ -66,6 +109,7 @@ type UpdateCommand struct {
 }
 
 type Mutation struct {
+	Scope             Scope
 	OwnerID           string
 	AccountGeneration int64
 	IdempotencyKey    string
@@ -103,14 +147,14 @@ type SearchItem struct {
 }
 
 type Repository interface {
-	Get(context.Context, string, int64) (Config, error)
-	Resolve(context.Context, string, int64) (ResolvedConfig, error)
+	Get(context.Context, Scope) (Config, error)
+	Resolve(context.Context, Scope) (ResolvedConfig, error)
 	// ResolveForDispatch acquires the durable account admission guard, reloads
 	// and validates the current non-secret snapshot, and returns a release
 	// function whose scope must cover the bounded provider request.
-	ResolveForDispatch(context.Context, string, int64, ResolvedConfig) (ResolvedConfig, func() error, error)
+	ResolveForDispatch(context.Context, Scope, ResolvedConfig) (ResolvedConfig, func() error, error)
 	Update(context.Context, Mutation) (Config, error)
-	MarkTested(context.Context, string, int64, int64, time.Time) (Config, error)
+	MarkTested(context.Context, Scope, int64, time.Time) (Config, error)
 }
 
 type Searcher interface {
@@ -134,12 +178,12 @@ func DefaultConfig() Config {
 	return Config{Provider: ProviderTavily}
 }
 
-func (s *Service) Get(ctx context.Context, ownerID string, accountGeneration int64) (Config, error) {
-	ownerID = strings.TrimSpace(ownerID)
-	if !validIdentity(ownerID, accountGeneration) {
+func (s *Service) Get(ctx context.Context, scope Scope) (Config, error) {
+	scope = scope.normalized()
+	if !scope.valid() {
 		return Config{}, ErrInvalid
 	}
-	value, err := s.repository.Get(ctx, ownerID, accountGeneration)
+	value, err := s.repository.Get(ctx, scope)
 	if err != nil {
 		return Config{}, safeRepositoryError(err)
 	}
@@ -147,8 +191,12 @@ func (s *Service) Get(ctx context.Context, ownerID string, accountGeneration int
 }
 
 func (s *Service) Update(ctx context.Context, command UpdateCommand) (Config, error) {
-	command.OwnerID = strings.TrimSpace(command.OwnerID)
-	if !validIdentity(command.OwnerID, command.AccountGeneration) || command.ExpectedRevision < 0 {
+	if command.Scope.OwnerID == "" {
+		command.Scope = PersonalScope(command.OwnerID, command.AccountGeneration)
+	}
+	command.Scope = command.Scope.normalized()
+	command.OwnerID, command.AccountGeneration = command.Scope.OwnerID, command.Scope.AccountGeneration
+	if !command.Scope.valid() || command.ExpectedRevision < 0 {
 		return Config{}, ErrInvalid
 	}
 	parsed, err := uuid.Parse(command.IdempotencyKey)
@@ -177,6 +225,7 @@ func (s *Service) Update(ctx context.Context, command UpdateCommand) (Config, er
 		return Config{}, ErrInvalid
 	}
 	value, err := s.repository.Update(ctx, Mutation{
+		Scope:   command.Scope,
 		OwnerID: command.OwnerID, AccountGeneration: command.AccountGeneration, IdempotencyKey: command.IdempotencyKey, RequestDigest: digest,
 		ExpectedRevision: command.ExpectedRevision, Enabled: command.Enabled, Provider: command.Provider,
 		APIKey: command.APIKey, APIKeyClear: command.APIKeyClear, Now: s.now().UTC(),
@@ -187,17 +236,18 @@ func (s *Service) Update(ctx context.Context, command UpdateCommand) (Config, er
 	return sanitizeConfig(value), nil
 }
 
-func (s *Service) Resolve(ctx context.Context, ownerID string, accountGeneration int64) (ResolvedConfig, error) {
-	ownerID = strings.TrimSpace(ownerID)
-	if !validIdentity(ownerID, accountGeneration) {
+func (s *Service) Resolve(ctx context.Context, scope Scope) (ResolvedConfig, error) {
+	scope = scope.normalized()
+	if !scope.valid() {
 		return ResolvedConfig{}, ErrInvalid
 	}
-	value, err := s.repository.Resolve(ctx, ownerID, accountGeneration)
+	value, err := s.repository.Resolve(ctx, scope)
 	if err != nil {
 		return ResolvedConfig{}, safeRepositoryError(err)
 	}
-	value.OwnerID = ownerID
-	value.AccountGeneration = accountGeneration
+	value.OwnerID = scope.OwnerID
+	value.AccountGeneration = scope.AccountGeneration
+	value.RoomID = scope.RoomID
 	value.Config = sanitizeConfig(value.Config)
 	if !value.APIKeyConfigured || strings.TrimSpace(value.APIKey) == "" {
 		return ResolvedConfig{}, ErrNotConfigured
@@ -205,9 +255,9 @@ func (s *Service) Resolve(ctx context.Context, ownerID string, accountGeneration
 	return value, nil
 }
 
-func (s *Service) Test(ctx context.Context, ownerID string, accountGeneration int64) (TestResult, error) {
-	ownerID = strings.TrimSpace(ownerID)
-	resolved, err := s.Resolve(ctx, ownerID, accountGeneration)
+func (s *Service) Test(ctx context.Context, scope Scope) (TestResult, error) {
+	scope = scope.normalized()
+	resolved, err := s.Resolve(ctx, scope)
 	if err != nil {
 		return TestResult{}, err
 	}
@@ -218,12 +268,12 @@ func (s *Service) Test(ctx context.Context, ownerID string, accountGeneration in
 	// Treat the connectivity test as a provider dispatch too: reload the
 	// current credential after resolving the snapshot so a concurrent rotation
 	// or account fence cannot test stale plaintext.
-	result, err := s.SearchResolved(ctx, ownerID, accountGeneration, resolved, "Dirextalk connection test", 1)
+	result, err := s.SearchResolved(ctx, scope, resolved, "Dirextalk connection test", 1)
 	if err != nil {
 		return TestResult{}, safeProviderError(err)
 	}
 	testedAt := s.now().UTC()
-	current, err := s.repository.MarkTested(ctx, ownerID, accountGeneration, resolved.Revision, testedAt)
+	current, err := s.repository.MarkTested(ctx, scope, resolved.Revision, testedAt)
 	if err != nil {
 		return TestResult{}, safeRepositoryError(err)
 	}
@@ -234,15 +284,15 @@ func (s *Service) Test(ctx context.Context, ownerID string, accountGeneration in
 // current owner/generation row immediately before dispatch.  The compiled
 // tool must pass only a secret-free snapshot; the current credential is
 // reloaded after the revision and credential-version fence succeeds.
-func (s *Service) SearchResolved(ctx context.Context, ownerID string, accountGeneration int64, resolved ResolvedConfig, query string, maxResults int) (SearchResult, error) {
-	ownerID = strings.TrimSpace(ownerID)
-	if !validIdentity(ownerID, accountGeneration) || resolved.OwnerID != ownerID || resolved.AccountGeneration != accountGeneration {
+func (s *Service) SearchResolved(ctx context.Context, scope Scope, resolved ResolvedConfig, query string, maxResults int) (SearchResult, error) {
+	scope = scope.normalized()
+	if !scope.valid() || resolved.OwnerID != scope.OwnerID || resolved.AccountGeneration != scope.AccountGeneration || resolved.RoomID != scope.RoomID {
 		return SearchResult{}, ErrInvalid
 	}
 	if resolved.Revision <= 0 || resolved.CredentialVersion <= 0 || resolved.Provider != ProviderTavily || !resolved.APIKeyConfigured {
 		return SearchResult{}, ErrNotConfigured
 	}
-	current, release, err := s.repository.ResolveForDispatch(ctx, ownerID, accountGeneration, resolved)
+	current, release, err := s.repository.ResolveForDispatch(ctx, scope, resolved)
 	if err != nil {
 		return SearchResult{}, safeRepositoryError(err)
 	}
@@ -255,7 +305,7 @@ func (s *Service) SearchResolved(ctx context.Context, ownerID string, accountGen
 		if current.Revision != resolved.Revision || current.CredentialVersion != resolved.CredentialVersion || current.Provider != resolved.Provider || !current.APIKeyConfigured {
 			return SearchResult{}, ErrRevisionConflict
 		}
-		if current.OwnerID != ownerID || current.AccountGeneration != accountGeneration {
+		if current.OwnerID != scope.OwnerID || current.AccountGeneration != scope.AccountGeneration || current.RoomID != scope.RoomID {
 			return SearchResult{}, ErrInvalid
 		}
 		if !current.Enabled {

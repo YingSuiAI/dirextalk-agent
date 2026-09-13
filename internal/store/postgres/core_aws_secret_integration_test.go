@@ -151,7 +151,7 @@ func TestCoreAWSPostgresSecretEnvelopeAndDeprovision(t *testing.T) {
 	if webSearchConfigs != 0 || webSearchReplays != 0 {
 		t.Fatalf("deprovision left Web Search rows configs=%d replays=%d", webSearchConfigs, webSearchReplays)
 	}
-	if _, err := webSearchStore.Resolve(ctx, "db-secret-sentinel", 1); !errors.Is(err, corewebsearch.ErrNotConfigured) {
+	if _, err := webSearchStore.Resolve(ctx, corewebsearch.PersonalScope("db-secret-sentinel", 1)); !errors.Is(err, corewebsearch.ErrNotConfigured) {
 		t.Fatalf("deprovision fence allowed stale Web Search resolve: %v", err)
 	}
 }

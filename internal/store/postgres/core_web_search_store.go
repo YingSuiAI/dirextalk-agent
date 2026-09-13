@@ -41,17 +41,26 @@ type webSearchQuery interface {
 }
 
 const webSearchColumns = `account_generation,enabled,provider,api_key_configured,credential_version,api_key_key_version,api_key_nonce,api_key_ciphertext,revision,tested_at,updated_at`
-const webSearchSelect = `SELECT ` + webSearchColumns + ` FROM core_web_search_configs WHERE owner_id=$1 AND account_generation=$2`
+const webSearchSelect = `SELECT ` + webSearchColumns + ` FROM core_web_search_configs WHERE owner_id=$1 AND account_generation=$2 AND scope=$3 AND room_id=$4`
 
-func (s *CoreWebSearchStore) Get(ctx context.Context, ownerID string, accountGeneration int64) (corewebsearch.Config, error) {
-	ownerID = strings.TrimSpace(ownerID)
+// webSearchScopeArgs maps a credential scope onto the durable scope columns.
+func webSearchScopeArgs(scope corewebsearch.Scope) (string, string) {
+	if strings.TrimSpace(scope.RoomID) == "" {
+		return "personal", ""
+	}
+	return "group", strings.TrimSpace(scope.RoomID)
+}
+
+func (s *CoreWebSearchStore) Get(ctx context.Context, scope corewebsearch.Scope) (corewebsearch.Config, error) {
+	ownerID, accountGeneration := strings.TrimSpace(scope.OwnerID), scope.AccountGeneration
 	if !corewebsearch.ValidIdentity(ownerID, accountGeneration) {
 		return corewebsearch.Config{}, corewebsearch.ErrInvalid
 	}
 	if err := s.checkWebSearchAdmission(ctx, ownerID, accountGeneration); err != nil {
 		return corewebsearch.Config{}, err
 	}
-	row, err := scanWebSearchRow(s.store.pool.QueryRow(ctx, webSearchSelect, ownerID, accountGeneration))
+	scopeKind, roomID := webSearchScopeArgs(scope)
+	row, err := scanWebSearchRow(s.store.pool.QueryRow(ctx, webSearchSelect, ownerID, accountGeneration, scopeKind, roomID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return corewebsearch.DefaultConfig(), nil
 	}
@@ -61,29 +70,30 @@ func (s *CoreWebSearchStore) Get(ctx context.Context, ownerID string, accountGen
 	return row.config, nil
 }
 
-func (s *CoreWebSearchStore) Resolve(ctx context.Context, ownerID string, accountGeneration int64) (corewebsearch.ResolvedConfig, error) {
-	ownerID = strings.TrimSpace(ownerID)
+func (s *CoreWebSearchStore) Resolve(ctx context.Context, scope corewebsearch.Scope) (corewebsearch.ResolvedConfig, error) {
+	ownerID, accountGeneration := strings.TrimSpace(scope.OwnerID), scope.AccountGeneration
 	if !corewebsearch.ValidIdentity(ownerID, accountGeneration) {
 		return corewebsearch.ResolvedConfig{}, corewebsearch.ErrInvalid
 	}
 	if err := s.checkWebSearchAdmission(ctx, ownerID, accountGeneration); err != nil {
 		return corewebsearch.ResolvedConfig{}, err
 	}
-	row, err := scanWebSearchRow(s.store.pool.QueryRow(ctx, webSearchSelect, ownerID, accountGeneration))
+	scopeKind, roomID := webSearchScopeArgs(scope)
+	row, err := scanWebSearchRow(s.store.pool.QueryRow(ctx, webSearchSelect, ownerID, accountGeneration, scopeKind, roomID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return corewebsearch.ResolvedConfig{}, corewebsearch.ErrNotConfigured
 	}
 	if err != nil {
 		return corewebsearch.ResolvedConfig{}, corewebsearch.ErrRepository
 	}
-	resolved := corewebsearch.ResolvedConfig{Config: row.config, CredentialVersion: row.credentialVersion, OwnerID: ownerID, AccountGeneration: accountGeneration}
+	resolved := corewebsearch.ResolvedConfig{Config: row.config, CredentialVersion: row.credentialVersion, OwnerID: ownerID, AccountGeneration: accountGeneration, RoomID: scope.RoomID}
 	if !row.config.APIKeyConfigured {
 		return resolved, nil
 	}
 	if row.credentialVersion <= 0 || len(row.nonce) == 0 || len(row.ciphertext) == 0 {
 		return corewebsearch.ResolvedConfig{}, corewebsearch.ErrRepository
 	}
-	plaintext, err := s.store.openDurableSecret(s.secretDomain(row.config.Provider), webSearchSecretRecordID(ownerID, accountGeneration), row.credentialVersion, webSearchSecretField, row.keyVersion, row.nonce, row.ciphertext)
+	plaintext, err := s.store.openDurableSecret(s.secretDomain(row.config.Provider), webSearchSecretRecordID(ownerID, accountGeneration, scope.RoomID), row.credentialVersion, webSearchSecretField, row.keyVersion, row.nonce, row.ciphertext)
 	if err != nil {
 		return corewebsearch.ResolvedConfig{}, corewebsearch.ErrRepository
 	}
@@ -97,6 +107,7 @@ func (s *CoreWebSearchStore) Update(ctx context.Context, mutation corewebsearch.
 	if !corewebsearch.ValidIdentity(mutation.OwnerID, mutation.AccountGeneration) {
 		return corewebsearch.Config{}, corewebsearch.ErrInvalid
 	}
+	scopeKind, roomID := webSearchScopeArgs(mutation.Scope)
 	key, err := uuid.Parse(mutation.IdempotencyKey)
 	if err != nil || key == uuid.Nil || len(mutation.RequestDigest) != 64 {
 		return corewebsearch.Config{}, corewebsearch.ErrInvalid
@@ -138,7 +149,7 @@ func (s *CoreWebSearchStore) Update(ctx context.Context, mutation corewebsearch.
 		return corewebsearch.Config{}, corewebsearch.ErrRepository
 	}
 
-	current, err := scanWebSearchRow(tx.QueryRow(ctx, webSearchSelect+` FOR UPDATE`, mutation.OwnerID, mutation.AccountGeneration))
+	current, err := scanWebSearchRow(tx.QueryRow(ctx, webSearchSelect+` FOR UPDATE`, mutation.OwnerID, mutation.AccountGeneration, scopeKind, roomID))
 	exists := err == nil
 	if errors.Is(err, pgx.ErrNoRows) {
 		current = webSearchRow{config: corewebsearch.DefaultConfig(), keyVersion: secretbox.KeyVersionMin}
@@ -168,7 +179,7 @@ func (s *CoreWebSearchStore) Update(ctx context.Context, mutation corewebsearch.
 			credentialVersion = 1
 		}
 		plaintext := []byte(*mutation.APIKey)
-		envelope, sealErr := s.store.sealDurableSecret(s.secretDomain(provider), webSearchSecretRecordID(mutation.OwnerID, mutation.AccountGeneration), credentialVersion, webSearchSecretField, plaintext)
+		envelope, sealErr := s.store.sealDurableSecret(s.secretDomain(provider), webSearchSecretRecordID(mutation.OwnerID, mutation.AccountGeneration, roomID), credentialVersion, webSearchSecretField, plaintext)
 		clearBytes(plaintext)
 		if sealErr != nil {
 			return corewebsearch.Config{}, corewebsearch.ErrRepository
@@ -198,9 +209,9 @@ func (s *CoreWebSearchStore) Update(ctx context.Context, mutation corewebsearch.
 	}
 	next := corewebsearch.Config{Enabled: enabled, Provider: provider, APIKeyConfigured: configured, Revision: current.config.Revision + 1, TestedAt: testedAt, UpdatedAt: &now}
 	if !exists {
-		_, err = tx.Exec(ctx, `INSERT INTO core_web_search_configs(owner_id,account_generation,enabled,provider,api_key_configured,credential_version,api_key_key_version,api_key_nonce,api_key_ciphertext,revision,tested_at,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$12)`, mutation.OwnerID, mutation.AccountGeneration, enabled, provider, configured, credentialVersion, keyVersion, nonce, ciphertext, next.Revision, next.TestedAt, now)
+		_, err = tx.Exec(ctx, `INSERT INTO core_web_search_configs(owner_id,account_generation,scope,room_id,enabled,provider,api_key_configured,credential_version,api_key_key_version,api_key_nonce,api_key_ciphertext,revision,tested_at,created_at,updated_at) VALUES($1,$2,$13,$14,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$12)`, mutation.OwnerID, mutation.AccountGeneration, enabled, provider, configured, credentialVersion, keyVersion, nonce, ciphertext, next.Revision, next.TestedAt, now, scopeKind, roomID)
 	} else {
-		_, err = tx.Exec(ctx, `UPDATE core_web_search_configs SET enabled=$3,provider=$4,api_key_configured=$5,credential_version=$6,api_key_key_version=$7,api_key_nonce=$8,api_key_ciphertext=$9,revision=$10,tested_at=$11,updated_at=$12 WHERE owner_id=$1 AND account_generation=$2 AND revision=$13`, mutation.OwnerID, mutation.AccountGeneration, enabled, provider, configured, credentialVersion, keyVersion, nonce, ciphertext, next.Revision, next.TestedAt, now, mutation.ExpectedRevision)
+		_, err = tx.Exec(ctx, `UPDATE core_web_search_configs SET enabled=$3,provider=$4,api_key_configured=$5,credential_version=$6,api_key_key_version=$7,api_key_nonce=$8,api_key_ciphertext=$9,revision=$10,tested_at=$11,updated_at=$12 WHERE owner_id=$1 AND account_generation=$2 AND revision=$13 AND scope=$14 AND room_id=$15`, mutation.OwnerID, mutation.AccountGeneration, enabled, provider, configured, credentialVersion, keyVersion, nonce, ciphertext, next.Revision, next.TestedAt, now, mutation.ExpectedRevision, scopeKind, roomID)
 	}
 	if err != nil {
 		return corewebsearch.Config{}, corewebsearch.ErrRepository
@@ -218,16 +229,17 @@ func (s *CoreWebSearchStore) Update(ctx context.Context, mutation corewebsearch.
 	return next, nil
 }
 
-func (s *CoreWebSearchStore) MarkTested(ctx context.Context, ownerID string, accountGeneration, expectedRevision int64, testedAt time.Time) (corewebsearch.Config, error) {
-	ownerID = strings.TrimSpace(ownerID)
+func (s *CoreWebSearchStore) MarkTested(ctx context.Context, scope corewebsearch.Scope, expectedRevision int64, testedAt time.Time) (corewebsearch.Config, error) {
+	ownerID, accountGeneration := strings.TrimSpace(scope.OwnerID), scope.AccountGeneration
 	if !corewebsearch.ValidIdentity(ownerID, accountGeneration) {
 		return corewebsearch.Config{}, corewebsearch.ErrInvalid
 	}
 	if err := s.checkWebSearchAdmission(ctx, ownerID, accountGeneration); err != nil {
 		return corewebsearch.Config{}, err
 	}
+	scopeKind, roomID := webSearchScopeArgs(scope)
 	testedAt = testedAt.UTC().Truncate(time.Microsecond)
-	row, err := scanWebSearchRow(s.store.pool.QueryRow(ctx, `UPDATE core_web_search_configs SET tested_at=$4 WHERE owner_id=$1 AND account_generation=$2 AND revision=$3 RETURNING `+webSearchColumns, ownerID, accountGeneration, expectedRevision, testedAt))
+	row, err := scanWebSearchRow(s.store.pool.QueryRow(ctx, `UPDATE core_web_search_configs SET tested_at=$4 WHERE owner_id=$1 AND account_generation=$2 AND revision=$3 AND scope=$5 AND room_id=$6 RETURNING `+webSearchColumns, ownerID, accountGeneration, expectedRevision, testedAt, scopeKind, roomID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return corewebsearch.Config{}, corewebsearch.ErrRevisionConflict
 	}
@@ -243,11 +255,12 @@ func (s *CoreWebSearchStore) MarkTested(ctx context.Context, ownerID string, acc
 // read-only transaction only after the bounded provider request, so
 // deprovision cannot commit between the final config check and outbound
 // dispatch.
-func (s *CoreWebSearchStore) ResolveForDispatch(ctx context.Context, ownerID string, accountGeneration int64, snapshot corewebsearch.ResolvedConfig) (corewebsearch.ResolvedConfig, func() error, error) {
-	ownerID = strings.TrimSpace(ownerID)
+func (s *CoreWebSearchStore) ResolveForDispatch(ctx context.Context, scope corewebsearch.Scope, snapshot corewebsearch.ResolvedConfig) (corewebsearch.ResolvedConfig, func() error, error) {
+	ownerID, accountGeneration := strings.TrimSpace(scope.OwnerID), scope.AccountGeneration
 	if !corewebsearch.ValidIdentity(ownerID, accountGeneration) {
 		return corewebsearch.ResolvedConfig{}, nil, corewebsearch.ErrInvalid
 	}
+	scopeKind, roomID := webSearchScopeArgs(scope)
 	tx, err := s.store.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return corewebsearch.ResolvedConfig{}, nil, corewebsearch.ErrRepository
@@ -269,7 +282,7 @@ func (s *CoreWebSearchStore) ResolveForDispatch(ctx context.Context, ownerID str
 		rollback()
 		return corewebsearch.ResolvedConfig{}, nil, err
 	}
-	row, err := scanWebSearchRow(tx.QueryRow(ctx, webSearchSelect+` FOR UPDATE`, ownerID, accountGeneration))
+	row, err := scanWebSearchRow(tx.QueryRow(ctx, webSearchSelect+` FOR UPDATE`, ownerID, accountGeneration, scopeKind, roomID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		rollback()
 		return corewebsearch.ResolvedConfig{}, nil, corewebsearch.ErrNotConfigured
@@ -282,8 +295,11 @@ func (s *CoreWebSearchStore) ResolveForDispatch(ctx context.Context, ownerID str
 		rollback()
 		return corewebsearch.ResolvedConfig{}, nil, corewebsearch.ErrNotConfigured
 	}
-	current := corewebsearch.ResolvedConfig{Config: row.config, CredentialVersion: row.credentialVersion, OwnerID: ownerID, AccountGeneration: accountGeneration}
-	if current.Revision != snapshot.Revision || current.CredentialVersion != snapshot.CredentialVersion || current.Provider != snapshot.Provider || !current.APIKeyConfigured || snapshot.OwnerID != ownerID || snapshot.AccountGeneration != accountGeneration {
+	// The dispatch fence must carry the exact scope it was resolved for: a
+	// group turn compares against its own group scope, so a value without the
+	// room would look like a different credential set and fail closed.
+	current := corewebsearch.ResolvedConfig{Config: row.config, CredentialVersion: row.credentialVersion, OwnerID: ownerID, AccountGeneration: accountGeneration, RoomID: scope.RoomID}
+	if current.Revision != snapshot.Revision || current.CredentialVersion != snapshot.CredentialVersion || current.Provider != snapshot.Provider || !current.APIKeyConfigured || snapshot.OwnerID != ownerID || snapshot.AccountGeneration != accountGeneration || snapshot.RoomID != scope.RoomID {
 		rollback()
 		return corewebsearch.ResolvedConfig{}, nil, corewebsearch.ErrRevisionConflict
 	}
@@ -291,7 +307,7 @@ func (s *CoreWebSearchStore) ResolveForDispatch(ctx context.Context, ownerID str
 		rollback()
 		return corewebsearch.ResolvedConfig{}, nil, corewebsearch.ErrDisabled
 	}
-	plaintext, err := s.store.openDurableSecret(s.secretDomain(row.config.Provider), webSearchSecretRecordID(ownerID, accountGeneration), row.credentialVersion, webSearchSecretField, row.keyVersion, row.nonce, row.ciphertext)
+	plaintext, err := s.store.openDurableSecret(s.secretDomain(row.config.Provider), webSearchSecretRecordID(ownerID, accountGeneration, scope.RoomID), row.credentialVersion, webSearchSecretField, row.keyVersion, row.nonce, row.ciphertext)
 	if err != nil {
 		rollback()
 		return corewebsearch.ResolvedConfig{}, nil, corewebsearch.ErrRepository
@@ -357,12 +373,18 @@ func checkWebSearchAdmissionTx(ctx context.Context, tx pgx.Tx, ownerID string, a
 	return nil
 }
 
-func webSearchSecretRecordID(ownerID string, accountGeneration int64) string {
+func webSearchSecretRecordID(ownerID string, accountGeneration int64, roomID string) string {
+	// The group scope is part of the durable-secret binding: without it two
+	// rows of the same owner/generation would share one envelope identity.
+	if trimmed := strings.TrimSpace(roomID); trimmed != "" {
+		return "owner=" + strconv.Itoa(len(ownerID)) + ":" + ownerID + ";generation=" +
+			strconv.FormatInt(accountGeneration, 10) + ";room=" + strconv.Itoa(len(trimmed)) + ":" + trimmed
+	}
 	return "owner=" + strconv.Itoa(len(ownerID)) + ":" + ownerID + ";generation=" + strconv.FormatInt(accountGeneration, 10)
 }
 
 func webSearchIdentityLockKey(ownerID string, accountGeneration int64) string {
-	return "web-search:" + webSearchSecretRecordID(ownerID, accountGeneration)
+	return "web-search:" + webSearchSecretRecordID(ownerID, accountGeneration, "")
 }
 
 func scanWebSearchRow(row pgx.Row) (webSearchRow, error) {
