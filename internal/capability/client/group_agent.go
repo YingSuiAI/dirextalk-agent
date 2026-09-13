@@ -107,16 +107,18 @@ func (c *Client) EnqueueScheduledGroupRequest(ctx context.Context, request Group
 		len(request.Body) > groupScheduledBodyMaxBytes {
 		return result, errors.New("invalid scheduled group request")
 	}
-	err := c.groupAgentQuery(ctx, "enqueue", map[string]any{
+	// Raising a request mutates Product's outbox, so it travels the private
+	// mutation channel rather than the read-only query one. The occurrence id is
+	// stable, so Product still sees one request per occurrence.
+	key := uuid.NewSHA1(uuid.NameSpaceOID, []byte("group-agent:enqueue:"+request.RequestID)).String()
+	replayed, err := c.groupAgentMutation(ctx, key, "enqueue", map[string]any{
 		"request_id": request.RequestID, "room_id": request.RoomID,
 		"actor_mxid": request.ActorMXID, "body": request.Body,
-	}, &result)
+	})
 	if err != nil {
 		return GroupAgentScheduledResult{}, err
 	}
-	if result.Status != "enqueued" {
-		return GroupAgentScheduledResult{}, errors.New("scheduled group request was refused")
-	}
+	result.Status, result.Replayed = "enqueued", replayed
 	return result, nil
 }
 
@@ -247,7 +249,8 @@ func (c *Client) PublishGroupAgentReply(ctx context.Context, input GroupAgentPub
 		return errors.New("invalid group final status")
 	}
 	key := uuid.NewSHA1(uuid.NameSpaceOID, []byte("group-agent:publish:"+input.RequestID+":"+input.Kind+":"+input.Status)).String()
-	return c.groupAgentMutation(ctx, key, "publish", input)
+	_, err := c.groupAgentMutation(ctx, key, "publish", input)
+	return err
 }
 
 func (c *Client) CompleteGroupAgentRequest(ctx context.Context, requestID string, revision int64, status string) error {
@@ -255,7 +258,8 @@ func (c *Client) CompleteGroupAgentRequest(ctx context.Context, requestID string
 		return errors.New("invalid group completion")
 	}
 	key := uuid.NewSHA1(uuid.NameSpaceOID, []byte("group-agent:complete:"+requestID+":"+status)).String()
-	return c.groupAgentMutation(ctx, key, "complete", map[string]any{"request_id": requestID, "binding_revision": revision, "status": status})
+	_, err := c.groupAgentMutation(ctx, key, "complete", map[string]any{"request_id": requestID, "binding_revision": revision, "status": status})
+	return err
 }
 
 func validGroupRequestID(value string) bool {
@@ -314,36 +318,39 @@ func (c *Client) groupAgentQuery(ctx context.Context, op string, input, result a
 	return nil
 }
 
-func (c *Client) groupAgentMutation(ctx context.Context, id, op string, input any) error {
+func (c *Client) groupAgentMutation(ctx context.Context, id, op string, input any) (bool, error) {
 	if c == nil || c.client == nil || ctx == nil {
-		return errors.New("group Agent Product service is unavailable")
+		return false, errors.New("group Agent Product service is unavailable")
 	}
 	raw, err := groupJSON(input)
 	if err != nil {
-		return err
+		return false, err
 	}
 	digest := sha256.Sum256(raw)
 	if err = c.acquireMutationSem(ctx); err != nil {
-		return err
+		return false, err
 	}
 	defer c.releaseMutationSem()
 	call, err := freshAgentServiceCallContext(ctx, id)
 	if err != nil {
-		return err
+		return false, err
 	}
 	release, err := c.enterProductCall(call)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer release()
 	response, err := c.client.StartOperation(c.authenticatedContext(ctx), &capv1.StartOperationRequest{CallContext: call, OperationId: id, CapabilityId: groupAgentCapability, Operation: op, RequestJson: raw, RequestDigest: digest[:]})
 	if err != nil {
-		return err
+		return false, err
 	}
-	if response == nil || response.GetOperationId() != id || response.GetError() != nil || response.GetState() != capv1.OperationState_OPERATION_STATE_COMPLETED {
-		return errors.New("group Agent Product mutation failed")
+	if response == nil || response.GetOperationId() != id || response.GetState() != capv1.OperationState_OPERATION_STATE_COMPLETED {
+		return false, errors.New("group Agent Product mutation failed")
 	}
-	return nil
+	if response.GetError() != nil {
+		return false, fmt.Errorf("group Agent Product mutation failed: %s", boundedGroupAgentError(response.GetError().GetMessage()))
+	}
+	return response.GetReplayed(), nil
 }
 
 // GroupAgentMember is one currently joined group member as the Agent may see it.
