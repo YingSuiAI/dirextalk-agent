@@ -103,6 +103,29 @@ type webSearchConversationResolver struct {
 	service *corewebsearch.Service
 }
 
+// webSearchExecutionScope resolves whose search configuration one tool call may
+// use. A group turn has no capability permission: its scope is the authenticated
+// group origin, which Core revalidates before every call and which the service
+// fences against the credential snapshot taken at resolution time. Every other
+// call keeps the owner's own call permission.
+func webSearchExecutionScope(ctx context.Context) (string, int64, bool) {
+	if origin, group := coreconversation.GroupOriginFromContext(ctx); group {
+		if origin.Validate() != nil || strings.TrimSpace(origin.OwnerID) == "" || origin.AccountGeneration == 0 {
+			return "", 0, false
+		}
+		return strings.TrimSpace(origin.OwnerID), int64(origin.AccountGeneration), true
+	}
+	permission, ok := capabilityclient.PermissionFromContext(ctx)
+	if !ok || permission == nil {
+		return "", 0, false
+	}
+	ownerID := strings.TrimSpace(permission.GetAuthenticatedOwnerId())
+	if ownerID == "" || permission.GetAccountGeneration() <= 0 {
+		return "", 0, false
+	}
+	return ownerID, permission.GetAccountGeneration(), true
+}
+
 func (r *webSearchConversationResolver) ResolveExtensions(ctx context.Context, selections []coreconversation.ExtensionSelection) ([]coreconversation.ResolvedExtension, error) {
 	var resolved []coreconversation.ResolvedExtension
 	if r != nil && r.base != nil {
@@ -194,12 +217,14 @@ func (r *webSearchConversationResolver) ResolveExtensions(ctx context.Context, s
 			if err := decoder.Decode(&tail); !errors.Is(err, io.EOF) {
 				return coreconversation.ToolResult{}, webSearchConversationExecutionError(corewebsearch.ErrInvalid)
 			}
-			toolPermission, ok := capabilityclient.PermissionFromContext(toolCtx)
-			if !ok || toolPermission == nil {
+			// A group turn carries no capability permission: its scope comes from
+			// the authenticated group origin (revalidated before every tool call
+			// by Core), so the group searches with the owner's configured search
+			// provider instead of failing the call.
+			toolOwnerID, toolGeneration, ok := webSearchExecutionScope(toolCtx)
+			if !ok {
 				return coreconversation.ToolResult{}, coreconversation.NewToolExecutionError(coreconversation.ToolOutcomeAuth, "Web search authorization is unavailable", 0, corewebsearch.ErrInvalid)
 			}
-			toolOwnerID := strings.TrimSpace(toolPermission.GetAuthenticatedOwnerId())
-			toolGeneration := toolPermission.GetAccountGeneration()
 			result, err := r.service.SearchResolved(toolCtx, toolOwnerID, toolGeneration, snapshot, input.Query, input.MaxResults)
 			if err != nil {
 				return coreconversation.ToolResult{}, webSearchConversationExecutionError(err)

@@ -84,6 +84,21 @@ func webSearchResolverContext() context.Context {
 	return capabilityclient.WithCallContext(context.Background(), &capv1.CallContext{ChainId: "00000000-0000-4000-8000-000000000001", RootOperationId: "00000000-0000-4000-8000-000000000002"}, &capv1.PermissionContext{AuthenticatedOwnerId: "owner", AccountGeneration: 1})
 }
 
+// TestWebSearchExecutionScopeFailsClosedWithoutAnIdentity pins the scope used
+// for one search call: a normal turn takes the owner's own call permission, and
+// a context with no identity at all resolves nothing instead of searching with
+// ambient authority. The group branch takes the authenticated group origin,
+// which Core injects and revalidates before every group tool call.
+func TestWebSearchExecutionScopeFailsClosedWithoutAnIdentity(t *testing.T) {
+	owner, generation, ok := webSearchExecutionScope(webSearchResolverContext())
+	if !ok || owner != "owner" || generation != 1 {
+		t.Fatalf("owner call scope=%q/%d ok=%v", owner, generation, ok)
+	}
+	if owner, generation, ok = webSearchExecutionScope(context.Background()); ok {
+		t.Fatalf("identity-free context searched as %q/%d", owner, generation)
+	}
+}
+
 func TestWebSearchConversationResolverInjectsStoredCredentialWithoutPersistingIt(t *testing.T) {
 	repository := &resolverWebSearchRepository{resolved: corewebsearch.ResolvedConfig{
 		Config: corewebsearch.Config{Enabled: true, Provider: corewebsearch.ProviderTavily, APIKeyConfigured: true, Revision: 7},
