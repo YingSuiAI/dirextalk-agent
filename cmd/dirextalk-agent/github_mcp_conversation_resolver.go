@@ -63,7 +63,8 @@ func (r *githubMCPConversationResolver) ResolveExtensions(ctx context.Context, s
 	// authenticated group origin, so the group keeps its own GitHub credential.
 	var owner string
 	var gen int64
-	if origin, group := coreconversation.GroupOriginFromContext(ctx); group {
+	origin, groupTurn := coreconversation.GroupOriginFromContext(ctx)
+	if groupTurn {
 		if origin.Validate() != nil {
 			return nil, coreconversation.ErrGroupAuthorization
 		}
@@ -108,41 +109,9 @@ func (r *githubMCPConversationResolver) ResolveExtensions(ctx context.Context, s
 		slog.Warn("[github-mcp] tool catalog unavailable", "error", groupAgentErrorSummary(e))
 		return out, nil
 	}
-	selected := make([]mcphttp.Tool, 0, len(tools))
-	seen := make(map[string]struct{}, len(tools))
-	for _, t := range tools {
-		name := strings.TrimSpace(t.Definition.Name)
-		if name == "" || name != t.Definition.Name || t.Run == nil {
-			return out, nil
-		}
-		if _, duplicate := seen[name]; duplicate {
-			return out, nil
-		}
-		seen[name] = struct{}{}
-		if !githubMCPDirectTool(name) {
-			continue
-		}
-		if t.Effect != mcphttp.ToolEffectReadOnly && t.Effect != mcphttp.ToolEffectUnsafeMutation {
-			// Missing or unknown provider annotations are never assumed safe to
-			// retry. The shared MCP adapter normally performs this normalization;
-			// keep the resolver boundary conservative for injected providers too.
-			t.Effect = mcphttp.ToolEffectUnsafeMutation
-		}
-		if t.AdvertisedReadOnly {
-			// Preserve generic strict classification, but retain a
-			// non-contradictory advertised read at this exact trusted boundary
-			// even when optional MCP annotations are omitted.
-			t.Effect = mcphttp.ToolEffectReadOnly
-			selected = append(selected, t)
-			continue
-		}
-		if t.Effect.ReadOnly() {
-			selected = append(selected, t)
-			continue
-		}
-		if githubMCPLightweightMutation(name) {
-			selected = append(selected, t)
-		}
+	selected, ok := selectGitHubMCPTools(tools, groupTurn)
+	if !ok {
+		return out, nil
 	}
 	if len(selected) == 0 {
 		slog.Warn("[github-mcp] no direct tools selected from the provider catalog", "catalog", len(tools))
@@ -183,6 +152,13 @@ func (r *githubMCPConversationResolver) ResolveExtensions(ctx context.Context, s
 		if !ok {
 			return coreconversation.ToolResult{}, coregithub.ErrInvalid
 		}
+		// Defence in depth for a turn admitted before this boundary existed: a
+		// group turn never writes through the owner's group credential.
+		if _, group := coreconversation.GroupOriginFromContext(c); group && !githubMCPToolReadOnly(t) {
+			return coreconversation.ToolResult{CallID: q.Call.ID, ToolName: q.Call.Name, IsError: true,
+				Content: "This group Ying can only read GitHub with the group credential. Writing or merging needs the group owner's private approval: ask the owner to run it, or request a Worker task for the owner to confirm."}.
+				WithObservation(coreconversation.ToolOutcomeFatal, "GitHub write requires the owner's private approval", coreconversation.ToolMutationNone), nil
+		}
 		readOnly := t.Effect.ReadOnly()
 		result, e := t.Run(c, mcphttp.ToolInvocation{Name: q.Call.Name, Arguments: []byte(q.Call.Arguments)})
 		if e != nil {
@@ -211,6 +187,57 @@ func (r *githubMCPConversationResolver) ResolveExtensions(ctx context.Context, s
 	return out, nil
 }
 
+// selectGitHubMCPTools applies Dirextalk's immutable GitHub tool policy to one
+// provider catalog. A group turn keeps only reads: any member may ask the group
+// Ying a question, but nobody may write, comment or merge with the owner's
+// group credential. Those actions stay on the owner's private confirmation path
+// (the group can still request a Worker, which the owner approves personally).
+//
+// The second result is false when the catalog itself is untrustworthy, which
+// drops the whole extension instead of a subset.
+func selectGitHubMCPTools(tools []mcphttp.Tool, groupTurn bool) ([]mcphttp.Tool, bool) {
+	selected := make([]mcphttp.Tool, 0, len(tools))
+	seen := make(map[string]struct{}, len(tools))
+	for _, t := range tools {
+		name := strings.TrimSpace(t.Definition.Name)
+		if name == "" || name != t.Definition.Name || t.Run == nil {
+			return nil, false
+		}
+		if _, duplicate := seen[name]; duplicate {
+			return nil, false
+		}
+		seen[name] = struct{}{}
+		if !githubMCPDirectTool(name) {
+			continue
+		}
+		if groupTurn && !githubMCPToolReadOnly(t) {
+			continue
+		}
+		if t.Effect != mcphttp.ToolEffectReadOnly && t.Effect != mcphttp.ToolEffectUnsafeMutation {
+			// Missing or unknown provider annotations are never assumed safe to
+			// retry. The shared MCP adapter normally performs this normalization;
+			// keep the resolver boundary conservative for injected providers too.
+			t.Effect = mcphttp.ToolEffectUnsafeMutation
+		}
+		if t.AdvertisedReadOnly {
+			// Preserve generic strict classification, but retain a
+			// non-contradictory advertised read at this exact trusted boundary
+			// even when optional MCP annotations are omitted.
+			t.Effect = mcphttp.ToolEffectReadOnly
+			selected = append(selected, t)
+			continue
+		}
+		if t.Effect.ReadOnly() {
+			selected = append(selected, t)
+			continue
+		}
+		if githubMCPLightweightMutation(name) {
+			selected = append(selected, t)
+		}
+	}
+	return selected, true
+}
+
 func githubMCPDirectTool(name string) bool {
 	remoteName := strings.TrimPrefix(name, "mcp__github__")
 	if remoteName == name {
@@ -222,6 +249,14 @@ func githubMCPDirectTool(name string) bool {
 		}
 	}
 	return false
+}
+
+// githubMCPToolReadOnly reports whether one provider tool is treated as a read
+// at this trusted boundary. It mirrors the selection rules below exactly, so a
+// group turn can never be handed a tool that the read-only group boundary
+// would reject anyway.
+func githubMCPToolReadOnly(t mcphttp.Tool) bool {
+	return t.AdvertisedReadOnly || t.Effect.ReadOnly()
 }
 
 // githubMCPLightweightMutation is Dirextalk's immutable mutation allowlist.
