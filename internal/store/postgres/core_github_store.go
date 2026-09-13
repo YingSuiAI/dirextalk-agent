@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -43,12 +44,6 @@ type githubQuery interface {
 const githubColumns = `account_generation,enabled,provider,github_token_configured,credential_version,github_token_key_version,github_token_nonce,github_token_ciphertext,revision,tested_at,updated_at`
 const githubSelect = `SELECT ` + githubColumns + ` FROM core_github_configs WHERE owner_id=$1 AND account_generation=$2 AND scope=$3 AND room_id=$4`
 
-// githubScopeArgs2 expands a scope into the two durable scope columns.
-func githubScopeArgs2(scope coregithub.Scope) []any {
-	kind, roomID := githubScopeArgs(scope)
-	return []any{kind, roomID}
-}
-
 // githubScopeArgs maps a credential scope onto the durable scope columns.
 func githubScopeArgs(scope coregithub.Scope) (string, string) {
 	if strings.TrimSpace(scope.RoomID) == "" {
@@ -85,11 +80,13 @@ func (s *CoreGitHubStore) Resolve(ctx context.Context, scope coregithub.Scope) (
 	if err := s.checkGitHubAdmission(ctx, ownerID, accountGeneration); err != nil {
 		return coregithub.ResolvedConfig{}, err
 	}
-	row, err := scanGitHubRow(s.store.pool.QueryRow(ctx, githubSelect, ownerID, accountGeneration, githubScopeArgs2(scope)))
+	scopeKind, roomID := githubScopeArgs(scope)
+	row, err := scanGitHubRow(s.store.pool.QueryRow(ctx, githubSelect, ownerID, accountGeneration, scopeKind, roomID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return coregithub.ResolvedConfig{}, coregithub.ErrNotConfigured
 	}
 	if err != nil {
+		slog.Warn("[github-store] credential row read failed", "room_id", scope.RoomID, "error", truncateStoreError(err))
 		return coregithub.ResolvedConfig{}, coregithub.ErrRepository
 	}
 	resolved := coregithub.ResolvedConfig{Config: row.config, CredentialVersion: row.credentialVersion, OwnerID: ownerID, AccountGeneration: accountGeneration}
@@ -101,6 +98,9 @@ func (s *CoreGitHubStore) Resolve(ctx context.Context, scope coregithub.Scope) (
 	}
 	plaintext, err := s.store.openDurableSecret(s.secretDomain(row.config.Provider), githubSecretRecordID(ownerID, accountGeneration, scope.RoomID), row.credentialVersion, githubSecretField, row.keyVersion, row.nonce, row.ciphertext)
 	if err != nil {
+		slog.Warn("[github-store] credential open failed", "room_id", scope.RoomID,
+			"record", githubSecretRecordID(ownerID, accountGeneration, scope.RoomID),
+			"revision", row.credentialVersion, "key_version", row.keyVersion, "error", truncateStoreError(err))
 		return coregithub.ResolvedConfig{}, coregithub.ErrRepository
 	}
 	resolved.GitHubToken = string(plaintext)
@@ -274,7 +274,8 @@ func (s *CoreGitHubStore) MarkTested(ctx context.Context, scope coregithub.Scope
 		return coregithub.Config{}, err
 	}
 	testedAt = testedAt.UTC().Truncate(time.Microsecond)
-	row, err := scanGitHubRow(s.store.pool.QueryRow(ctx, `UPDATE core_github_configs SET tested_at=$5 WHERE owner_id=$1 AND account_generation=$2 AND scope=$3 AND room_id=$4 AND revision=$6 RETURNING `+githubColumns, ownerID, accountGeneration, githubScopeArgs2(scope), expectedRevision, testedAt))
+	scopeKind, roomID := githubScopeArgs(scope)
+	row, err := scanGitHubRow(s.store.pool.QueryRow(ctx, `UPDATE core_github_configs SET tested_at=$5 WHERE owner_id=$1 AND account_generation=$2 AND scope=$3 AND room_id=$4 AND revision=$6 RETURNING `+githubColumns, ownerID, accountGeneration, scopeKind, roomID, expectedRevision, testedAt))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return coregithub.Config{}, coregithub.ErrRevisionConflict
 	}
@@ -317,7 +318,8 @@ func (s *CoreGitHubStore) ResolveForDispatch(ctx context.Context, scope coregith
 		rollback()
 		return coregithub.ResolvedConfig{}, nil, err
 	}
-	row, err := scanGitHubRow(tx.QueryRow(ctx, githubSelect+` FOR UPDATE`, ownerID, accountGeneration, githubScopeArgs2(scope)))
+	scopeKind, roomID := githubScopeArgs(scope)
+	row, err := scanGitHubRow(tx.QueryRow(ctx, githubSelect+` FOR UPDATE`, ownerID, accountGeneration, scopeKind, roomID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		rollback()
 		return coregithub.ResolvedConfig{}, nil, coregithub.ErrNotConfigured
@@ -448,4 +450,13 @@ func scanGitHubRow(row pgx.Row) (githubRow, error) {
 		value.config.UpdatedAt = &v
 	}
 	return value, nil
+}
+
+// truncateStoreError keeps diagnostics useful without dumping long driver text.
+func truncateStoreError(err error) string {
+	value := strings.TrimSpace(err.Error())
+	if len(value) > 300 {
+		return value[:300]
+	}
+	return value
 }
