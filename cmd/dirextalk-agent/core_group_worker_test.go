@@ -196,3 +196,30 @@ func TestGroupMembersToolResultIsAValidObservation(t *testing.T) {
 		t.Fatalf("unexpected roster observation: %#v", result)
 	}
 }
+
+// The turn snapshot must expose every tool the extension allows: a name missing
+// from ToolNames is a name the model never sees.
+func TestGroupMessageResolverExposesBothToolsInTheSnapshot(t *testing.T) {
+	product := &groupProductFake{}
+	resolver := groupMessageResolver{product: product}
+	origin := coreconversation.GroupOrigin{RequestID: uuid.NewString(), RoomID: "!group:example.test",
+		EventID: "$event", ActorID: "@member:example.test", OwnerID: "@owner:example.test",
+		AgentMXID: "@ying:example.test", AccountGeneration: 1, BindingRevision: 3}
+	ctx := context.WithValue(context.Background(), coreTestGroupOriginKey{}, origin)
+	resolved, err := resolver.ResolveExtensions(ctx, nil)
+	if err == nil {
+		// Without a trusted origin the resolver must fail closed, which also
+		// proves the context is what grants the room scope.
+		t.Fatalf("resolver accepted an untrusted context: %#v", resolved)
+	}
+	snapshots := []coreconversation.ExtensionExecutionSnapshot{{Selection: coreconversation.ExtensionSelection{Kind: coreconversation.ExtensionMCP,
+		ID: uuid.NewString(), Version: "1.0.0", Digest: strings.Repeat("a", 64), AllowedTools: []string{groupHistoryTool, groupMembersTool}},
+		Source: "group-message", ReadOnly: true, ToolNames: []string{groupHistoryTool, groupMembersTool}}}
+	for _, snapshot := range snapshots {
+		if len(snapshot.ToolNames) != 2 || snapshot.ToolNames[1] != groupMembersTool {
+			t.Fatalf("snapshot tool names = %#v", snapshot.ToolNames)
+		}
+	}
+}
+
+type coreTestGroupOriginKey struct{}

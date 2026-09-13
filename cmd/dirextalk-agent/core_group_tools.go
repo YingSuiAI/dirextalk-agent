@@ -69,7 +69,7 @@ func (r groupMessageResolver) ResolveExtensions(ctx context.Context, selections 
 	digest := hex.EncodeToString(contentSum[:])
 	selection := coreconversation.ExtensionSelection{Kind: coreconversation.ExtensionMCP, ID: uuid.NewSHA1(uuid.NameSpaceOID, []byte("group-message:"+origin.ConversationID())).String(), Version: "1.0.0", Digest: digest, AllowedTools: []string{groupHistoryTool, groupMembersTool}}
 	return []coreconversation.ResolvedExtension{{Selection: selection, Snapshot: coreconversation.ExtensionExecutionSnapshot{
-		Selection: selection, InstallationID: selection.ID, VersionID: selection.Version, Source: "group-message", ContentDigest: digest, ArtifactDigest: digest, ToolSchemaDigest: schemaDigest, ToolNames: []string{groupHistoryTool}, ReadOnly: true,
+		Selection: selection, InstallationID: selection.ID, VersionID: selection.Version, Source: "group-message", ContentDigest: digest, ArtifactDigest: digest, ToolSchemaDigest: schemaDigest, ToolNames: []string{groupHistoryTool, groupMembersTool}, ReadOnly: true,
 	}, Tools: []coremodel.Tool{historyTool, membersTool}, Execute: func(callCtx context.Context, request coreconversation.ToolExecutionRequest) (coreconversation.ToolResult, error) {
 		if request.Call.Name == groupMembersTool {
 			input := struct {
