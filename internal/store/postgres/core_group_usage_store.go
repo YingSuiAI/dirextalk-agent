@@ -17,8 +17,8 @@ var (
 )
 
 // GroupUsage is the bounded per-group consumption of this node's Agent. It is
-// derived from the group's own conversations, turns, tool attempts and Worker
-// plans, so it never mixes in the owner's private usage.
+// derived from the group's own conversations, turns, tool-call events and
+// Worker plans, so it never mixes in the owner's private usage.
 type GroupUsage struct {
 	RoomID            string
 	Turns             int64
@@ -56,7 +56,7 @@ func (s *CoreConversationStore) GroupUsage(ctx context.Context, roomID string) (
 			(SELECT count(*) FROM grouped_turns WHERE state = 'failed'),
 			(SELECT COALESCE(sum(model_dispatch_count), 0) FROM grouped_turns),
 			(SELECT COALESCE(sum(model_active_milliseconds), 0) FROM grouped_turns),
-			(SELECT count(*) FROM core_conversation_tool_attempts a WHERE a.turn_id IN (SELECT turn_id FROM grouped_turns)),
+			(SELECT count(*) FROM core_conversation_turn_events e WHERE e.kind = 'tool_call' AND e.turn_id IN (SELECT turn_id FROM grouped_turns)),
 			(SELECT count(*) FROM core_cloud_worker_plans p WHERE p.turn_id IN (SELECT turn_id FROM grouped_turns)),
 			(SELECT max(updated_at) FROM grouped_turns)
 	`, roomID).Scan(&out.Turns, &out.CompletedTurns, &out.FailedTurns, &out.ModelDispatches,
