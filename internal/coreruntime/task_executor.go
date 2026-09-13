@@ -79,6 +79,9 @@ var (
 	// details and must not enter Task failure projections.
 	ErrScheduledSnapshotInvalid = errors.New("scheduled_snapshot_invalid")
 	ErrScheduledTurnAdmission   = errors.New("scheduled_turn_admission_failed")
+	// ErrScheduledGroupDelivery reports a due group schedule that Product would
+	// not accept as a group request, so the group never ran.
+	ErrScheduledGroupDelivery = errors.New("scheduled_group_delivery_failed")
 )
 
 type ManagedOutcome struct {

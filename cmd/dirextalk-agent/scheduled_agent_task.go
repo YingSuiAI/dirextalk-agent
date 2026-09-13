@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -166,7 +167,10 @@ func scheduledGroupOccurrence(ctx context.Context, conversation scheduledConvers
 		Body: "[定时任务] " + strings.TrimSpace(task.Spec.Goal),
 	})
 	if err != nil {
-		return coreruntime.ManagedOutcome{Err: err}, true
+		// The task failure a user sees would otherwise read as a model error.
+		slog.Warn("[scheduled-agent] group occurrence was not delivered",
+			"task_id", task.ID, "room_id", group.RoomID, "error", groupAgentErrorSummary(err))
+		return coreruntime.ManagedOutcome{Err: errors.Join(coreruntime.ErrScheduledGroupDelivery, err)}, true
 	}
 	text := "Scheduled group task queued for its room."
 	if result.Replayed {
