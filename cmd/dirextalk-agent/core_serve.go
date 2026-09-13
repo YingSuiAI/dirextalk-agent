@@ -495,12 +495,14 @@ func serveCore(cfg config.Config) error {
 	var groupCleaner coreLifecycleCleaner
 	var groupModelBindings *groupModelBindingAdapter
 	var groupExtensionBindings *groupExtensionBindingAdapter
+	var groupUsage *groupUsageAdapter
 	if productCapabilityClient != nil {
 		groupLoop = newGroupAgentLoop(productCapabilityClient, conversation, profiles, uint64(cfg.ProductCapabilityAccountGeneration), conversationStore)
 		// A group answers with the model its owner picked for that group, and
 		// with the owner's default conversation model when none was picked.
 		groupModelBindings = &groupModelBindingAdapter{store: postgres.NewCoreGroupModelBindingStore(store)}
 		groupExtensionBindings = &groupExtensionBindingAdapter{store: postgres.NewCoreGroupExtensionBindingStore(store)}
+		groupUsage = &groupUsageAdapter{store: conversationStore}
 		groupLoop.SetGroupModelOverrides(groupModelBindings)
 		groupCleaner = groupLoop
 		conversation.SetGroupAuthorizationGuard(groupLoop)
@@ -582,6 +584,12 @@ func serveCore(cfg config.Config) error {
 			Conversation:  conversation,
 			Confirmations: confirmationDomain,
 			Models:        profiles,
+			GroupUsage: func() agentcapability.GroupUsageReader {
+				if groupUsage == nil {
+					return nil
+				}
+				return groupUsage
+			}(),
 			GroupExtensions: func() agentcapability.GroupExtensionBindings {
 				if groupExtensionBindings == nil {
 					return nil

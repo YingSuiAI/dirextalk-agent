@@ -51,14 +51,17 @@ type CoreBindings struct {
 	// GroupExtensions is the per-group third-party MCP binding. It is optional:
 	// without it no installation is shared with a group.
 	GroupExtensions GroupExtensionBindings
-	Tasks           coretask.Service
-	Schedules       coretask.ScheduleStore
-	Knowledge       *coreknowledge.Service
-	Memory          *corememory.Service
-	StaticSites     *corestaticsite.Service
-	Servers         *coreserver.Service
-	Extensions      coreextension.Service
-	Product         *capabilityclient.Client
+	// GroupUsage reads one group's bounded consumption. It is optional: without
+	// it the owner cannot read per-group usage.
+	GroupUsage  GroupUsageReader
+	Tasks       coretask.Service
+	Schedules   coretask.ScheduleStore
+	Knowledge   *coreknowledge.Service
+	Memory      *corememory.Service
+	StaticSites *corestaticsite.Service
+	Servers     *coreserver.Service
+	Extensions  coreextension.Service
+	Product     *capabilityclient.Client
 	// CapabilityProgress persists bounded stream events in the capability
 	// operation ledger. It is optional so the Core adapter remains reusable in
 	// unary-only tests and embeddings.
@@ -82,7 +85,7 @@ type CoreBindings struct {
 func NewCoreRegistry(bindings CoreBindings) *Registry {
 	r := &Registry{capabilities: make(map[string]Capability)}
 	if bindings.Conversation != nil {
-		r.Register(&coreChatCapability{service: bindings.Conversation, models: bindings.Models})
+		r.Register(&coreChatCapability{service: bindings.Conversation, models: bindings.Models, usage: bindings.GroupUsage})
 	}
 	if bindings.ExecutionV2 != nil && bindings.ExecutionV2.ReadyForPublication() {
 		if capability, err := executioncap.NewCapability(bindings.ExecutionV2); err == nil {
@@ -187,6 +190,7 @@ func (c *coreAccountCapability) HandleOperation(ctx context.Context, operationID
 type coreChatCapability struct {
 	service *coreconversation.Service
 	models  *coremodel.Service
+	usage   GroupUsageReader
 }
 
 type durableStreamExtensionSelection struct {
@@ -410,6 +414,7 @@ func publicTurnMetadataList(values []coreconversation.Turn) []publicListedTurn {
 
 func (c *coreChatCapability) Descriptor() *capv1.CapabilityDescriptor {
 	return descriptor("agent.chat.v1", "Chat", "Core conversation operations", []opSpec{
+		{"get_group_usage", capv1.OperationType_OPERATION_TYPE_READ, "agent:chat:read"},
 		{"create_conversation", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:chat:write"},
 		{"get_conversation", capv1.OperationType_OPERATION_TYPE_READ, "agent:chat:read"},
 		{"list_conversations", capv1.OperationType_OPERATION_TYPE_READ, "agent:chat:read"},
@@ -537,6 +542,36 @@ func (c *coreChatCapability) HandleOperation(ctx context.Context, operationID st
 			}{publicListedTurn{publicTurnMetadata: projectPublicTurnMetadata(value), IdempotencyKey: value.RequestID}, value.GroupOrigin}}, nil)
 		}
 		return marshalResult(map[string]any{"turn": publicListedTurn{publicTurnMetadata: projectPublicTurnMetadata(value), IdempotencyKey: value.RequestID}}, nil)
+	case "get_group_usage":
+		if c.usage == nil {
+			return nil, coreconversation.ErrInvalid
+		}
+		roomID := strings.TrimSpace(stringValue(in, "room_id"))
+		if roomID == "" {
+			return nil, coreconversation.ErrInvalid
+		}
+		if err := requireCapabilityIdentity(ctx); err != nil {
+			return nil, err
+		}
+		usage, err := c.usage.GroupUsage(ctx, roomID)
+		if err != nil {
+			return nil, err
+		}
+		payload := map[string]any{
+			"room_id":             usage.RoomID,
+			"turns":               usage.Turns,
+			"completed_turns":     usage.CompletedTurns,
+			"failed_turns":        usage.FailedTurns,
+			"model_dispatches":    usage.ModelDispatches,
+			"model_active_millis": usage.ModelActiveMillis,
+			"tool_calls":          usage.ToolCalls,
+			"worker_plans":        usage.WorkerPlans,
+			"last_activity_at":    "",
+		}
+		if usage.LastActivityAt != nil {
+			payload["last_activity_at"] = usage.LastActivityAt.UTC().Format(time.RFC3339)
+		}
+		return marshalResult(payload, nil)
 	case "compress_context":
 		value, err := c.service.CompressContext(ctx, stringValue(in, "conversation_id"), uintValue(in, "expected_revision"), intValue(in, "memory_window", coreconversation.DefaultContextMemoryWindow), key)
 		return marshalResult(value, err)
