@@ -33,7 +33,8 @@ func TestGroupUsageAggregatesOnlyTheGroupPostgres(t *testing.T) {
 	if usage.ModelDispatches != 3 || usage.ModelActiveMillis != 1500 {
 		t.Fatalf("group dispatch usage=%+v", usage)
 	}
-	if usage.ToolCalls != 0 || usage.WorkerPlans != 0 || usage.LastActivityAt == nil {
+	if usage.ToolCalls != 0 || usage.WorkerPlans != 0 || usage.LastActivityAt == nil ||
+		usage.WorkerQuoteMicros != 0 || usage.WorkerStartedMicros != 0 || usage.WorkerQuoteCurrency != "" {
 		t.Fatalf("group usage bounds=%+v", usage)
 	}
 	// The owner's own durable turn (created by the shared fixture) must never be

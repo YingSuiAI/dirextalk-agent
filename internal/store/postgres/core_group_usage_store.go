@@ -28,7 +28,13 @@ type GroupUsage struct {
 	ModelActiveMillis int64
 	ToolCalls         int64
 	WorkerPlans       int64
-	LastActivityAt    *time.Time
+	// WorkerQuoteMicros is the sum of every Worker quote proposed for this group.
+	// WorkerStartedMicros keeps only the quotes of Workers that actually started,
+	// so an unapproved proposal is never reported as spending.
+	WorkerQuoteMicros   int64
+	WorkerStartedMicros int64
+	WorkerQuoteCurrency string
+	LastActivityAt      *time.Time
 }
 
 // GroupUsage aggregates one group's usage. The group is addressed by its room,
@@ -58,9 +64,13 @@ func (s *CoreConversationStore) GroupUsage(ctx context.Context, roomID string) (
 			(SELECT COALESCE(sum(model_active_milliseconds), 0) FROM grouped_turns),
 			(SELECT count(*) FROM core_conversation_turn_events e WHERE e.kind = 'tool_call' AND e.turn_id IN (SELECT turn_id FROM grouped_turns)),
 			(SELECT count(*) FROM core_cloud_worker_plans p WHERE p.turn_id IN (SELECT turn_id FROM grouped_turns)),
+			(SELECT COALESCE(sum((p.plan_json->'quote'->>'amount_micros')::bigint), 0) FROM core_cloud_worker_plans p WHERE p.turn_id IN (SELECT turn_id FROM grouped_turns)),
+			(SELECT COALESCE(sum((p.plan_json->'quote'->>'amount_micros')::bigint), 0) FROM core_cloud_worker_plans p WHERE p.turn_id IN (SELECT turn_id FROM grouped_turns) AND p.status IN ('provisioning','running','cleaning','succeeded','failed')),
+			(SELECT COALESCE(min(p.plan_json->'quote'->>'currency'), '') FROM core_cloud_worker_plans p WHERE p.turn_id IN (SELECT turn_id FROM grouped_turns)),
 			(SELECT max(updated_at) FROM grouped_turns)
 	`, roomID).Scan(&out.Turns, &out.CompletedTurns, &out.FailedTurns, &out.ModelDispatches,
-		&out.ModelActiveMillis, &out.ToolCalls, &out.WorkerPlans, &lastActivity)
+		&out.ModelActiveMillis, &out.ToolCalls, &out.WorkerPlans,
+		&out.WorkerQuoteMicros, &out.WorkerStartedMicros, &out.WorkerQuoteCurrency, &lastActivity)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return out, nil

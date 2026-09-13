@@ -24,14 +24,17 @@ func (a *groupUsageAdapter) GroupUsage(ctx context.Context, roomID string) (agen
 		return agentcapability.GroupUsage{}, err
 	}
 	return agentcapability.GroupUsage{
-		RoomID:            usage.RoomID,
-		Turns:             usage.Turns,
-		CompletedTurns:    usage.CompletedTurns,
-		FailedTurns:       usage.FailedTurns,
-		ModelDispatches:   usage.ModelDispatches,
-		ModelActiveMillis: usage.ModelActiveMillis,
-		ToolCalls:         usage.ToolCalls,
-		WorkerPlans:       usage.WorkerPlans,
-		LastActivityAt:    usage.LastActivityAt,
+		RoomID:              usage.RoomID,
+		Turns:               usage.Turns,
+		CompletedTurns:      usage.CompletedTurns,
+		FailedTurns:         usage.FailedTurns,
+		ModelDispatches:     usage.ModelDispatches,
+		ModelActiveMillis:   usage.ModelActiveMillis,
+		ToolCalls:           usage.ToolCalls,
+		WorkerPlans:         usage.WorkerPlans,
+		WorkerQuoteMicros:   usage.WorkerQuoteMicros,
+		WorkerStartedMicros: usage.WorkerStartedMicros,
+		WorkerQuoteCurrency: usage.WorkerQuoteCurrency,
+		LastActivityAt:      usage.LastActivityAt,
 	}, nil
 }

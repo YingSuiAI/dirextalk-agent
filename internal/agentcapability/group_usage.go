@@ -18,7 +18,12 @@ type GroupUsage struct {
 	ModelActiveMillis int64
 	ToolCalls         int64
 	WorkerPlans       int64
-	LastActivityAt    *time.Time
+	// Cloud spending estimates: every proposed quote, and only the quotes of
+	// Workers that actually started (an unapproved proposal never spent).
+	WorkerQuoteMicros   int64
+	WorkerStartedMicros int64
+	WorkerQuoteCurrency string
+	LastActivityAt      *time.Time
 }
 
 // GroupUsageReader aggregates one group's usage.
