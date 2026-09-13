@@ -89,7 +89,7 @@ func (s *CoreGitHubStore) Resolve(ctx context.Context, scope coregithub.Scope) (
 		slog.Warn("[github-store] credential row read failed", "room_id", scope.RoomID, "error", truncateStoreError(err))
 		return coregithub.ResolvedConfig{}, coregithub.ErrRepository
 	}
-	resolved := coregithub.ResolvedConfig{Config: row.config, CredentialVersion: row.credentialVersion, OwnerID: ownerID, AccountGeneration: accountGeneration}
+	resolved := coregithub.ResolvedConfig{Config: row.config, CredentialVersion: row.credentialVersion, OwnerID: ownerID, AccountGeneration: accountGeneration, RoomID: scope.RoomID}
 	if !row.config.GitHubTokenConfigured {
 		return resolved, nil
 	}
@@ -332,8 +332,11 @@ func (s *CoreGitHubStore) ResolveForDispatch(ctx context.Context, scope coregith
 		rollback()
 		return coregithub.ResolvedConfig{}, nil, coregithub.ErrNotConfigured
 	}
-	current := coregithub.ResolvedConfig{Config: row.config, CredentialVersion: row.credentialVersion, OwnerID: ownerID, AccountGeneration: accountGeneration}
-	if current.Revision != snapshot.Revision || current.CredentialVersion != snapshot.CredentialVersion || current.Provider != snapshot.Provider || !current.GitHubTokenConfigured || snapshot.OwnerID != ownerID || snapshot.AccountGeneration != accountGeneration {
+	// The dispatch fence must carry the exact scope it was resolved for: a
+	// group turn compares against its own group scope, so a value without the
+	// room would look like a different credential set and fail closed.
+	current := coregithub.ResolvedConfig{Config: row.config, CredentialVersion: row.credentialVersion, OwnerID: ownerID, AccountGeneration: accountGeneration, RoomID: scope.RoomID}
+	if current.Revision != snapshot.Revision || current.CredentialVersion != snapshot.CredentialVersion || current.Provider != snapshot.Provider || !current.GitHubTokenConfigured || snapshot.OwnerID != ownerID || snapshot.AccountGeneration != accountGeneration || snapshot.RoomID != scope.RoomID {
 		rollback()
 		return coregithub.ResolvedConfig{}, nil, coregithub.ErrRevisionConflict
 	}
