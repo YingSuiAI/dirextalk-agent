@@ -14,6 +14,7 @@ const (
 	webSearchConfigSchema     = `{"additionalProperties":false,"properties":{"api_key_configured":{"type":"boolean"},"api_key_hint":{"type":"string"},"enabled":{"type":"boolean"},"provider":{"enum":["tavily"],"type":"string"},"revision":{"minimum":0,"type":"integer"},"tested_at":{"format":"date-time","type":"string"},"updated_at":{"format":"date-time","type":"string"}},"required":["enabled","provider","api_key_configured","revision"],"type":"object"}`
 	webSearchUpdateSchema     = `{"additionalProperties":false,"properties":{"api_key":{"maxLength":4096,"minLength":1,"type":"string","writeOnly":true},"api_key_clear":{"type":"boolean"},"enabled":{"type":"boolean"},"expected_revision":{"minimum":0,"type":"integer"},"idempotency_key":{"format":"uuid","type":"string"},"provider":{"enum":["tavily"],"type":"string"}},"required":["idempotency_key","expected_revision"],"type":"object"}`
 	webSearchTestResultSchema = `{"additionalProperties":false,"properties":{"api_key_configured":{"type":"boolean"},"enabled":{"type":"boolean"},"ok":{"type":"boolean"},"provider":{"enum":["tavily"],"type":"string"},"result_count":{"minimum":0,"type":"integer"},"revision":{"minimum":1,"type":"integer"},"tested_at":{"format":"date-time","type":"string"}},"required":["ok","provider","result_count","tested_at","enabled","api_key_configured","revision"],"type":"object"}`
+	webSearchGroupResetSchema = `{"additionalProperties":false,"properties":{"idempotency_key":{"format":"uuid","type":"string"},"room_id":{"maxLength":1024,"minLength":2,"type":"string"}},"required":["idempotency_key","room_id"],"type":"object"}`
 )
 
 type coreWebSearchCapability struct {
@@ -29,6 +30,7 @@ func (c *coreWebSearchCapability) Descriptor() *capv1.CapabilityDescriptor {
 		{ID: "get_config", DisplayName: "Get web search config", Description: "Read the non-secret Web Search configuration.", Type: capv1.OperationType_OPERATION_TYPE_READ, Scope: "agent:web_search:read", InputSchema: emptyObjectSchema, ResultSchema: webSearchConfigSchema},
 		{ID: "update_config", DisplayName: "Update web search config", Description: "Update Web Search configuration and its write-only credential.", Type: capv1.OperationType_OPERATION_TYPE_MUTATION, Scope: "agent:web_search:write", InputSchema: webSearchUpdateSchema, ResultSchema: webSearchConfigSchema},
 		{ID: "test", DisplayName: "Test web search", Description: "Test the stored Web Search credential.", Type: capv1.OperationType_OPERATION_TYPE_MUTATION, Scope: "agent:web_search:write", InputSchema: emptyObjectSchema, ResultSchema: webSearchTestResultSchema},
+		{ID: "reset_group_config", DisplayName: "Reset group web search", Description: "Remove one group's own Web Search configuration so that group inherits the owner's provider again.", Type: capv1.OperationType_OPERATION_TYPE_MUTATION, Scope: "agent:web_search:write", InputSchema: webSearchGroupResetSchema, ResultSchema: webSearchConfigSchema},
 	})
 }
 
@@ -80,6 +82,22 @@ func (c *coreWebSearchCapability) HandleOperation(ctx context.Context, operation
 			return nil, err
 		}
 		value, err := c.service.Test(ctx, scope)
+		return marshalResult(value, err)
+	case "reset_group_config":
+		var request struct {
+			RoomID         string `json:"room_id"`
+			IdempotencyKey string `json:"idempotency_key"`
+		}
+		if err := decodeStrictObject(raw, &request); err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(request.RoomID) == "" {
+			return nil, corewebsearch.ErrInvalid
+		}
+		if err := c.service.ResetGroupScope(ctx, webSearchScope(ownerID, accountGeneration, request.RoomID), request.IdempotencyKey); err != nil {
+			return nil, err
+		}
+		value, err := c.service.Get(ctx, webSearchScope(ownerID, accountGeneration, request.RoomID))
 		return marshalResult(value, err)
 	default:
 		return nil, fmt.Errorf("unknown web search operation %q", operationID)

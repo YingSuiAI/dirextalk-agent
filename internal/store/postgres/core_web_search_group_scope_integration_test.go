@@ -145,6 +145,25 @@ func TestCoreWebSearchGroupScopeDispatchFenceIntegration(t *testing.T) {
 	if _, err := service.Resolve(ctx, otherGroup); !errors.Is(err, corewebsearch.ErrNotConfigured) {
 		t.Fatalf("unconfigured group resolved a credential: %v", err)
 	}
+	// Resetting one group's own configuration returns it to inheritance and
+	// never touches the owner's personal credential; the personal scope cannot
+	// be reset through this path.
+	if err := service.ResetGroupScope(ctx, personal, uuid.NewString()); !errors.Is(err, corewebsearch.ErrInvalid) {
+		t.Fatalf("personal scope was resettable: %v", err)
+	}
+	resetKey := uuid.NewString()
+	if err := service.ResetGroupScope(ctx, group, resetKey); err != nil {
+		t.Fatalf("reset group scope: %v", err)
+	}
+	if err := service.ResetGroupScope(ctx, group, resetKey); err != nil {
+		t.Fatalf("reset replay was not idempotent: %v", err)
+	}
+	if _, err := service.Resolve(ctx, group); !errors.Is(err, corewebsearch.ErrNotConfigured) {
+		t.Fatalf("reset group still resolved its own credential: %v", err)
+	}
+	if resolved, err := service.Resolve(ctx, personal); err != nil || resolved.APIKey != personalKey {
+		t.Fatalf("personal credential changed after a group reset: err=%v", err)
+	}
 }
 
 type noopWebSearcher struct{}

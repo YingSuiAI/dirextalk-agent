@@ -47,6 +47,10 @@ func (r *resolverWebSearchRepository) ResolveForDispatch(ctx context.Context, sc
 func (r *resolverWebSearchRepository) Update(context.Context, corewebsearch.Mutation) (corewebsearch.Config, error) {
 	return r.resolved.Config, nil
 }
+func (r *resolverWebSearchRepository) DeleteGroupScope(context.Context, corewebsearch.Scope, string) error {
+	return nil
+}
+
 func (r *resolverWebSearchRepository) MarkTested(context.Context, corewebsearch.Scope, int64, time.Time) (corewebsearch.Config, error) {
 	return r.resolved.Config, nil
 }
@@ -89,6 +93,10 @@ func (r *racingWebSearchRepository) ResolveForDispatch(ctx context.Context, scop
 func (r *racingWebSearchRepository) Update(context.Context, corewebsearch.Mutation) (corewebsearch.Config, error) {
 	return r.current.Config, nil
 }
+func (r *racingWebSearchRepository) DeleteGroupScope(context.Context, corewebsearch.Scope, string) error {
+	return nil
+}
+
 func (r *racingWebSearchRepository) MarkTested(context.Context, corewebsearch.Scope, int64, time.Time) (corewebsearch.Config, error) {
 	return r.current.Config, nil
 }

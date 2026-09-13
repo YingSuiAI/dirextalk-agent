@@ -41,6 +41,10 @@ func (r *capabilityWebSearchRepo) Update(_ context.Context, mutation corewebsear
 	r.generation = mutation.AccountGeneration
 	return r.resolved.Config, nil
 }
+func (r *capabilityWebSearchRepo) DeleteGroupScope(context.Context, corewebsearch.Scope, string) error {
+	return nil
+}
+
 func (r *capabilityWebSearchRepo) MarkTested(_ context.Context, scope corewebsearch.Scope, _ int64, at time.Time) (corewebsearch.Config, error) {
 	r.owner, r.generation = scope.OwnerID, scope.AccountGeneration
 	value := r.resolved.Config

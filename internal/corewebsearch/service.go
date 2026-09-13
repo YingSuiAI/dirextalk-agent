@@ -155,6 +155,10 @@ type Repository interface {
 	ResolveForDispatch(context.Context, Scope, ResolvedConfig) (ResolvedConfig, func() error, error)
 	Update(context.Context, Mutation) (Config, error)
 	MarkTested(context.Context, Scope, int64, time.Time) (Config, error)
+	// DeleteGroupScope removes one group's own configuration so that group
+	// inherits the owner's provider again. The personal scope is never removed
+	// this way.
+	DeleteGroupScope(context.Context, Scope, string) error
 }
 
 type Searcher interface {
@@ -327,6 +331,24 @@ func (s *Service) SearchResolved(ctx context.Context, scope Scope, resolved Reso
 		return SearchResult{}, searchErr
 	}
 	return result, nil
+}
+
+// ResetGroupScope removes one group's own search configuration so that group
+// inherits the owner's configured provider again. The owner's personal set is
+// never removable through this path.
+func (s *Service) ResetGroupScope(ctx context.Context, scope Scope, idempotencyKey string) error {
+	scope = scope.normalized()
+	if !scope.valid() || scope.Personal() || s == nil || s.repository == nil {
+		return ErrInvalid
+	}
+	parsed, err := uuid.Parse(idempotencyKey)
+	if err != nil || parsed == uuid.Nil || parsed.String() != idempotencyKey {
+		return ErrInvalid
+	}
+	if err := s.repository.DeleteGroupScope(ctx, scope, idempotencyKey); err != nil {
+		return safeRepositoryError(err)
+	}
+	return nil
 }
 
 func updateDigest(command UpdateCommand) (string, error) {

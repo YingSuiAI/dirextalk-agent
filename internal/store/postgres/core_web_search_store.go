@@ -2,6 +2,8 @@ package postgres
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -227,6 +229,66 @@ func (s *CoreWebSearchStore) Update(ctx context.Context, mutation corewebsearch.
 		return corewebsearch.Config{}, corewebsearch.ErrRepository
 	}
 	return next, nil
+}
+
+// DeleteGroupScope removes one group's own search configuration, which returns
+// that group to inheriting the owner's provider. The delete is idempotent under
+// its key and uses the same admission lock order as Update, so it cannot race a
+// deprovision or a concurrent rotation.
+func (s *CoreWebSearchStore) DeleteGroupScope(ctx context.Context, scope corewebsearch.Scope, idempotencyKey string) error {
+	ownerID, accountGeneration := strings.TrimSpace(scope.OwnerID), scope.AccountGeneration
+	if !corewebsearch.ValidIdentity(ownerID, accountGeneration) || scope.Personal() {
+		return corewebsearch.ErrInvalid
+	}
+	key, err := uuid.Parse(idempotencyKey)
+	if err != nil || key == uuid.Nil {
+		return corewebsearch.ErrInvalid
+	}
+	scopeKind, roomID := webSearchScopeArgs(scope)
+	if scopeKind != "group" {
+		return corewebsearch.ErrInvalid
+	}
+	digest := sha256.Sum256([]byte("web-search-reset:" + ownerID + ":" + roomID))
+	requestDigest := hex.EncodeToString(digest[:])
+	tx, err := s.store.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return corewebsearch.ErrRepository
+	}
+	defer rollbackWebSearchTx(tx)
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock_shared(hashtextextended($1,0))`, deprovisionAdvisoryLockName); err != nil {
+		return corewebsearch.ErrRepository
+	}
+	if err := checkWebSearchAdmissionTx(ctx, tx, ownerID, accountGeneration); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, webSearchIdentityLockKey(ownerID, accountGeneration)); err != nil {
+		return corewebsearch.ErrRepository
+	}
+	if err := checkWebSearchAdmissionTx(ctx, tx, ownerID, accountGeneration); err != nil {
+		return err
+	}
+	var storedDigest string
+	var storedResponse []byte
+	err = tx.QueryRow(ctx, `SELECT request_digest,response_json FROM core_web_search_replays WHERE owner_id=$1 AND account_generation=$2 AND idempotency_key=$3 FOR UPDATE`, ownerID, accountGeneration, key).Scan(&storedDigest, &storedResponse)
+	if err == nil {
+		if storedDigest != requestDigest {
+			return corewebsearch.ErrIdempotencyConflict
+		}
+		return tx.Commit(ctx)
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return corewebsearch.ErrRepository
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM core_web_search_configs WHERE owner_id=$1 AND account_generation=$2 AND scope=$3 AND room_id=$4`, ownerID, accountGeneration, scopeKind, roomID); err != nil {
+		return corewebsearch.ErrRepository
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO core_web_search_replays(owner_id,account_generation,idempotency_key,request_digest,response_json,created_at) VALUES($1,$2,$3,$4,'{}'::jsonb,clock_timestamp())`, ownerID, accountGeneration, key, requestDigest); err != nil {
+		return corewebsearch.ErrRepository
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return corewebsearch.ErrRepository
+	}
+	return nil
 }
 
 func (s *CoreWebSearchStore) MarkTested(ctx context.Context, scope corewebsearch.Scope, expectedRevision int64, testedAt time.Time) (corewebsearch.Config, error) {

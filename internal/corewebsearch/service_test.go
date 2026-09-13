@@ -34,6 +34,10 @@ func (r *serviceRepositoryFake) Update(_ context.Context, mutation Mutation) (Co
 	r.mutation = mutation
 	return r.public, nil
 }
+func (r *serviceRepositoryFake) DeleteGroupScope(context.Context, Scope, string) error {
+	return nil
+}
+
 func (r *serviceRepositoryFake) MarkTested(_ context.Context, _ Scope, revision int64, at time.Time) (Config, error) {
 	if revision != r.resolved.Revision || at.IsZero() {
 		return Config{}, ErrRevisionConflict
