@@ -545,6 +545,12 @@ func serveCore(cfg config.Config) error {
 			conversation.SetGroupIntrinsicResolver(groupWorker)
 			cloudComposition.executor.groupAuthorization = groupLoop
 			cloudComposition.executor.groupTurnReader = conversation
+			// The group detail page shows this group's servers and delivered
+			// files; the Agent refreshes that view after each answer.
+			groupLoop.assets = groupAgentAssetsPublisher{
+				product: productCapabilityClient, plans: postgres.NewCloudWorkerStore(store),
+				conversations: conversation, workers: cloudComposition.executor,
+			}
 		}
 	}
 	if knowledgeComposition != nil {

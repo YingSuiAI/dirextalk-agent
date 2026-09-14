@@ -69,6 +69,9 @@ type groupAgentLoop struct {
 	summarySweepAt       time.Time
 	summarySweepBusy     bool
 	summaryMu            sync.Mutex
+	// assets publishes the group's servers and delivered artifacts after an
+	// answer, so the group detail page reflects what this group built.
+	assets groupAgentAssetsPublisher
 	// waitingMu guards waitingNotices, the set of parked group turns whose
 	// owner-approval notice this process already posted. The Product dedupes
 	// the notice per request, so this only stops a two-second tick from
@@ -427,6 +430,17 @@ func (l *groupAgentLoop) processRequest(ctx context.Context, request capabilityc
 }
 
 func (l *groupAgentLoop) publish(ctx context.Context, origin coreconversation.GroupOrigin, body, kind, status string) error {
+	if kind == "final" {
+		// Refresh the group's own view of its servers and files after the answer
+		// that may have created them. A refresh failure never fails the reply.
+		go func() {
+			refreshCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 20*time.Second)
+			defer cancel()
+			if err := l.assets.Publish(refreshCtx, origin); err != nil {
+				slog.Warn("[group-agent] group assets refresh failed", "room_id", origin.RoomID, "error", groupAgentErrorSummary(err))
+			}
+		}()
+	}
 	if len(body) > 60<<10 {
 		// Retain the full authoritative response in Agent history; don't trap
 		// a completed task in an endless oversized-publication retry loop.

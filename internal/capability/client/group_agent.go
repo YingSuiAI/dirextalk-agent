@@ -82,6 +82,38 @@ type GroupAgentPublish struct {
 	Status          string `json:"status"`
 }
 
+// GroupAgentAssetServer is one server this group Agent built, as the group sees
+// it: a workload identity and its address, never a credential.
+type GroupAgentAssetServer struct {
+	WorkloadID string `json:"workload_id"`
+	Name       string `json:"name"`
+	Status     string `json:"status"`
+	Address    string `json:"address,omitempty"`
+}
+
+// GroupAgentAssetArtifact is one file this group Agent delivered.
+type GroupAgentAssetArtifact struct {
+	Name      string `json:"name"`
+	MediaType string `json:"media_type,omitempty"`
+	SizeBytes int64  `json:"size_bytes,omitempty"`
+	Link      string `json:"link"`
+}
+
+// RecordGroupAssets publishes the group's servers and delivered artifacts into
+// room state, so every member reads the same view of what this group owns.
+func (c *Client) RecordGroupAssets(ctx context.Context, roomID string, servers []GroupAgentAssetServer, artifacts []GroupAgentAssetArtifact) error {
+	if !validGroupRoomID(roomID) || len(servers) > groupAssetsMax || len(artifacts) > groupAssetsMax {
+		return errors.New("invalid group Agent assets mirror")
+	}
+	key := uuid.NewSHA1(uuid.NameSpaceOID, []byte("group-agent:record-assets:"+roomID)).String()
+	_, err := c.groupAgentMutation(ctx, key, "record_assets", map[string]any{
+		"room_id": roomID, "servers": servers, "artifacts": artifacts,
+	})
+	return err
+}
+
+const groupAssetsMax = 40
+
 // GroupAgentMemoryMirror is the group's own rolling digest. It is published into
 // room state so every member reads the same memory of their own group, and it
 // never carries the owner's private Knowledge or other conversations.
