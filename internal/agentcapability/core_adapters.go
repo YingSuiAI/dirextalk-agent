@@ -45,14 +45,23 @@ type CoreBindings struct {
 	Conversation  *coreconversation.Service
 	Confirmations *coreconfirmation.Service
 	Models        *coremodel.Service
-	Tasks         coretask.Service
-	Schedules     coretask.ScheduleStore
-	Knowledge     *coreknowledge.Service
-	Memory        *corememory.Service
-	StaticSites   *corestaticsite.Service
-	Servers       *coreserver.Service
-	Extensions    coreextension.Service
-	Product       *capabilityclient.Client
+	// GroupModels is the per-group conversation model choice. It is optional:
+	// without it every group inherits the owner's default conversation model.
+	GroupModels GroupModelBindings
+	// GroupExtensions is the per-group third-party MCP binding. It is optional:
+	// without it no installation is shared with a group.
+	GroupExtensions GroupExtensionBindings
+	// GroupUsage reads one group's bounded consumption. It is optional: without
+	// it the owner cannot read per-group usage.
+	GroupUsage  GroupUsageReader
+	Tasks       coretask.Service
+	Schedules   coretask.ScheduleStore
+	Knowledge   *coreknowledge.Service
+	Memory      *corememory.Service
+	StaticSites *corestaticsite.Service
+	Servers     *coreserver.Service
+	Extensions  coreextension.Service
+	Product     *capabilityclient.Client
 	// CapabilityProgress persists bounded stream events in the capability
 	// operation ledger. It is optional so the Core adapter remains reusable in
 	// unary-only tests and embeddings.
@@ -76,7 +85,7 @@ type CoreBindings struct {
 func NewCoreRegistry(bindings CoreBindings) *Registry {
 	r := &Registry{capabilities: make(map[string]Capability)}
 	if bindings.Conversation != nil {
-		r.Register(&coreChatCapability{service: bindings.Conversation, models: bindings.Models})
+		r.Register(&coreChatCapability{service: bindings.Conversation, models: bindings.Models, usage: bindings.GroupUsage})
 	}
 	if bindings.ExecutionV2 != nil && bindings.ExecutionV2.ReadyForPublication() {
 		if capability, err := executioncap.NewCapability(bindings.ExecutionV2); err == nil {
@@ -113,7 +122,7 @@ func NewCoreRegistry(bindings CoreBindings) *Registry {
 		r.Register(&coreConfirmationCapability{service: bindings.Confirmations})
 	}
 	if bindings.Models != nil {
-		r.Register(&coreModelCapability{service: bindings.Models, knowledge: bindings.Knowledge})
+		r.Register(&coreModelCapability{service: bindings.Models, knowledge: bindings.Knowledge, groups: bindings.GroupModels})
 	}
 	if bindings.Tasks != nil {
 		r.Register(&coreTaskCapability{service: bindings.Tasks})
@@ -134,7 +143,7 @@ func NewCoreRegistry(bindings CoreBindings) *Registry {
 		r.Register(NewCoreServerCapability(bindings.Servers))
 	}
 	if bindings.Extensions != nil || bindings.Product != nil {
-		r.Register(&coreExtensionCapability{service: bindings.Extensions, product: bindings.Product})
+		r.Register(&coreExtensionCapability{service: bindings.Extensions, product: bindings.Product, groups: bindings.GroupExtensions})
 	}
 	if bindings.Deprovision != nil && bindings.DeprovisionPurge != nil {
 		r.Register(&coreAccountCapability{service: bindings.Deprovision, purge: bindings.DeprovisionPurge})
@@ -181,6 +190,7 @@ func (c *coreAccountCapability) HandleOperation(ctx context.Context, operationID
 type coreChatCapability struct {
 	service *coreconversation.Service
 	models  *coremodel.Service
+	usage   GroupUsageReader
 }
 
 type durableStreamExtensionSelection struct {
@@ -404,6 +414,7 @@ func publicTurnMetadataList(values []coreconversation.Turn) []publicListedTurn {
 
 func (c *coreChatCapability) Descriptor() *capv1.CapabilityDescriptor {
 	return descriptor("agent.chat.v1", "Chat", "Core conversation operations", []opSpec{
+		{"get_group_usage", capv1.OperationType_OPERATION_TYPE_READ, "agent:chat:read"},
 		{"create_conversation", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:chat:write"},
 		{"get_conversation", capv1.OperationType_OPERATION_TYPE_READ, "agent:chat:read"},
 		{"list_conversations", capv1.OperationType_OPERATION_TYPE_READ, "agent:chat:read"},
@@ -517,7 +528,56 @@ func (c *coreChatCapability) HandleOperation(ctx context.Context, operationID st
 			return nil, coreconversation.ErrInvalid
 		}
 		value, err := c.service.GetTurn(ctx, stringValue(in, "turn_id"))
-		return marshalResult(map[string]any{"turn": publicListedTurn{publicTurnMetadata: projectPublicTurnMetadata(value), IdempotencyKey: value.RequestID}}, err)
+		if err != nil {
+			return nil, err
+		}
+		if value.GroupOrigin != nil {
+			permission, ok := capabilityclient.PermissionFromContext(ctx)
+			if !ok || permission == nil || permission.GetAuthenticatedOwnerId() != value.GroupOrigin.OwnerID || uint64(permission.GetAccountGeneration()) != value.GroupOrigin.AccountGeneration {
+				return nil, coreconversation.ErrGroupAuthorization
+			}
+			return marshalResult(map[string]any{"turn": struct {
+				publicListedTurn
+				GroupOrigin *coreconversation.GroupOrigin `json:"group_origin"`
+			}{publicListedTurn{publicTurnMetadata: projectPublicTurnMetadata(value), IdempotencyKey: value.RequestID}, value.GroupOrigin}}, nil)
+		}
+		return marshalResult(map[string]any{"turn": publicListedTurn{publicTurnMetadata: projectPublicTurnMetadata(value), IdempotencyKey: value.RequestID}}, nil)
+	case "get_group_usage":
+		if c.usage == nil {
+			return nil, coreconversation.ErrInvalid
+		}
+		roomID := strings.TrimSpace(stringValue(in, "room_id"))
+		if roomID == "" {
+			return nil, coreconversation.ErrInvalid
+		}
+		if err := requireCapabilityIdentity(ctx); err != nil {
+			return nil, err
+		}
+		usage, err := c.usage.GroupUsage(ctx, roomID)
+		if err != nil {
+			return nil, err
+		}
+		payload := map[string]any{
+			"room_id":             usage.RoomID,
+			"turns":               usage.Turns,
+			"completed_turns":     usage.CompletedTurns,
+			"failed_turns":        usage.FailedTurns,
+			"model_dispatches":    usage.ModelDispatches,
+			"model_active_millis": usage.ModelActiveMillis,
+			"tool_calls":          usage.ToolCalls,
+			"worker_plans":        usage.WorkerPlans,
+			// Cloud spending is only ever a quoted estimate, never a bill. The
+			// owner still gets it as a rough reference, split into everything
+			// proposed and only what actually started.
+			"worker_quote_micros":   usage.WorkerQuoteMicros,
+			"worker_started_micros": usage.WorkerStartedMicros,
+			"worker_quote_currency": usage.WorkerQuoteCurrency,
+			"last_activity_at":      "",
+		}
+		if usage.LastActivityAt != nil {
+			payload["last_activity_at"] = usage.LastActivityAt.UTC().Format(time.RFC3339)
+		}
+		return marshalResult(payload, nil)
 	case "compress_context":
 		value, err := c.service.CompressContext(ctx, stringValue(in, "conversation_id"), uintValue(in, "expected_revision"), intValue(in, "memory_window", coreconversation.DefaultContextMemoryWindow), key)
 		return marshalResult(value, err)
@@ -1124,6 +1184,7 @@ func (c *coreConfirmationCapability) HandleOperation(ctx context.Context, operat
 type coreModelCapability struct {
 	service   *coremodel.Service
 	knowledge *coreknowledge.Service
+	groups    GroupModelBindings
 }
 
 // syncProfileInput mirrors the message-server model-profile contract. The
@@ -1166,7 +1227,7 @@ func (v syncProfileInput) command() coremodel.SyncProfileEntry {
 
 func (c *coreModelCapability) Descriptor() *capv1.CapabilityDescriptor {
 	return descriptor("agent.models.v1", "Model Profiles", "Core model profile operations", []opSpec{
-		{"list_models", capv1.OperationType_OPERATION_TYPE_READ, "agent:models:read"}, {"get_model", capv1.OperationType_OPERATION_TYPE_READ, "agent:models:read"}, {"sync_models", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:models:write"}, {"delete_model", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:models:write"}, {"test_model", capv1.OperationType_OPERATION_TYPE_READ, "agent:models:read"},
+		{"list_models", capv1.OperationType_OPERATION_TYPE_READ, "agent:models:read"}, {"get_model", capv1.OperationType_OPERATION_TYPE_READ, "agent:models:read"}, {"sync_models", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:models:write"}, {"delete_model", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:models:write"}, {"test_model", capv1.OperationType_OPERATION_TYPE_READ, "agent:models:read"}, {"get_group_model_binding", capv1.OperationType_OPERATION_TYPE_READ, "agent:models:read"}, {"set_group_model_binding", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:models:write"},
 	})
 }
 func (c *coreModelCapability) HandleOperation(ctx context.Context, operationID string, raw []byte) ([]byte, error) {
@@ -1246,9 +1307,91 @@ func (c *coreModelCapability) HandleOperation(ctx context.Context, operationID s
 	case "delete_model":
 		p, err := c.service.Delete(ctx, coremodel.DeleteProfileCommand{ID: stringValue(in, "profile_id"), IdempotencyKey: key, ExpectedRevision: int64(intValue(in, "expected_revision", 0))})
 		return marshalResult(p, err)
+	case "get_group_model_binding":
+		return c.handleGetGroupModelBinding(ctx, in)
+	case "set_group_model_binding":
+		return c.handleSetGroupModelBinding(ctx, in, key)
 	default:
 		return nil, fmt.Errorf("unknown model operation %q", operationID)
 	}
+}
+
+// capabilityOwnerIdentity returns the authenticated owner and account
+// generation of one capability call, rejecting an unscoped caller: a group
+// model binding is always owned by the owner who configured it.
+func capabilityOwnerIdentity(ctx context.Context) (string, uint64, error) {
+	if err := requireCapabilityIdentity(ctx); err != nil {
+		return "", 0, err
+	}
+	permission, _ := capabilityclient.PermissionFromContext(ctx)
+	return strings.TrimSpace(permission.GetAuthenticatedOwnerId()), uint64(permission.GetAccountGeneration()), nil
+}
+
+// handleGetGroupModelBinding reports the model one group answers with: the
+// owner's per-group choice when configured, otherwise the inherited default.
+func (c *coreModelCapability) handleGetGroupModelBinding(ctx context.Context, in map[string]json.RawMessage) ([]byte, error) {
+	if c == nil || c.groups == nil {
+		return nil, coremodel.ErrProfileRepository
+	}
+	ownerID, accountGeneration, err := capabilityOwnerIdentity(ctx)
+	if err != nil {
+		return nil, err
+	}
+	roomID := stringValue(in, "room_id")
+	binding, ok, err := c.groups.GetGroupModelBinding(ctx, ownerID, accountGeneration, roomID)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		// Inheriting: report the resolved default so the client can show which
+		// model the group is actually using, without inventing a binding.
+		profileID, resolveErr := c.service.ResolveDefaultProfileID(ctx, coremodel.ModelKindConversation)
+		if resolveErr != nil {
+			return marshalResult(map[string]any{"room_id": roomID, "inherited": true, "revision": 0}, nil)
+		}
+		return marshalResult(map[string]any{"room_id": roomID, "inherited": true, "profile_id": profileID, "revision": 0}, nil)
+	}
+	return marshalResult(map[string]any{"room_id": binding.RoomID, "profile_id": binding.ProfileID, "inherited": false, "revision": binding.Revision}, nil)
+}
+
+// handleSetGroupModelBinding sets or clears one group's conversation model. An
+// empty profile_id clears the choice, which returns the group to inheriting the
+// owner's default conversation model.
+func (c *coreModelCapability) handleSetGroupModelBinding(ctx context.Context, in map[string]json.RawMessage, key string) ([]byte, error) {
+	if c == nil || c.groups == nil {
+		return nil, coremodel.ErrProfileRepository
+	}
+	ownerID, accountGeneration, err := capabilityOwnerIdentity(ctx)
+	if err != nil {
+		return nil, err
+	}
+	roomID := strings.TrimSpace(stringValue(in, "room_id"))
+	expectedRevision := int64(intValue(in, "expected_revision", 0))
+	profileID := strings.TrimSpace(stringValue(in, "profile_id"))
+	if profileID == "" {
+		if err := c.groups.DeleteGroupModelBinding(ctx, ownerID, accountGeneration, roomID, expectedRevision); err != nil {
+			return nil, err
+		}
+		result := map[string]any{"room_id": roomID, "inherited": true, "revision": 0}
+		if inherited, resolveErr := c.service.ResolveDefaultProfileID(ctx, coremodel.ModelKindConversation); resolveErr == nil {
+			result["profile_id"] = inherited
+		}
+		return marshalResult(result, nil)
+	}
+	// Only a conversation model may answer a group turn, and it must be one of
+	// the owner's own current profiles.
+	profile, err := c.service.ResolveProfile(ctx, profileID)
+	if err != nil {
+		return nil, err
+	}
+	if kind := strings.ToLower(strings.TrimSpace(profile.ModelKind)); kind != coremodel.ModelKindConversation {
+		return nil, coremodel.ErrInvalidProfile
+	}
+	binding, err := c.groups.SetGroupModelBinding(ctx, ownerID, accountGeneration, roomID, profileID, expectedRevision)
+	if err != nil {
+		return nil, err
+	}
+	return marshalResult(map[string]any{"room_id": binding.RoomID, "profile_id": binding.ProfileID, "inherited": false, "revision": binding.Revision}, nil)
 }
 
 func (c *coreModelCapability) bindKnowledgeEmbedding(ctx context.Context) error {
@@ -1733,6 +1876,7 @@ func (c *coreKnowledgeCapability) HandleOperation(ctx context.Context, operation
 type coreExtensionCapability struct {
 	service coreextension.Service
 	product *capabilityclient.Client
+	groups  GroupExtensionBindings
 }
 
 type publicInstallation struct {
@@ -1776,7 +1920,7 @@ func projectInstallationPage(page coreextension.InstallationPage) map[string]any
 
 func (c *coreExtensionCapability) Descriptor() *capv1.CapabilityDescriptor {
 	return descriptor("agent.skills.v1", "Skills and MCP", "Core isolated Skills/MCP operations", []opSpec{
-		{"discover_skill", capv1.OperationType_OPERATION_TYPE_READ, "agent:skills:read"}, {"get_skill", capv1.OperationType_OPERATION_TYPE_READ, "agent:skills:read"}, {"list_skills", capv1.OperationType_OPERATION_TYPE_READ, "agent:skills:read"}, {"inspect_skill", capv1.OperationType_OPERATION_TYPE_READ, "agent:skills:read"}, {"install_skill", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:skills:write"}, {"update_skill", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:skills:write"}, {"remove_skill", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:skills:write"}, {"list_mcp", capv1.OperationType_OPERATION_TYPE_READ, "agent:mcp:read"}, {"discover_mcp", capv1.OperationType_OPERATION_TYPE_READ, "agent:mcp:read"}, {"get_mcp", capv1.OperationType_OPERATION_TYPE_READ, "agent:mcp:read"}, {"inspect_mcp", capv1.OperationType_OPERATION_TYPE_READ, "agent:mcp:read"}, {"install_mcp", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:mcp:write"}, {"update_mcp", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:mcp:write"}, {"remove_mcp", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:mcp:write"}, {"list_tools", capv1.OperationType_OPERATION_TYPE_READ, "agent:skills:read"}, {"invoke_skill", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:skills:execute"}, {"execute_mcp", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:mcp:execute"}, {"invoke_product", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:product:execute"},
+		{"discover_skill", capv1.OperationType_OPERATION_TYPE_READ, "agent:skills:read"}, {"get_skill", capv1.OperationType_OPERATION_TYPE_READ, "agent:skills:read"}, {"list_skills", capv1.OperationType_OPERATION_TYPE_READ, "agent:skills:read"}, {"inspect_skill", capv1.OperationType_OPERATION_TYPE_READ, "agent:skills:read"}, {"install_skill", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:skills:write"}, {"update_skill", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:skills:write"}, {"remove_skill", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:skills:write"}, {"list_mcp", capv1.OperationType_OPERATION_TYPE_READ, "agent:mcp:read"}, {"discover_mcp", capv1.OperationType_OPERATION_TYPE_READ, "agent:mcp:read"}, {"get_mcp", capv1.OperationType_OPERATION_TYPE_READ, "agent:mcp:read"}, {"inspect_mcp", capv1.OperationType_OPERATION_TYPE_READ, "agent:mcp:read"}, {"install_mcp", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:mcp:write"}, {"update_mcp", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:mcp:write"}, {"remove_mcp", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:mcp:write"}, {"list_tools", capv1.OperationType_OPERATION_TYPE_READ, "agent:skills:read"}, {"invoke_skill", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:skills:execute"}, {"execute_mcp", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:mcp:execute"}, {"invoke_product", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:product:execute"}, {"list_group_bindings", capv1.OperationType_OPERATION_TYPE_READ, "agent:mcp:read"}, {"set_group_binding", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:mcp:write"},
 	})
 }
 func (c *coreExtensionCapability) HandleOperation(ctx context.Context, operationID string, raw []byte) ([]byte, error) {
@@ -1868,6 +2012,40 @@ func (c *coreExtensionCapability) HandleOperation(ctx context.Context, operation
 	case "list_tools":
 		x, err := c.service.ListTools(ctx, stringValue(in, "installation_id"), int64Value(in, "expected_revision"))
 		return marshalResult(map[string]any{"tools": x}, err)
+	case "list_group_bindings":
+		if c.groups == nil {
+			return nil, coreextension.ErrInvalid
+		}
+		ownerID, accountGeneration, err := capabilityOwnerIdentity(ctx)
+		if err != nil {
+			return nil, err
+		}
+		roomID := strings.TrimSpace(stringValue(in, "room_id"))
+		bound, err := c.groups.ListGroupExtensionBindings(ctx, ownerID, accountGeneration, roomID)
+		if err != nil {
+			return nil, err
+		}
+		return marshalResult(map[string]any{"room_id": roomID, "installation_ids": bound}, nil)
+	case "set_group_binding":
+		if c.groups == nil {
+			return nil, coreextension.ErrInvalid
+		}
+		ownerID, accountGeneration, err := capabilityOwnerIdentity(ctx)
+		if err != nil {
+			return nil, err
+		}
+		roomID := strings.TrimSpace(stringValue(in, "room_id"))
+		installationID := strings.TrimSpace(stringValue(in, "installation_id"))
+		enabled := boolValue(in, "enabled")
+		if enabled {
+			err = c.groups.SetGroupExtensionBinding(ctx, ownerID, accountGeneration, roomID, installationID)
+		} else {
+			err = c.groups.ClearGroupExtensionBinding(ctx, ownerID, accountGeneration, roomID, installationID)
+		}
+		if err != nil {
+			return nil, err
+		}
+		return marshalResult(map[string]any{"room_id": roomID, "installation_id": installationID, "enabled": enabled}, nil)
 	case "invoke_skill", "execute_mcp":
 		permission, ok := capabilityclient.PermissionFromContext(ctx)
 		if !ok || permission == nil || strings.TrimSpace(permission.GetAuthenticatedOwnerId()) == "" || permission.GetAccountGeneration() <= 0 {
@@ -2136,7 +2314,7 @@ func operationResultSchema(capabilityID, operation string) string {
 	case "agent.chat.v1:list_turns":
 		return `{"additionalProperties":false,"properties":{"next_page_token":{"type":"string"},"turns":{"items":` + publicTurnResultSchema + `,"type":"array"}},"required":["turns","next_page_token"],"type":"object"}`
 	case "agent.chat.v1:get_turn":
-		return `{"additionalProperties":false,"properties":{"turn":` + publicTurnResultSchema + `},"required":["turn"],"type":"object"}`
+		return `{"additionalProperties":false,"properties":{"turn":` + strings.Replace(publicTurnResultSchema, `"properties":{`, `"properties":{"group_origin":`+groupOriginResultSchema+`,`, 1) + `},"required":["turn"],"type":"object"}`
 	case "agent.chat.v1:stop_turn":
 		return publicTurnResultSchema
 	case "agent.chat.v1:steer_turn":
@@ -2420,7 +2598,7 @@ func valueOrUUID(m map[string]json.RawMessage, key string) string {
 
 func modelMutationOperation(operation string) bool {
 	switch operation {
-	case "sync_models", "delete_model":
+	case "sync_models", "delete_model", "set_group_model_binding":
 		return true
 	default:
 		return false

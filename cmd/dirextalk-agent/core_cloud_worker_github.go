@@ -16,7 +16,7 @@ func (authority *cloudWorkerGitHubAuthority) ResolveCurrentGitHubBinding(ctx con
 	if authority == nil || authority.service == nil || generation == 0 {
 		return nil, cloudworker.ErrInvalid
 	}
-	config, err := authority.service.Get(ctx, ownerID, int64(generation))
+	config, err := authority.service.Get(ctx, coregithub.PersonalScope(ownerID, int64(generation)))
 	if errors.Is(err, coregithub.ErrNotConfigured) {
 		return nil, nil
 	}
@@ -26,7 +26,7 @@ func (authority *cloudWorkerGitHubAuthority) ResolveCurrentGitHubBinding(ctx con
 	if !config.Enabled || !config.GitHubTokenConfigured {
 		return nil, nil
 	}
-	resolved, err := authority.service.Resolve(ctx, ownerID, int64(generation))
+	resolved, err := authority.service.Resolve(ctx, coregithub.PersonalScope(ownerID, int64(generation)))
 	if errors.Is(err, coregithub.ErrNotConfigured) || errors.Is(err, coregithub.ErrDisabled) {
 		return nil, nil
 	}
@@ -51,7 +51,7 @@ func (authority *cloudWorkerGitHubAuthority) DispatchExactGitHubPAT(ctx context.
 		return cloudworker.ErrStaleAuthorization
 	}
 	resolved := coregithub.ResolvedConfig{Config: coregithub.Config{Enabled: true, Provider: coregithub.ProviderGitHub, GitHubTokenConfigured: true, Revision: int64(binding.ConfigRevision)}, CredentialVersion: int64(binding.CredentialVersion), OwnerID: binding.OwnerID, AccountGeneration: int64(binding.AccountGeneration)}
-	err := authority.service.WithTokenResolved(ctx, binding.OwnerID, int64(binding.AccountGeneration), resolved, fn)
+	err := authority.service.WithTokenResolved(ctx, coregithub.PersonalScope(binding.OwnerID, int64(binding.AccountGeneration)), resolved, fn)
 	if err != nil {
 		return errors.Join(cloudworker.ErrStaleAuthorization, err)
 	}

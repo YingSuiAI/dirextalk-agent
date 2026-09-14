@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/netip"
 	"regexp"
 	"sort"
 	"strings"
@@ -163,6 +164,21 @@ const (
 	maxModelInventoryWorkloadsPerWorker = 12
 )
 
+// publicServiceURL is the address a hostname-free persistent service is
+// reachable at. The platform opens exactly its port to the internet and has no
+// other name for it, so the inventory states that address instead of leaving
+// the model to guess.
+func publicServiceURL(publicIPv4 string, workload RetainedWorkerWorkload) string {
+	address, err := netip.ParseAddr(strings.TrimSpace(publicIPv4))
+	// A bound hostname closes the direct service port and serves 80/443 under
+	// that name instead, so this address only exists for the hostname-free case.
+	if err != nil || !address.Is4() || workload.Port == 0 || strings.TrimSpace(workload.Hostname) != "" ||
+		!strings.EqualFold(strings.TrimSpace(workload.Kind), "service") {
+		return ""
+	}
+	return fmt.Sprintf("http://%s:%d/", address.String(), workload.Port)
+}
+
 func boundedWorkerInventoryJSON(inventory RetainedWorkerInventory) []byte {
 	workers := append([]RetainedWorkerSnapshot(nil), inventory.Workers...)
 	sort.Slice(workers, func(i, j int) bool {
@@ -209,6 +225,12 @@ func boundedWorkerInventoryJSON(inventory RetainedWorkerInventory) []byte {
 			}
 			if hostname := boundedInventoryText(workload.Hostname); hostname != "" {
 				workloadItem["hostname"] = hostname
+			} else if url := publicServiceURL(boundedInventoryText(worker.PublicIPv4), workload); url != "" {
+				// A service deployed without a hostname is served directly on
+				// its public IPv4 and the platform opens exactly that port, so
+				// the address is part of the receipt rather than something the
+				// model has to infer (or wrongly deny) from an IP and a port.
+				workloadItem["public_url"] = url
 			}
 			workloadItems = append(workloadItems, workloadItem)
 		}

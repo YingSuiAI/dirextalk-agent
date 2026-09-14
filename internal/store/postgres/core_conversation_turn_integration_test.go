@@ -173,10 +173,7 @@ func TestCoreConversationPersistsAndEnforcesSafeHistoricalExecutionPolicyPostgre
 	if err = runtime.Validate(); err != nil {
 		t.Fatalf("safe historical runtime invalid: %v", err)
 	}
-	turn, err := h.store.StartTurnWithRuntime(ctx, cmd, runtime)
-	if err != nil {
-		t.Fatal(err)
-	}
+	turn := insertHistoricalAdmittedTurnPG(t, h, cmd, runtime)
 	if err = ApplyMigrations(ctx, h.pool, h.store.instanceID.String()); err != nil {
 		t.Fatal(err)
 	}
@@ -206,7 +203,12 @@ func TestCoreConversationPersistsAndEnforcesSafeHistoricalExecutionPolicyPostgre
 func TestTurnSteerSupersededModelMigrationRepairsV205OrphanPostgres(t *testing.T) {
 	h := openTurnDBAtVersion(t, 30)
 	ctx := context.Background()
-	turn := startAdmittedTurn(t, h, turnCommand())
+	command := turnCommand()
+	runtime, err := core.NewTurnRuntimeSnapshotForMode("historical integration system prompt", command.ProfileSnapshot, nil, "", "", command.ExecutionMode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	turn := insertHistoricalAdmittedTurnPG(t, h, command, runtime)
 	lease, err := h.store.ClaimTurn(ctx, turn.ID, time.Now().UTC(), time.Minute)
 	if err != nil {
 		t.Fatal(err)

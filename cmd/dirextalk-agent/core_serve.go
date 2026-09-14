@@ -27,6 +27,7 @@ import (
 	capabilityclient "github.com/YingSuiAI/dirextalk-agent/internal/capability/client"
 	"github.com/YingSuiAI/dirextalk-agent/internal/capability/operation"
 	capabilityserver "github.com/YingSuiAI/dirextalk-agent/internal/capability/server"
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/localartifact"
 	"github.com/YingSuiAI/dirextalk-agent/internal/config"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreaws"
@@ -229,7 +230,13 @@ func serveCore(cfg config.Config) error {
 		return fmt.Errorf("initialize task executor: %w", err)
 	}
 	taskExecutor.SetAgentLedger(taskStore)
-	taskExecutor.SetScheduledAgentHandler(scheduledAgentTaskHandler(conversation, store))
+	// A due group schedule is raised through Product's group delivery, which is
+	// wired after the Product capability client exists. The handler therefore
+	// resolves it lazily and keeps the private path for the owner's own work.
+	var groupScheduledProduct groupScheduledEnqueuer
+	taskExecutor.SetScheduledAgentHandler(scheduledAgentTaskHandler(conversation, store, func() groupScheduledEnqueuer {
+		return groupScheduledProduct
+	}))
 	var cloudComposition *coreCloudWorkerComposition
 	if retainedWorkers != nil {
 		cloudComposition, err = composeDynamicCloudWorkerProposal(cfg, store, conversationStore, retainedWorkers.store, githubService)
@@ -464,6 +471,9 @@ func serveCore(cfg config.Config) error {
 	}
 	if cloudComposition != nil {
 		conversation.SetIntrinsicResolver(cloudComposition.intrinsic)
+		// Even if Product is disabled after restart, persisted group work must
+		// remain identifiable and fail closed without its authorization guard.
+		cloudComposition.executor.groupTurnReader = conversation
 	}
 	// Compose model-facing tools in one resolver chain. Agent-owned built-ins
 	// remain available without Product Capability, but inject tools only for an
@@ -485,7 +495,63 @@ func serveCore(cfg config.Config) error {
 	if knowledgeComposition != nil {
 		conversationResolver = &knowledgeConversationResolver{base: conversationResolver, search: knowledgeComposition.domain}
 	}
-	conversation.SetExtensionResolver(&webSearchConversationResolver{base: &githubMCPConversationResolver{base: conversationResolver, service: githubService}, service: webSearchService})
+	fullResolver := &webSearchConversationResolver{base: &githubMCPConversationResolver{base: conversationResolver, service: githubService}, service: webSearchService}
+	conversation.SetExtensionResolver(fullResolver)
+	var groupLoop *groupAgentLoop
+	var groupCleaner coreLifecycleCleaner
+	var groupModelBindings *groupModelBindingAdapter
+	var groupExtensionBindings *groupExtensionBindingAdapter
+	var groupUsage *groupUsageAdapter
+	if productCapabilityClient != nil {
+		groupLoop = newGroupAgentLoop(productCapabilityClient, conversation, profiles, uint64(cfg.ProductCapabilityAccountGeneration), conversationStore)
+		groupScheduledProduct = productCapabilityClient
+		// The group detail page reads the schedule list from Product, so every
+		// group schedule the Agent creates is mirrored there.
+		conversation.SetGroupScheduleMirror(groupScheduleMirror{product: productCapabilityClient})
+		// A group answers with the model its owner picked for that group, and
+		// with the owner's default conversation model when none was picked.
+		groupModelBindings = &groupModelBindingAdapter{store: postgres.NewCoreGroupModelBindingStore(store)}
+		groupExtensionBindings = &groupExtensionBindingAdapter{store: postgres.NewCoreGroupExtensionBindingStore(store)}
+		groupUsage = &groupUsageAdapter{store: conversationStore}
+		groupLoop.SetGroupModelOverrides(groupModelBindings)
+		groupCleaner = groupLoop
+		conversation.SetGroupAuthorizationGuard(groupLoop)
+		// The group reuses the owner's whole tool chain. Credentials resolve by
+		// turn scope (the group's own set), and the conversation service drops
+		// private-context tools centrally, so a new tool never has to be wired
+		// twice.
+		conversation.SetGroupExtensionResolver(groupToolChain{
+			base:     fullResolver,
+			group:    groupMessageResolver{product: productCapabilityClient},
+			bindings: groupExtensionBindings,
+		})
+		if cloudComposition != nil {
+			// Group work reuses the owner's Worker tooling: members may read the
+			// inventory, run work, bind or unbind a hostname and destroy nothing.
+			// Creating a machine stays an owner confirmation and destroying one
+			// stays the owner's own request, which the group filter enforces by
+			// actor. Deliberately do not attach the private GitHub binding or
+			// persistent-Worker reuse to this resolver.
+			groupWorker, groupErr := cloudworker.NewProposeIntrinsic(cloudComposition.domain, conversationStore, conversationStore, conversationStore)
+			if groupErr != nil {
+				return fmt.Errorf("initialize group Worker proposal: %w", groupErr)
+			}
+			if err := groupWorker.EnableRetainedWorkerManagement(cloudComposition.executor, conversationStore); err != nil {
+				return fmt.Errorf("initialize group Worker inventory and destruction: %w", err)
+			}
+			if err := groupWorker.EnableRetainedWorkerDomains(cloudComposition.executor); err != nil {
+				return fmt.Errorf("initialize group Worker domains: %w", err)
+			}
+			conversation.SetGroupIntrinsicResolver(groupWorker)
+			cloudComposition.executor.groupAuthorization = groupLoop
+			cloudComposition.executor.groupTurnReader = conversation
+			// The group detail page shows this group's servers and delivered
+			// files; the Agent refreshes that view after each answer.
+			groupLoop.assets = groupAgentAssetsPublisher{
+				product: productCapabilityClient, conversations: conversation,
+			}
+		}
+	}
 	if knowledgeComposition != nil {
 		conversationStore.EnableMemoryCapture()
 		conversation.SetMemoryRecallResolver(coreMemoryRecallResolver{structured: knowledgeComposition.memory})
@@ -542,8 +608,26 @@ func serveCore(cfg config.Config) error {
 			Conversation:  conversation,
 			Confirmations: confirmationDomain,
 			Models:        profiles,
-			Tasks:         taskStore,
-			Schedules:     scheduleStore,
+			GroupUsage: func() agentcapability.GroupUsageReader {
+				if groupUsage == nil {
+					return nil
+				}
+				return groupUsage
+			}(),
+			GroupExtensions: func() agentcapability.GroupExtensionBindings {
+				if groupExtensionBindings == nil {
+					return nil
+				}
+				return groupExtensionBindings
+			}(),
+			GroupModels: func() agentcapability.GroupModelBindings {
+				if groupModelBindings == nil {
+					return nil
+				}
+				return groupModelBindings
+			}(),
+			Tasks:     taskStore,
+			Schedules: scheduleStore,
 			Knowledge: func() *coreknowledge.Service {
 				if knowledgeComposition == nil {
 					return nil
@@ -694,7 +778,7 @@ func serveCore(cfg config.Config) error {
 			pool.Close()
 			poolClosed = true
 		}
-	}, append([]coreLifecycleCleaner{cleanup, extensionCleanup, confirmationExpiry}, cloudComposition.Cleaners()...)...)
+	}, append([]coreLifecycleCleaner{cleanup, extensionCleanup, confirmationExpiry, groupCleaner}, cloudComposition.Cleaners()...)...)
 }
 
 // capabilityRegistryAdapter keeps the domain registry independent from the

@@ -8,6 +8,9 @@ import (
 func TestCloudWorkerRoutingGuidanceUsesInventoryIntrinsic(t *testing.T) {
 	for _, required := range []string{
 		"Call cloud_worker_inventory",
+		"capacity data, and any public_url before selecting",
+		"reachable at its listed public_url, http://<public_ipv4>:<port>/",
+		"never tell the user the service is unreachable or has no address",
 		"before selecting, changing, or destroying a retained Worker",
 		"exact worker_id and workload_id from inventory",
 		"never create another Worker quote for that change",

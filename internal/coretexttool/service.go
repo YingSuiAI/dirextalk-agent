@@ -105,8 +105,8 @@ type ModelResolver interface {
 }
 
 type WebSearch interface {
-	Resolve(context.Context, string, int64) (corewebsearch.ResolvedConfig, error)
-	SearchResolved(context.Context, string, int64, corewebsearch.ResolvedConfig, string, int) (corewebsearch.SearchResult, error)
+	Resolve(context.Context, corewebsearch.Scope) (corewebsearch.ResolvedConfig, error)
+	SearchResolved(context.Context, corewebsearch.Scope, corewebsearch.ResolvedConfig, string, int) (corewebsearch.SearchResult, error)
 }
 
 type ClientFactory func(coremodel.Profile) (coremodel.Client, error)
@@ -248,7 +248,7 @@ func (s *Service) Execute(ctx context.Context, command ExecuteCommand) (ExecuteR
 	messages := []coremodel.Message{{Role: coremodel.RoleSystem, Content: systemPrompt}}
 	sources := make([]Source, 0)
 	if selected.ID == "search" {
-		found, searchErr := s.webSearch.SearchResolved(ctx, command.OwnerID, command.AccountGeneration, searchConfig, searchQuery(command.SelectedText), 5)
+		found, searchErr := s.webSearch.SearchResolved(ctx, corewebsearch.PersonalScope(command.OwnerID, command.AccountGeneration), searchConfig, searchQuery(command.SelectedText), 5)
 		if searchErr != nil {
 			return ExecuteResult{}, searchErr
 		}
@@ -281,11 +281,12 @@ func (s *Service) resolveEnabledSearch(ctx context.Context, owner string, genera
 	if s.webSearch == nil {
 		return corewebsearch.ResolvedConfig{}, corewebsearch.ErrNotConfigured
 	}
-	resolved, err := s.webSearch.Resolve(ctx, owner, generation)
+	scope := corewebsearch.PersonalScope(owner, generation)
+	resolved, err := s.webSearch.Resolve(ctx, scope)
 	if err != nil {
 		return corewebsearch.ResolvedConfig{}, safeError(err)
 	}
-	if resolved.OwnerID != owner || resolved.AccountGeneration != generation {
+	if resolved.OwnerID != scope.OwnerID || resolved.AccountGeneration != scope.AccountGeneration || resolved.RoomID != scope.RoomID {
 		resolved.APIKey = ""
 		return corewebsearch.ResolvedConfig{}, ErrRepository
 	}

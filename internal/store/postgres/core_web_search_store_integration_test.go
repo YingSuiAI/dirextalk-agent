@@ -84,7 +84,7 @@ func TestCoreWebSearchStorePostgresIntegration(t *testing.T) {
 		t.Fatalf("invalid Web Search envelope configured=%v credential_version=%d nonce=%d ciphertext=%d", configured, credentialVersion, len(nonce), len(ciphertext))
 	}
 
-	resolved, err := webSearch.Resolve(ctx, ownerID, accountGeneration)
+	resolved, err := webSearch.Resolve(ctx, corewebsearch.PersonalScope(ownerID, accountGeneration))
 	if err != nil || resolved.APIKey != sentinel || resolved.Revision != 1 || resolved.CredentialVersion != 1 {
 		t.Fatalf("initial resolve = %#v err=%v", resolved, err)
 	}
@@ -100,7 +100,7 @@ func TestCoreWebSearchStorePostgresIntegration(t *testing.T) {
 		t.Fatalf("compose restarted Store: %v", err)
 	}
 	restartedSearch := NewCoreWebSearchStore(restarted)
-	restartedResolved, err := restartedSearch.Resolve(ctx, ownerID, accountGeneration)
+	restartedResolved, err := restartedSearch.Resolve(ctx, corewebsearch.PersonalScope(ownerID, accountGeneration))
 	if err != nil || restartedResolved.APIKey != sentinel {
 		t.Fatalf("restart resolve = %#v err=%v", restartedResolved, err)
 	}
@@ -128,7 +128,7 @@ func TestCoreWebSearchStorePostgresIntegration(t *testing.T) {
 	if err != nil || metadata.Revision != 2 || metadata.Enabled || !metadata.APIKeyConfigured {
 		t.Fatalf("metadata update = %#v err=%v", metadata, err)
 	}
-	metadataResolved, err := restartedSearch.Resolve(ctx, ownerID, accountGeneration)
+	metadataResolved, err := restartedSearch.Resolve(ctx, corewebsearch.PersonalScope(ownerID, accountGeneration))
 	if err != nil || metadataResolved.APIKey != sentinel || metadataResolved.Revision != 2 {
 		t.Fatalf("metadata resolve = %#v err=%v", metadataResolved, err)
 	}
@@ -141,11 +141,11 @@ func TestCoreWebSearchStorePostgresIntegration(t *testing.T) {
 	}
 
 	staleTestedAt := now.Add(2 * time.Second)
-	if _, err := webSearch.MarkTested(ctx, ownerID, accountGeneration, 1, staleTestedAt); !errors.Is(err, corewebsearch.ErrRevisionConflict) {
+	if _, err := webSearch.MarkTested(ctx, corewebsearch.PersonalScope(ownerID, accountGeneration), 1, staleTestedAt); !errors.Is(err, corewebsearch.ErrRevisionConflict) {
 		t.Fatalf("stale MarkTested err=%v", err)
 	}
 	testedAt := now.Add(3 * time.Second)
-	tested, err := webSearch.MarkTested(ctx, ownerID, accountGeneration, 2, testedAt)
+	tested, err := webSearch.MarkTested(ctx, corewebsearch.PersonalScope(ownerID, accountGeneration), 2, testedAt)
 	if err != nil || tested.Revision != 2 || tested.TestedAt == nil || !tested.TestedAt.Equal(testedAt) {
 		t.Fatalf("MarkTested = %#v err=%v", tested, err)
 	}
@@ -158,7 +158,7 @@ func TestCoreWebSearchStorePostgresIntegration(t *testing.T) {
 	if err != nil || rotated.Revision != 3 || !rotated.APIKeyConfigured || rotated.TestedAt != nil {
 		t.Fatalf("API key rotation = %#v err=%v", rotated, err)
 	}
-	rotatedResolved, err := restartedSearch.Resolve(ctx, ownerID, accountGeneration)
+	rotatedResolved, err := restartedSearch.Resolve(ctx, corewebsearch.PersonalScope(ownerID, accountGeneration))
 	if err != nil || rotatedResolved.APIKey != rotatedKey || rotatedResolved.CredentialVersion != 2 || rotatedResolved.TestedAt != nil {
 		t.Fatalf("rotated resolve = %#v err=%v", rotatedResolved, err)
 	}
@@ -171,14 +171,14 @@ func TestCoreWebSearchStorePostgresIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := NewCoreWebSearchStore(wrongStore).Resolve(ctx, ownerID, accountGeneration); !errors.Is(err, corewebsearch.ErrRepository) {
+	if _, err := NewCoreWebSearchStore(wrongStore).Resolve(ctx, corewebsearch.PersonalScope(ownerID, accountGeneration)); !errors.Is(err, corewebsearch.ErrRepository) {
 		t.Fatalf("wrong key resolve err=%v, want repository failure", err)
 	}
 	missingKeyStore, err := New(store.Pool(), store.instanceID.String())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := NewCoreWebSearchStore(missingKeyStore).Resolve(ctx, ownerID, accountGeneration); !errors.Is(err, corewebsearch.ErrRepository) {
+	if _, err := NewCoreWebSearchStore(missingKeyStore).Resolve(ctx, corewebsearch.PersonalScope(ownerID, accountGeneration)); !errors.Is(err, corewebsearch.ErrRepository) {
 		t.Fatalf("missing keyring resolve err=%v, want repository failure", err)
 	}
 
@@ -190,7 +190,7 @@ func TestCoreWebSearchStorePostgresIntegration(t *testing.T) {
 	if err != nil || cleared.Revision != 4 || cleared.APIKeyConfigured || cleared.TestedAt != nil {
 		t.Fatalf("clear API key = %#v err=%v", cleared, err)
 	}
-	clearedResolved, err := webSearch.Resolve(ctx, ownerID, accountGeneration)
+	clearedResolved, err := webSearch.Resolve(ctx, corewebsearch.PersonalScope(ownerID, accountGeneration))
 	if err != nil || clearedResolved.APIKeyConfigured || clearedResolved.APIKey != "" || clearedResolved.Revision != 4 || clearedResolved.TestedAt != nil {
 		t.Fatalf("cleared resolve = %#v err=%v", clearedResolved, err)
 	}
@@ -212,7 +212,7 @@ func TestCoreWebSearchStoreConcurrentCredentialMutationsUseRevisionCAS(t *testin
 	}); err != nil {
 		t.Fatalf("create concurrent Web Search config: %v", err)
 	}
-	if _, err := webSearch.MarkTested(ctx, ownerID, accountGeneration, 1, now.Add(time.Second)); err != nil {
+	if _, err := webSearch.MarkTested(ctx, corewebsearch.PersonalScope(ownerID, accountGeneration), 1, now.Add(time.Second)); err != nil {
 		t.Fatalf("seed tested_at: %v", err)
 	}
 
@@ -251,11 +251,11 @@ func TestCoreWebSearchStoreConcurrentCredentialMutationsUseRevisionCAS(t *testin
 		t.Fatalf("concurrent mutation outcomes succeeded=%d conflicts=%d", succeeded, conflicts)
 	}
 
-	current, err := webSearch.Get(ctx, ownerID, accountGeneration)
+	current, err := webSearch.Get(ctx, corewebsearch.PersonalScope(ownerID, accountGeneration))
 	if err != nil || current.Revision != 2 || current.TestedAt != nil {
 		t.Fatalf("post-race config = %#v err=%v", current, err)
 	}
-	if _, err := webSearch.MarkTested(ctx, ownerID, accountGeneration, 1, now.Add(4*time.Second)); !errors.Is(err, corewebsearch.ErrRevisionConflict) {
+	if _, err := webSearch.MarkTested(ctx, corewebsearch.PersonalScope(ownerID, accountGeneration), 1, now.Add(4*time.Second)); !errors.Is(err, corewebsearch.ErrRevisionConflict) {
 		t.Fatalf("stale MarkTested after concurrent mutation err=%v", err)
 	}
 }
@@ -285,15 +285,15 @@ func TestCoreWebSearchStoreAccountGenerationIsolationBindsReplayAndAAD(t *testin
 	if created, err := webSearch.Update(ctx, mutation); err != nil || created.Revision != 1 {
 		t.Fatalf("generation 2 create/replay isolation: %#v err=%v", created, err)
 	}
-	first, err := webSearch.Resolve(ctx, ownerID, 1)
+	first, err := webSearch.Resolve(ctx, corewebsearch.PersonalScope(ownerID, 1))
 	if err != nil || first.APIKey != "generation-one-key" || first.AccountGeneration != 1 {
 		t.Fatalf("generation 1 resolve: %#v err=%v", first, err)
 	}
-	second, err := webSearch.Resolve(ctx, ownerID, 2)
+	second, err := webSearch.Resolve(ctx, corewebsearch.PersonalScope(ownerID, 2))
 	if err != nil || second.APIKey != "generation-two-key" || second.AccountGeneration != 2 {
 		t.Fatalf("generation 2 resolve: %#v err=%v", second, err)
 	}
-	missing, err := webSearch.Resolve(ctx, ownerID, 3)
+	missing, err := webSearch.Resolve(ctx, corewebsearch.PersonalScope(ownerID, 3))
 	if !errors.Is(err, corewebsearch.ErrNotConfigured) || missing.APIKey != "" {
 		t.Fatalf("later generation saw prior config: %#v err=%v", missing, err)
 	}
@@ -305,7 +305,7 @@ func TestCoreWebSearchStoreAccountGenerationIsolationBindsReplayAndAAD(t *testin
 	if _, err := store.Pool().Exec(ctx, `UPDATE core_web_search_configs SET api_key_nonce=$3,api_key_ciphertext=$4 WHERE owner_id=$1 AND account_generation=$2`, ownerID, 2, nonce, ciphertext); err != nil {
 		t.Fatalf("transplant generation 1 envelope: %v", err)
 	}
-	if _, err := webSearch.Resolve(ctx, ownerID, 2); !errors.Is(err, corewebsearch.ErrRepository) {
+	if _, err := webSearch.Resolve(ctx, corewebsearch.PersonalScope(ownerID, 2)); !errors.Is(err, corewebsearch.ErrRepository) {
 		t.Fatalf("cross-generation AAD transplant resolved: %v", err)
 	}
 }
@@ -384,7 +384,7 @@ func TestCoreWebSearchDispatchWaitsForDeprovisionSharedGuardBeforeProvider(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	snapshot, err := service.Resolve(ctx, ownerID, generation)
+	snapshot, err := service.Resolve(ctx, corewebsearch.PersonalScope(ownerID, generation))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -398,7 +398,7 @@ func TestCoreWebSearchDispatchWaitsForDeprovisionSharedGuardBeforeProvider(t *te
 	}
 	resultCh := make(chan error, 1)
 	go func() {
-		_, dispatchErr := service.SearchResolved(ctx, ownerID, generation, snapshot, "race", 1)
+		_, dispatchErr := service.SearchResolved(ctx, corewebsearch.PersonalScope(ownerID, generation), snapshot, "race", 1)
 		resultCh <- dispatchErr
 	}()
 	select {
@@ -447,7 +447,7 @@ func TestCoreWebSearchDispatchGuardBlocksCoreDeprovisionUntilProviderFinishes(t 
 			if err != nil {
 				t.Fatal(err)
 			}
-			snapshot, err := service.Resolve(ctx, ownerID, generation)
+			snapshot, err := service.Resolve(ctx, corewebsearch.PersonalScope(ownerID, generation))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -455,7 +455,7 @@ func TestCoreWebSearchDispatchGuardBlocksCoreDeprovisionUntilProviderFinishes(t 
 			defer cancel()
 			dispatchDone := make(chan error, 1)
 			go func() {
-				_, dispatchErr := service.SearchResolved(dispatchCtx, ownerID, generation, snapshot, "guard", 1)
+				_, dispatchErr := service.SearchResolved(dispatchCtx, corewebsearch.PersonalScope(ownerID, generation), snapshot, "guard", 1)
 				dispatchDone <- dispatchErr
 			}()
 			select {

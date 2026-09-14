@@ -428,6 +428,10 @@ func taskFailureProjection(err error) (string, string) {
 		errorCode = "scheduled_turn_admission_failed"
 		errorSummary = "scheduled conversation turn could not be admitted"
 	}
+	if errors.Is(err, ErrScheduledGroupDelivery) {
+		errorCode = "scheduled_group_delivery_failed"
+		errorSummary = "the scheduled group task could not be handed to its group"
+	}
 	return errorCode, errorSummary
 }
 

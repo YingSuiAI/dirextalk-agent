@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -14,23 +15,24 @@ import (
 
 type githubResolverRepo struct{ v coregithub.ResolvedConfig }
 
-func (r *githubResolverRepo) Get(context.Context, string, int64) (coregithub.Config, error) {
+func (r *githubResolverRepo) Get(context.Context, coregithub.Scope) (coregithub.Config, error) {
 	return r.v.Config, nil
 }
-func (r *githubResolverRepo) Resolve(_ context.Context, o string, g int64) (coregithub.ResolvedConfig, error) {
+func (r *githubResolverRepo) Resolve(_ context.Context, scope coregithub.Scope) (coregithub.ResolvedConfig, error) {
 	v := r.v
-	v.OwnerID = o
-	v.AccountGeneration = g
+	v.OwnerID = scope.OwnerID
+	v.AccountGeneration = scope.AccountGeneration
+	v.RoomID = scope.RoomID
 	return v, nil
 }
-func (r *githubResolverRepo) ResolveForDispatch(c context.Context, o string, g int64, _ coregithub.ResolvedConfig) (coregithub.ResolvedConfig, func() error, error) {
-	v, e := r.Resolve(c, o, g)
+func (r *githubResolverRepo) ResolveForDispatch(c context.Context, scope coregithub.Scope, _ coregithub.ResolvedConfig) (coregithub.ResolvedConfig, func() error, error) {
+	v, e := r.Resolve(c, scope)
 	return v, func() error { return nil }, e
 }
 func (r *githubResolverRepo) Update(context.Context, coregithub.Mutation, func(string) error) (coregithub.Config, error) {
 	return r.v.Config, nil
 }
-func (r *githubResolverRepo) MarkTested(context.Context, string, int64, int64, time.Time) (coregithub.Config, error) {
+func (r *githubResolverRepo) MarkTested(context.Context, coregithub.Scope, int64, time.Time) (coregithub.Config, error) {
 	return r.v.Config, nil
 }
 
@@ -89,6 +91,56 @@ func TestGitHubMCPAdmitsReadsAndLightweightMutationsOnly(t *testing.T) {
 	write, err := got[0].Execute(webSearchResolverContext(), coreconversation.ToolExecutionRequest{Call: coreconversation.ToolCall{ID: "write", Name: "mcp__github__issue_write", Arguments: `{}`}})
 	if err != nil || write.MutationState != coreconversation.ToolMutationChanged || !write.StateChanged {
 		t.Fatalf("write=%+v err=%v", write, err)
+	}
+}
+
+// TestGitHubMCPGroupTurnKeepsReadsAndDropsWrites pins the group GitHub
+// boundary: a group turn keeps every read of the same catalog the personal
+// Agent has, and drops every tool that could write, comment or merge with the
+// owner's group credential. Those stay on the owner's private confirmation
+// path, so one member cannot mutate the owner's repositories.
+func TestGitHubMCPGroupTurnKeepsReadsAndDropsWrites(t *testing.T) {
+	advertisedRead := githubTool("mcp__github__get_file_contents", mcphttp.ToolEffectUnsafeMutation)
+	advertisedRead.AdvertisedReadOnly = true
+	strictRead := githubTool("mcp__github__search_code", mcphttp.ToolEffectReadOnly)
+	catalog := []mcphttp.Tool{
+		advertisedRead,
+		strictRead,
+		githubTool("mcp__github__get_me", mcphttp.ToolEffectUnsafeMutation),
+		githubTool("mcp__github__merge_pull_request", mcphttp.ToolEffectUnsafeMutation),
+		githubTool("mcp__github__issue_write", mcphttp.ToolEffectUnsafeMutation),
+		githubTool("mcp__github__add_issue_comment", mcphttp.ToolEffectUnsafeMutation),
+		githubTool("mcp__github__push_files", mcphttp.ToolEffectUnsafeMutation),
+		githubTool("mcp__github__create_pull_request", mcphttp.ToolEffectUnsafeMutation),
+	}
+	groupTools, ok := selectGitHubMCPTools(catalog, true)
+	if !ok {
+		t.Fatal("group catalog was rejected")
+	}
+	var groupNames []string
+	for _, tool := range groupTools {
+		groupNames = append(groupNames, tool.Definition.Name)
+		if !githubMCPToolReadOnly(tool) {
+			t.Fatalf("group turn was handed a writing tool: %s", tool.Definition.Name)
+		}
+	}
+	sort.Strings(groupNames)
+	if strings.Join(groupNames, ",") != "mcp__github__get_file_contents,mcp__github__search_code" {
+		t.Fatalf("group read set changed: %v", groupNames)
+	}
+	// The owner's own turn keeps the lightweight mutations, so this boundary is
+	// about who triggered the turn, not about losing the personal capability.
+	personalTools, ok := selectGitHubMCPTools(catalog, false)
+	if !ok {
+		t.Fatal("personal catalog was rejected")
+	}
+	var personalNames []string
+	for _, tool := range personalTools {
+		personalNames = append(personalNames, tool.Definition.Name)
+	}
+	sort.Strings(personalNames)
+	if strings.Join(personalNames, ",") != "mcp__github__add_issue_comment,mcp__github__get_file_contents,mcp__github__issue_write,mcp__github__merge_pull_request,mcp__github__search_code" {
+		t.Fatalf("personal tool set changed: %v", personalNames)
 	}
 }
 

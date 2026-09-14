@@ -36,7 +36,7 @@ func composeDynamicCloudWorkerProposal(cfg config.Config, store *postgres.Store,
 	if !revisionsOK || !exactOK {
 		return nil, fmt.Errorf("dynamic Cloud Worker credential authority is unavailable")
 	}
-	authority, err := newCloudWorkerCredentialAuthority(credentials, revisions, exact, cfg.CoreCloudWorkerHostRegion, awsStore.ListCredentials)
+	authority, err := newCloudWorkerCredentialAuthority(credentials, revisions, exact, cfg.CoreCloudWorkerHostRegion, awsStore.ListCredentialsScoped)
 	if err != nil {
 		return nil, fmt.Errorf("initialize dynamic Cloud Worker credential authority: %w", err)
 	}

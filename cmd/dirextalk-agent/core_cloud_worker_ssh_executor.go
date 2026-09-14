@@ -38,6 +38,11 @@ import (
 )
 
 type sshWorkerExecutor struct {
+	groupAuthorization coreconversation.GroupAuthorizationGuard
+	groupTurnReader    interface {
+		GetTurn(context.Context, string) (coreconversation.Turn, error)
+	}
+	groupAuthorizationPoll   time.Duration
 	authority                *cloudWorkerCredentialAuthority
 	github                   cloudWorkerGitHubPATResolver
 	exact                    workaws.ExactCredentialResolver
@@ -149,6 +154,12 @@ func (executor *sshWorkerExecutor) hourlyQuote(ctx context.Context, worker sshwo
 }
 
 func (executor *sshWorkerExecutor) Execute(ctx context.Context, request sshflow.Request) (sshflow.Result, error) {
+	scope, err := executor.authorizedWorkerScope(ctx, request)
+	if err != nil {
+		return sshflow.Result{}, err
+	}
+	defer scope.stop()
+	ctx, groupOrigin := scope.ctx, scope.origin
 	current, err := executor.authority.resolveCurrentAWSBindingInRegion(ctx, request.AWS.Region)
 	if err != nil || current != request.AWS {
 		return sshflow.Result{}, errors.Join(cloudworker.ErrStaleAuthorization, err)
@@ -206,6 +217,11 @@ func (executor *sshWorkerExecutor) Execute(ctx context.Context, request sshflow.
 	var finalize func(context.Context, string, *sshworker.ExecutionResult) error
 	if service != nil {
 		finalize = func(finalizeCtx context.Context, workerID string, result *sshworker.ExecutionResult) error {
+			if groupOrigin != nil {
+				if err := executor.groupAuthorization.ValidateGroupOrigin(finalizeCtx, *groupOrigin); err != nil {
+					return err
+				}
+			}
 			if request.ReportProgress != nil {
 				if progressErr := request.ReportProgress(finalizeCtx, "verifying_service", "Verifying deployed service"); progressErr != nil {
 					return progressErr
@@ -219,6 +235,11 @@ func (executor *sshWorkerExecutor) Execute(ctx context.Context, request sshflow.
 				}
 			}
 			return publishErr
+		}
+	}
+	if groupOrigin != nil {
+		if err := executor.groupAuthorization.ValidateGroupOrigin(ctx, *groupOrigin); err != nil {
+			return sshflow.Result{}, err
 		}
 	}
 	result, err := provider.Execute(ctx, sshworker.ExecuteRequest{ExecutionID: request.ExecutionID,

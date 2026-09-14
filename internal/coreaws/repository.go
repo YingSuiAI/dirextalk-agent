@@ -43,6 +43,10 @@ type Repository interface {
 	GetCredential(context.Context, string) (Credentials, error)
 	GetCredentialRevision(context.Context, string, int64) (Credentials, error)
 	ListCredentials(context.Context, int, string) (CredentialPage, error)
+	// ListCredentialsScoped lists one credential scope: the owner's own when
+	// roomID is empty, or that group's. Scope is chosen by the authenticated
+	// caller, never by a model or tool argument.
+	ListCredentialsScoped(context.Context, string, int, string) (CredentialPage, error)
 	UpdateCredential(context.Context, Credentials, int64) (Credentials, error)
 	DeleteCredential(context.Context, string, int64) error
 	RecordCredentialIdentity(context.Context, string, int64, Identity, time.Time) (Credentials, error)

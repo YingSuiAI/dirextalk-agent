@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"html"
 	"io"
+	"log/slog"
 	"regexp"
 	"strings"
 	"unicode"
@@ -103,6 +104,72 @@ type webSearchConversationResolver struct {
 	service *corewebsearch.Service
 }
 
+// webSearchScopeForTurn selects the credential scope for one turn: a group turn
+// uses that group's own search credential, every other turn uses the owner's
+// personal set. The scope comes from the authenticated turn origin, never from
+// a model or tool argument.
+func webSearchScopeForTurn(ctx context.Context, ownerID string, accountGeneration int64) corewebsearch.Scope {
+	if origin, ok := coreconversation.GroupOriginFromContext(ctx); ok && origin.Validate() == nil && strings.TrimSpace(origin.RoomID) != "" {
+		return corewebsearch.GroupScope(ownerID, accountGeneration, origin.RoomID)
+	}
+	return corewebsearch.PersonalScope(ownerID, accountGeneration)
+}
+
+// resolveWithInheritance resolves the credential one turn should search with and
+// reports the scope that actually served it. A group that keeps its own search
+// credential uses only that credential; a group that has none inherits the
+// owner's configured provider, which keeps public Web search allowed by default
+// in a group. Every other turn resolves its own scope directly.
+func (r *webSearchConversationResolver) resolveWithInheritance(ctx context.Context, scope corewebsearch.Scope, groupTurn bool) (corewebsearch.ResolvedConfig, corewebsearch.Scope, error) {
+	config, err := r.service.Resolve(ctx, scope)
+	if err == nil || !groupTurn || !errors.Is(err, corewebsearch.ErrNotConfigured) {
+		return config, scope, err
+	}
+	inherited := corewebsearch.PersonalScope(scope.OwnerID, scope.AccountGeneration)
+	config, err = r.service.Resolve(ctx, inherited)
+	return config, inherited, err
+}
+
+// webSearchExecutionScope resolves the scope one compiled search tool may
+// dispatch with. The scope is the one the tool was compiled for: a group with
+// its own search credential dispatches under that group, a group that inherited
+// the owner's provider dispatches under the personal scope, and both are
+// re-checked against the authenticated turn origin here and against the stored
+// credential inside the service. A turn with no identity at all resolves
+// nothing.
+func webSearchExecutionScope(ctx context.Context, snapshot corewebsearch.ResolvedConfig) (corewebsearch.Scope, bool) {
+	if origin, group := coreconversation.GroupOriginFromContext(ctx); group {
+		if origin.Validate() != nil || strings.TrimSpace(origin.OwnerID) == "" || origin.AccountGeneration == 0 {
+			return corewebsearch.Scope{}, false
+		}
+		ownerID, generation := strings.TrimSpace(origin.OwnerID), int64(origin.AccountGeneration)
+		if strings.TrimSpace(snapshot.RoomID) != "" {
+			if snapshot.RoomID != origin.RoomID || snapshot.OwnerID != ownerID || snapshot.AccountGeneration != generation {
+				return corewebsearch.Scope{}, false
+			}
+			return corewebsearch.GroupScope(ownerID, generation, origin.RoomID), true
+		}
+		if snapshot.OwnerID != ownerID || snapshot.AccountGeneration != generation {
+			return corewebsearch.Scope{}, false
+		}
+		return corewebsearch.PersonalScope(ownerID, generation), true
+	}
+	permission, ok := capabilityclient.PermissionFromContext(ctx)
+	if !ok || permission == nil {
+		return corewebsearch.Scope{}, false
+	}
+	ownerID := strings.TrimSpace(permission.GetAuthenticatedOwnerId())
+	if ownerID == "" || permission.GetAccountGeneration() <= 0 {
+		return corewebsearch.Scope{}, false
+	}
+	if strings.TrimSpace(snapshot.RoomID) != "" || snapshot.OwnerID != ownerID || snapshot.AccountGeneration != permission.GetAccountGeneration() {
+		// A compiled group tool is never dispatched under an owner call and a
+		// snapshot compiled for somebody else is never dispatched at all.
+		return corewebsearch.Scope{}, false
+	}
+	return corewebsearch.PersonalScope(ownerID, permission.GetAccountGeneration()), true
+}
+
 func (r *webSearchConversationResolver) ResolveExtensions(ctx context.Context, selections []coreconversation.ExtensionSelection) ([]coreconversation.ResolvedExtension, error) {
 	var resolved []coreconversation.ResolvedExtension
 	if r != nil && r.base != nil {
@@ -115,17 +182,35 @@ func (r *webSearchConversationResolver) ResolveExtensions(ctx context.Context, s
 	if r == nil || r.service == nil {
 		return resolved, nil
 	}
-	permission, ok := capabilityclient.PermissionFromContext(ctx)
-	if !ok || permission == nil || strings.TrimSpace(permission.GetAuthenticatedOwnerId()) == "" || permission.GetAccountGeneration() <= 0 {
-		return resolved, nil
+	var ownerID string
+	var accountGeneration int64
+	groupTurn := false
+	if origin, group := coreconversation.GroupOriginFromContext(ctx); group {
+		if origin.Validate() != nil {
+			return nil, coreconversation.ErrGroupAuthorization
+		}
+		groupTurn = true
+		ownerID, accountGeneration = origin.OwnerID, int64(origin.AccountGeneration)
+	} else {
+		permission, ok := capabilityclient.PermissionFromContext(ctx)
+		if !ok || permission == nil || strings.TrimSpace(permission.GetAuthenticatedOwnerId()) == "" || permission.GetAccountGeneration() <= 0 {
+			return resolved, nil
+		}
+		ownerID, accountGeneration = strings.TrimSpace(permission.GetAuthenticatedOwnerId()), permission.GetAccountGeneration()
 	}
-	ownerID := strings.TrimSpace(permission.GetAuthenticatedOwnerId())
-	accountGeneration := permission.GetAccountGeneration()
-	config, err := r.service.Resolve(ctx, ownerID, accountGeneration)
+	scope := webSearchScopeForTurn(ctx, ownerID, accountGeneration)
+	config, scope, err := r.resolveWithInheritance(ctx, scope, groupTurn)
 	if errors.Is(err, corewebsearch.ErrNotConfigured) {
 		return resolved, nil
 	}
 	if err != nil {
+		if groupTurn {
+			// A group turn must never lose its answer because one scoped
+			// credential is unreadable or disabled: it continues without the
+			// search tool instead of failing the whole turn.
+			slog.Warn("[web-search] group credential unavailable; continuing without search", "error", groupAgentErrorSummary(err))
+			return resolved, nil
+		}
 		return nil, err
 	}
 	if !config.Enabled {
@@ -158,8 +243,9 @@ func (r *webSearchConversationResolver) ResolveExtensions(ctx context.Context, s
 	snapshot := corewebsearch.ResolvedConfig{
 		Config:            config.Config,
 		CredentialVersion: config.CredentialVersion,
-		OwnerID:           ownerID,
-		AccountGeneration: accountGeneration,
+		OwnerID:           scope.OwnerID,
+		AccountGeneration: scope.AccountGeneration,
+		RoomID:            scope.RoomID,
 	}
 	// Drop the resolver's plaintext reference before returning the compiled
 	// closure; the executable retains only snapshot metadata.
@@ -186,13 +272,15 @@ func (r *webSearchConversationResolver) ResolveExtensions(ctx context.Context, s
 			if err := decoder.Decode(&tail); !errors.Is(err, io.EOF) {
 				return coreconversation.ToolResult{}, webSearchConversationExecutionError(corewebsearch.ErrInvalid)
 			}
-			toolPermission, ok := capabilityclient.PermissionFromContext(toolCtx)
-			if !ok || toolPermission == nil {
+			// A group turn carries no capability permission: its scope comes from
+			// the authenticated group origin (revalidated before every tool call
+			// by Core), so the group searches with the owner's configured search
+			// provider instead of failing the call.
+			toolScope, ok := webSearchExecutionScope(toolCtx, snapshot)
+			if !ok {
 				return coreconversation.ToolResult{}, coreconversation.NewToolExecutionError(coreconversation.ToolOutcomeAuth, "Web search authorization is unavailable", 0, corewebsearch.ErrInvalid)
 			}
-			toolOwnerID := strings.TrimSpace(toolPermission.GetAuthenticatedOwnerId())
-			toolGeneration := toolPermission.GetAccountGeneration()
-			result, err := r.service.SearchResolved(toolCtx, toolOwnerID, toolGeneration, snapshot, input.Query, input.MaxResults)
+			result, err := r.service.SearchResolved(toolCtx, toolScope, snapshot, input.Query, input.MaxResults)
 			if err != nil {
 				return coreconversation.ToolResult{}, webSearchConversationExecutionError(err)
 			}

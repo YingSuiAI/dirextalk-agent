@@ -9,11 +9,11 @@ import (
 
 type testRepo struct{ value ResolvedConfig }
 
-func (r *testRepo) Get(context.Context, string, int64) (Config, error) { return r.value.Config, nil }
-func (r *testRepo) Resolve(context.Context, string, int64) (ResolvedConfig, error) {
+func (r *testRepo) Get(context.Context, Scope) (Config, error) { return r.value.Config, nil }
+func (r *testRepo) Resolve(context.Context, Scope) (ResolvedConfig, error) {
 	return r.value, nil
 }
-func (r *testRepo) ResolveForDispatch(context.Context, string, int64, ResolvedConfig) (ResolvedConfig, func() error, error) {
+func (r *testRepo) ResolveForDispatch(context.Context, Scope, ResolvedConfig) (ResolvedConfig, func() error, error) {
 	return r.value, func() error { return nil }, nil
 }
 func (r *testRepo) Update(_ context.Context, m Mutation, validateEnable func(string) error) (Config, error) {
@@ -58,7 +58,7 @@ func (r *testRepo) Update(_ context.Context, m Mutation, validateEnable func(str
 	r.value = next
 	return r.value.Config, nil
 }
-func (r *testRepo) MarkTested(_ context.Context, _ string, _, _ int64, at time.Time) (Config, error) {
+func (r *testRepo) MarkTested(_ context.Context, _ Scope, _ int64, at time.Time) (Config, error) {
 	r.value.TestedAt = &at
 	return r.value.Config, nil
 }
@@ -80,14 +80,14 @@ func TestGitHubConfigurationIsWriteOnlyAndConnectionTestUsesIdentity(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := s.Get(context.Background(), "owner", 1)
+	got, err := s.Get(context.Background(), PersonalScope("owner", 1))
 	if err != nil || got.GitHubTokenHint != "configured" {
 		t.Fatalf("got %#v, %v", got, err)
 	}
 	if got.GitHubTokenHint == "ghp_secret" {
 		t.Fatal("credential leaked")
 	}
-	if _, err = s.Test(context.Background(), "owner", 1); err != nil {
+	if _, err = s.Test(context.Background(), PersonalScope("owner", 1)); err != nil {
 		t.Fatal(err)
 	}
 	if tester.token != "ghp_secret" {

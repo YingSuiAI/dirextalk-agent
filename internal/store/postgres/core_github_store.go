@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -41,17 +42,26 @@ type githubQuery interface {
 }
 
 const githubColumns = `account_generation,enabled,provider,github_token_configured,credential_version,github_token_key_version,github_token_nonce,github_token_ciphertext,revision,tested_at,updated_at`
-const githubSelect = `SELECT ` + githubColumns + ` FROM core_github_configs WHERE owner_id=$1 AND account_generation=$2`
+const githubSelect = `SELECT ` + githubColumns + ` FROM core_github_configs WHERE owner_id=$1 AND account_generation=$2 AND scope=$3 AND room_id=$4`
 
-func (s *CoreGitHubStore) Get(ctx context.Context, ownerID string, accountGeneration int64) (coregithub.Config, error) {
-	ownerID = strings.TrimSpace(ownerID)
+// githubScopeArgs maps a credential scope onto the durable scope columns.
+func githubScopeArgs(scope coregithub.Scope) (string, string) {
+	if strings.TrimSpace(scope.RoomID) == "" {
+		return "personal", ""
+	}
+	return "group", strings.TrimSpace(scope.RoomID)
+}
+
+func (s *CoreGitHubStore) Get(ctx context.Context, scope coregithub.Scope) (coregithub.Config, error) {
+	ownerID, accountGeneration := strings.TrimSpace(scope.OwnerID), scope.AccountGeneration
 	if !coregithub.ValidIdentity(ownerID, accountGeneration) {
 		return coregithub.Config{}, coregithub.ErrInvalid
 	}
 	if err := s.checkGitHubAdmission(ctx, ownerID, accountGeneration); err != nil {
 		return coregithub.Config{}, err
 	}
-	row, err := scanGitHubRow(s.store.pool.QueryRow(ctx, githubSelect, ownerID, accountGeneration))
+	scopeKind, roomID := githubScopeArgs(scope)
+	row, err := scanGitHubRow(s.store.pool.QueryRow(ctx, githubSelect, ownerID, accountGeneration, scopeKind, roomID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return coregithub.DefaultConfig(), nil
 	}
@@ -61,7 +71,8 @@ func (s *CoreGitHubStore) Get(ctx context.Context, ownerID string, accountGenera
 	return row.config, nil
 }
 
-func (s *CoreGitHubStore) Resolve(ctx context.Context, ownerID string, accountGeneration int64) (coregithub.ResolvedConfig, error) {
+func (s *CoreGitHubStore) Resolve(ctx context.Context, scope coregithub.Scope) (coregithub.ResolvedConfig, error) {
+	ownerID, accountGeneration := strings.TrimSpace(scope.OwnerID), scope.AccountGeneration
 	ownerID = strings.TrimSpace(ownerID)
 	if !coregithub.ValidIdentity(ownerID, accountGeneration) {
 		return coregithub.ResolvedConfig{}, coregithub.ErrInvalid
@@ -69,22 +80,27 @@ func (s *CoreGitHubStore) Resolve(ctx context.Context, ownerID string, accountGe
 	if err := s.checkGitHubAdmission(ctx, ownerID, accountGeneration); err != nil {
 		return coregithub.ResolvedConfig{}, err
 	}
-	row, err := scanGitHubRow(s.store.pool.QueryRow(ctx, githubSelect, ownerID, accountGeneration))
+	scopeKind, roomID := githubScopeArgs(scope)
+	row, err := scanGitHubRow(s.store.pool.QueryRow(ctx, githubSelect, ownerID, accountGeneration, scopeKind, roomID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return coregithub.ResolvedConfig{}, coregithub.ErrNotConfigured
 	}
 	if err != nil {
+		slog.Warn("[github-store] credential row read failed", "room_id", scope.RoomID, "error", truncateStoreError(err))
 		return coregithub.ResolvedConfig{}, coregithub.ErrRepository
 	}
-	resolved := coregithub.ResolvedConfig{Config: row.config, CredentialVersion: row.credentialVersion, OwnerID: ownerID, AccountGeneration: accountGeneration}
+	resolved := coregithub.ResolvedConfig{Config: row.config, CredentialVersion: row.credentialVersion, OwnerID: ownerID, AccountGeneration: accountGeneration, RoomID: scope.RoomID}
 	if !row.config.GitHubTokenConfigured {
 		return resolved, nil
 	}
 	if row.credentialVersion <= 0 || len(row.nonce) == 0 || len(row.ciphertext) == 0 {
 		return coregithub.ResolvedConfig{}, coregithub.ErrRepository
 	}
-	plaintext, err := s.store.openDurableSecret(s.secretDomain(row.config.Provider), githubSecretRecordID(ownerID, accountGeneration), row.credentialVersion, githubSecretField, row.keyVersion, row.nonce, row.ciphertext)
+	plaintext, err := s.store.openDurableSecret(s.secretDomain(row.config.Provider), githubSecretRecordID(ownerID, accountGeneration, scope.RoomID), row.credentialVersion, githubSecretField, row.keyVersion, row.nonce, row.ciphertext)
 	if err != nil {
+		slog.Warn("[github-store] credential open failed", "room_id", scope.RoomID,
+			"record", githubSecretRecordID(ownerID, accountGeneration, scope.RoomID),
+			"revision", row.credentialVersion, "key_version", row.keyVersion, "error", truncateStoreError(err))
 		return coregithub.ResolvedConfig{}, coregithub.ErrRepository
 	}
 	resolved.GitHubToken = string(plaintext)
@@ -138,7 +154,8 @@ func (s *CoreGitHubStore) Update(ctx context.Context, mutation coregithub.Mutati
 		return coregithub.Config{}, coregithub.ErrRepository
 	}
 
-	current, err := scanGitHubRow(tx.QueryRow(ctx, githubSelect+` FOR UPDATE`, mutation.OwnerID, mutation.AccountGeneration))
+	scopeKind, roomID := githubScopeArgs(mutation.Scope)
+	current, err := scanGitHubRow(tx.QueryRow(ctx, githubSelect+` FOR UPDATE`, mutation.OwnerID, mutation.AccountGeneration, scopeKind, roomID))
 	exists := err == nil
 	if errors.Is(err, pgx.ErrNoRows) {
 		current = githubRow{config: coregithub.DefaultConfig(), keyVersion: secretbox.KeyVersionMin}
@@ -168,7 +185,7 @@ func (s *CoreGitHubStore) Update(ctx context.Context, mutation coregithub.Mutati
 			credentialVersion = 1
 		}
 		plaintext := []byte(*mutation.GitHubToken)
-		envelope, sealErr := s.store.sealDurableSecret(s.secretDomain(provider), githubSecretRecordID(mutation.OwnerID, mutation.AccountGeneration), credentialVersion, githubSecretField, plaintext)
+		envelope, sealErr := s.store.sealDurableSecret(s.secretDomain(provider), githubSecretRecordID(mutation.OwnerID, mutation.AccountGeneration, mutation.Scope.RoomID), credentialVersion, githubSecretField, plaintext)
 		clearBytes(plaintext)
 		if sealErr != nil {
 			return coregithub.Config{}, coregithub.ErrRepository
@@ -206,7 +223,7 @@ func (s *CoreGitHubStore) Update(ctx context.Context, mutation coregithub.Mutati
 			if credentialVersion <= 0 || len(nonce) == 0 || len(ciphertext) == 0 {
 				return coregithub.Config{}, coregithub.ErrNotConfigured
 			}
-			plaintext, openErr := s.store.openDurableSecret(s.secretDomain(provider), githubSecretRecordID(mutation.OwnerID, mutation.AccountGeneration), credentialVersion, githubSecretField, keyVersion, nonce, ciphertext)
+			plaintext, openErr := s.store.openDurableSecret(s.secretDomain(provider), githubSecretRecordID(mutation.OwnerID, mutation.AccountGeneration, mutation.Scope.RoomID), credentialVersion, githubSecretField, keyVersion, nonce, ciphertext)
 			if openErr != nil {
 				return coregithub.Config{}, coregithub.ErrRepository
 			}
@@ -227,9 +244,9 @@ func (s *CoreGitHubStore) Update(ctx context.Context, mutation coregithub.Mutati
 	}
 	next := coregithub.Config{Enabled: enabled, Provider: provider, GitHubTokenConfigured: configured, Revision: current.config.Revision + 1, TestedAt: testedAt, UpdatedAt: &now}
 	if !exists {
-		_, err = tx.Exec(ctx, `INSERT INTO core_github_configs(owner_id,account_generation,enabled,provider,github_token_configured,credential_version,github_token_key_version,github_token_nonce,github_token_ciphertext,revision,tested_at,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$12)`, mutation.OwnerID, mutation.AccountGeneration, enabled, provider, configured, credentialVersion, keyVersion, nonce, ciphertext, next.Revision, next.TestedAt, now)
+		_, err = tx.Exec(ctx, `INSERT INTO core_github_configs(owner_id,account_generation,scope,room_id,enabled,provider,github_token_configured,credential_version,github_token_key_version,github_token_nonce,github_token_ciphertext,revision,tested_at,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$14)`, mutation.OwnerID, mutation.AccountGeneration, scopeKind, roomID, enabled, provider, configured, credentialVersion, keyVersion, nonce, ciphertext, next.Revision, next.TestedAt, now)
 	} else {
-		_, err = tx.Exec(ctx, `UPDATE core_github_configs SET enabled=$3,provider=$4,github_token_configured=$5,credential_version=$6,github_token_key_version=$7,github_token_nonce=$8,github_token_ciphertext=$9,revision=$10,tested_at=$11,updated_at=$12 WHERE owner_id=$1 AND account_generation=$2 AND revision=$13`, mutation.OwnerID, mutation.AccountGeneration, enabled, provider, configured, credentialVersion, keyVersion, nonce, ciphertext, next.Revision, next.TestedAt, now, mutation.ExpectedRevision)
+		_, err = tx.Exec(ctx, `UPDATE core_github_configs SET enabled=$5,provider=$6,github_token_configured=$7,credential_version=$8,github_token_key_version=$9,github_token_nonce=$10,github_token_ciphertext=$11,revision=$12,tested_at=$13,updated_at=$14 WHERE owner_id=$1 AND account_generation=$2 AND scope=$3 AND room_id=$4 AND revision=$15`, mutation.OwnerID, mutation.AccountGeneration, scopeKind, roomID, enabled, provider, configured, credentialVersion, keyVersion, nonce, ciphertext, next.Revision, next.TestedAt, now, mutation.ExpectedRevision)
 	}
 	if err != nil {
 		return coregithub.Config{}, coregithub.ErrRepository
@@ -247,7 +264,8 @@ func (s *CoreGitHubStore) Update(ctx context.Context, mutation coregithub.Mutati
 	return next, nil
 }
 
-func (s *CoreGitHubStore) MarkTested(ctx context.Context, ownerID string, accountGeneration, expectedRevision int64, testedAt time.Time) (coregithub.Config, error) {
+func (s *CoreGitHubStore) MarkTested(ctx context.Context, scope coregithub.Scope, expectedRevision int64, testedAt time.Time) (coregithub.Config, error) {
+	ownerID, accountGeneration := strings.TrimSpace(scope.OwnerID), scope.AccountGeneration
 	ownerID = strings.TrimSpace(ownerID)
 	if !coregithub.ValidIdentity(ownerID, accountGeneration) {
 		return coregithub.Config{}, coregithub.ErrInvalid
@@ -256,7 +274,8 @@ func (s *CoreGitHubStore) MarkTested(ctx context.Context, ownerID string, accoun
 		return coregithub.Config{}, err
 	}
 	testedAt = testedAt.UTC().Truncate(time.Microsecond)
-	row, err := scanGitHubRow(s.store.pool.QueryRow(ctx, `UPDATE core_github_configs SET tested_at=$4 WHERE owner_id=$1 AND account_generation=$2 AND revision=$3 RETURNING `+githubColumns, ownerID, accountGeneration, expectedRevision, testedAt))
+	scopeKind, roomID := githubScopeArgs(scope)
+	row, err := scanGitHubRow(s.store.pool.QueryRow(ctx, `UPDATE core_github_configs SET tested_at=$5 WHERE owner_id=$1 AND account_generation=$2 AND scope=$3 AND room_id=$4 AND revision=$6 RETURNING `+githubColumns, ownerID, accountGeneration, scopeKind, roomID, expectedRevision, testedAt))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return coregithub.Config{}, coregithub.ErrRevisionConflict
 	}
@@ -272,7 +291,8 @@ func (s *CoreGitHubStore) MarkTested(ctx context.Context, ownerID string, accoun
 // read-only transaction only after the bounded provider request, so
 // deprovision cannot commit between the final config check and outbound
 // dispatch.
-func (s *CoreGitHubStore) ResolveForDispatch(ctx context.Context, ownerID string, accountGeneration int64, snapshot coregithub.ResolvedConfig) (coregithub.ResolvedConfig, func() error, error) {
+func (s *CoreGitHubStore) ResolveForDispatch(ctx context.Context, scope coregithub.Scope, snapshot coregithub.ResolvedConfig) (coregithub.ResolvedConfig, func() error, error) {
+	ownerID, accountGeneration := strings.TrimSpace(scope.OwnerID), scope.AccountGeneration
 	ownerID = strings.TrimSpace(ownerID)
 	if !coregithub.ValidIdentity(ownerID, accountGeneration) {
 		return coregithub.ResolvedConfig{}, nil, coregithub.ErrInvalid
@@ -298,7 +318,8 @@ func (s *CoreGitHubStore) ResolveForDispatch(ctx context.Context, ownerID string
 		rollback()
 		return coregithub.ResolvedConfig{}, nil, err
 	}
-	row, err := scanGitHubRow(tx.QueryRow(ctx, githubSelect+` FOR UPDATE`, ownerID, accountGeneration))
+	scopeKind, roomID := githubScopeArgs(scope)
+	row, err := scanGitHubRow(tx.QueryRow(ctx, githubSelect+` FOR UPDATE`, ownerID, accountGeneration, scopeKind, roomID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		rollback()
 		return coregithub.ResolvedConfig{}, nil, coregithub.ErrNotConfigured
@@ -311,8 +332,11 @@ func (s *CoreGitHubStore) ResolveForDispatch(ctx context.Context, ownerID string
 		rollback()
 		return coregithub.ResolvedConfig{}, nil, coregithub.ErrNotConfigured
 	}
-	current := coregithub.ResolvedConfig{Config: row.config, CredentialVersion: row.credentialVersion, OwnerID: ownerID, AccountGeneration: accountGeneration}
-	if current.Revision != snapshot.Revision || current.CredentialVersion != snapshot.CredentialVersion || current.Provider != snapshot.Provider || !current.GitHubTokenConfigured || snapshot.OwnerID != ownerID || snapshot.AccountGeneration != accountGeneration {
+	// The dispatch fence must carry the exact scope it was resolved for: a
+	// group turn compares against its own group scope, so a value without the
+	// room would look like a different credential set and fail closed.
+	current := coregithub.ResolvedConfig{Config: row.config, CredentialVersion: row.credentialVersion, OwnerID: ownerID, AccountGeneration: accountGeneration, RoomID: scope.RoomID}
+	if current.Revision != snapshot.Revision || current.CredentialVersion != snapshot.CredentialVersion || current.Provider != snapshot.Provider || !current.GitHubTokenConfigured || snapshot.OwnerID != ownerID || snapshot.AccountGeneration != accountGeneration || snapshot.RoomID != scope.RoomID {
 		rollback()
 		return coregithub.ResolvedConfig{}, nil, coregithub.ErrRevisionConflict
 	}
@@ -320,7 +344,7 @@ func (s *CoreGitHubStore) ResolveForDispatch(ctx context.Context, ownerID string
 		rollback()
 		return coregithub.ResolvedConfig{}, nil, coregithub.ErrDisabled
 	}
-	plaintext, err := s.store.openDurableSecret(s.secretDomain(row.config.Provider), githubSecretRecordID(ownerID, accountGeneration), row.credentialVersion, githubSecretField, row.keyVersion, row.nonce, row.ciphertext)
+	plaintext, err := s.store.openDurableSecret(s.secretDomain(row.config.Provider), githubSecretRecordID(ownerID, accountGeneration, scope.RoomID), row.credentialVersion, githubSecretField, row.keyVersion, row.nonce, row.ciphertext)
 	if err != nil {
 		rollback()
 		return coregithub.ResolvedConfig{}, nil, coregithub.ErrRepository
@@ -386,7 +410,17 @@ func checkGitHubAdmissionTx(ctx context.Context, tx pgx.Tx, ownerID string, acco
 	return nil
 }
 
-func githubSecretRecordID(ownerID string, accountGeneration int64) string {
+func githubSecretRecordID(ownerID string, accountGeneration int64, roomID string) string {
+	// The group scope is part of the durable-secret binding: without it two
+	// rows of the same owner/generation would share one envelope identity.
+	if trimmed := strings.TrimSpace(roomID); trimmed != "" {
+		return "owner=" + strconv.Itoa(len(ownerID)) + ":" + ownerID + ";generation=" +
+			strconv.FormatInt(accountGeneration, 10) + ";room=" + strconv.Itoa(len(trimmed)) + ":" + trimmed
+	}
+	return githubSecretRecordIDPersonal(ownerID, accountGeneration)
+}
+
+func githubSecretRecordIDPersonal(ownerID string, accountGeneration int64) string {
 	// The owner generation is immutable for the lifetime of this record. The
 	// credential version is bound separately by the durable-secret envelope;
 	// configuration revision is intentionally excluded so an enable/disable or
@@ -419,4 +453,13 @@ func scanGitHubRow(row pgx.Row) (githubRow, error) {
 		value.config.UpdatedAt = &v
 	}
 	return value, nil
+}
+
+// truncateStoreError keeps diagnostics useful without dumping long driver text.
+func truncateStoreError(err error) string {
+	value := strings.TrimSpace(err.Error())
+	if len(value) > 300 {
+		return value[:300]
+	}
+	return value
 }

@@ -2963,3 +2963,113 @@ WHERE defaults.singleton AND profile.deleted_at IS NULL
 
 ALTER TABLE core_model_profiles DROP COLUMN system_prompt;
 -- dirextalk-agent migration end 000033_global_system_prompt.up.sql
+-- dirextalk-agent migration begin 000034_group_conversation_scope.up.sql
+-- Group context is an immutable, separate conversation namespace. Ordinary
+-- owner conversations can never be relabeled as a group context.
+ALTER TABLE core_conversations ADD COLUMN group_scope_json jsonb;
+ALTER TABLE core_conversations ADD CONSTRAINT core_conversation_group_scope_shape
+    CHECK (group_scope_json IS NULL OR (
+        jsonb_typeof(group_scope_json) = 'object'
+        AND pg_column_size(group_scope_json) <= 8192
+        AND group_scope_json ?& ARRAY['room_id','owner_id','agent_mxid','account_generation','binding_revision']
+        AND jsonb_typeof(group_scope_json->'room_id') = 'string'
+        AND jsonb_typeof(group_scope_json->'owner_id') = 'string'
+        AND jsonb_typeof(group_scope_json->'agent_mxid') = 'string'
+        AND jsonb_typeof(group_scope_json->'account_generation') = 'number'
+        AND jsonb_typeof(group_scope_json->'binding_revision') = 'number'
+    ));
+
+CREATE FUNCTION reject_core_conversation_scope_change() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF NEW.group_scope_json IS DISTINCT FROM OLD.group_scope_json THEN
+        RAISE EXCEPTION 'conversation group scope is immutable';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER core_conversation_scope_immutable
+BEFORE UPDATE OF group_scope_json ON core_conversations
+FOR EACH ROW EXECUTE FUNCTION reject_core_conversation_scope_change();
+
+CREATE INDEX core_private_conversations_list_idx
+    ON core_conversations(updated_at DESC,conversation_id)
+    WHERE deleted_at IS NULL AND group_scope_json IS NULL;
+-- dirextalk-agent migration end 000034_group_conversation_scope.up.sql
+-- dirextalk-agent migration begin 000035_group_rolling_summary.up.sql
+-- Rolling summary of the group conversations this owner shares Ying with. It is
+-- derived data for the shared group scope only: it never carries owner-private
+-- context, is bounded, and is dropped with the binding epoch.
+CREATE TABLE core_group_summaries (
+    room_id text PRIMARY KEY CHECK (length(room_id) BETWEEN 2 AND 1024),
+    owner_id text NOT NULL CHECK (length(owner_id) BETWEEN 2 AND 1024),
+    account_generation bigint NOT NULL CHECK (account_generation > 0),
+    binding_revision bigint NOT NULL CHECK (binding_revision > 0),
+    covered_through_ts bigint NOT NULL DEFAULT 0 CHECK (covered_through_ts >= 0),
+    message_count integer NOT NULL DEFAULT 0 CHECK (message_count >= 0),
+    summary text NOT NULL DEFAULT '' CHECK (length(summary) <= 4000),
+    updated_at timestamptz NOT NULL
+);
+-- dirextalk-agent migration end 000035_group_rolling_summary.up.sql
+-- dirextalk-agent migration begin 000036_credential_scopes.up.sql
+-- Credential scopes: the personal Agent keeps one set, every group the owner
+-- shares Ying with keeps its own independent set. Personal rows keep scope
+-- 'personal' with an empty room_id.
+ALTER TABLE core_github_configs ADD COLUMN scope text NOT NULL DEFAULT 'personal' CHECK (scope IN ('personal','group'));
+ALTER TABLE core_github_configs ADD COLUMN room_id text NOT NULL DEFAULT '' CHECK (length(room_id) <= 1024);
+ALTER TABLE core_github_configs DROP CONSTRAINT core_github_configs_pkey;
+ALTER TABLE core_github_configs ADD PRIMARY KEY (owner_id, account_generation, scope, room_id);
+ALTER TABLE core_github_configs ADD CONSTRAINT core_github_configs_scope_room CHECK ((scope = 'group') = (room_id <> ''));
+-- dirextalk-agent migration end 000036_credential_scopes.up.sql
+-- dirextalk-agent migration begin 000037_web_search_credential_scopes.up.sql
+-- The Web Search credential follows the same scope model as GitHub: the owner
+-- keeps one personal set, every group the owner shares Ying with can keep its
+-- own. A group without its own row inherits the owner's configured provider
+-- (search stays allowed by default in groups).
+ALTER TABLE core_web_search_configs ADD COLUMN scope text NOT NULL DEFAULT 'personal' CHECK (scope IN ('personal','group'));
+ALTER TABLE core_web_search_configs ADD COLUMN room_id text NOT NULL DEFAULT '' CHECK (length(room_id) <= 1024);
+ALTER TABLE core_web_search_configs DROP CONSTRAINT core_web_search_configs_pkey;
+ALTER TABLE core_web_search_configs ADD PRIMARY KEY (owner_id, account_generation, scope, room_id);
+ALTER TABLE core_web_search_configs ADD CONSTRAINT core_web_search_configs_scope_room CHECK ((scope = 'group') = (room_id <> ''));
+-- dirextalk-agent migration end 000037_web_search_credential_scopes.up.sql
+-- dirextalk-agent migration begin 000038_group_model_bindings.up.sql
+-- One group can answer with a model the owner picked for that group instead of
+-- their own default conversation model. Absent row = inherit the owner's
+-- default; the binding is a pointer to an existing profile, so no credential is
+-- duplicated or re-encrypted here.
+CREATE TABLE core_group_model_bindings (
+    owner_id text NOT NULL CHECK (length(owner_id) BETWEEN 1 AND 512),
+    account_generation bigint NOT NULL CHECK (account_generation > 0),
+    room_id text NOT NULL CHECK (length(room_id) BETWEEN 2 AND 1024),
+    profile_id uuid NOT NULL REFERENCES core_model_profiles(profile_id) ON DELETE RESTRICT,
+    revision bigint NOT NULL DEFAULT 1 CHECK (revision > 0),
+    updated_at timestamptz NOT NULL,
+    PRIMARY KEY (owner_id, account_generation, room_id)
+);
+-- dirextalk-agent migration end 000038_group_model_bindings.up.sql
+-- dirextalk-agent migration begin 000039_aws_credential_scopes.up.sql
+-- AWS credentials follow the same scope model as GitHub and Web search: the
+-- owner keeps one personal cloud credential, and every group the owner shares
+-- Ying with can keep its own. Existing rows stay personal. A group with its own
+-- row uses only that row; a group without one keeps today's behaviour of
+-- inheriting the owner's credential, and a group row that exists but cannot be
+-- used fails closed instead of silently spending on the personal credential.
+ALTER TABLE core_aws_credentials ADD COLUMN scope text NOT NULL DEFAULT 'personal' CHECK (scope IN ('personal','group'));
+ALTER TABLE core_aws_credentials ADD COLUMN room_id text NOT NULL DEFAULT '' CHECK (length(room_id) <= 1024);
+ALTER TABLE core_aws_credentials ADD CONSTRAINT core_aws_credentials_scope_room CHECK ((scope = 'group') = (room_id <> ''));
+CREATE UNIQUE INDEX core_aws_credentials_scope_room_idx ON core_aws_credentials(scope, room_id) WHERE disabled_at IS NULL;
+-- dirextalk-agent migration end 000039_aws_credential_scopes.up.sql
+-- dirextalk-agent migration begin 000040_group_extension_bindings.up.sql
+-- One group can use third-party MCP installations the owner bound to it. The
+-- binding is explicit and per room: an installation is never implicitly shared
+-- with a group, and Skills stay personal. Only read-only MCP tools are exposed.
+CREATE TABLE core_group_extension_bindings (
+    owner_id text NOT NULL CHECK (length(owner_id) BETWEEN 1 AND 512),
+    account_generation bigint NOT NULL CHECK (account_generation > 0),
+    room_id text NOT NULL CHECK (length(room_id) BETWEEN 2 AND 1024),
+    installation_id uuid NOT NULL REFERENCES core_extension_installations(installation_id) ON DELETE CASCADE,
+    revision bigint NOT NULL DEFAULT 1 CHECK (revision > 0),
+    updated_at timestamptz NOT NULL,
+    PRIMARY KEY (owner_id, account_generation, room_id, installation_id)
+);
+-- dirextalk-agent migration end 000040_group_extension_bindings.up.sql

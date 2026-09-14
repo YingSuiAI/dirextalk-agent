@@ -2,12 +2,15 @@ package main
 
 import (
 	"context"
+	"errors"
+	"log/slog"
 	"strings"
 
 	workaws "github.com/YingSuiAI/dirextalk-agent/internal/awscredential"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/config"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreaws"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
 	awssdk "github.com/aws/aws-sdk-go-v2/aws"
 )
 
@@ -19,8 +22,11 @@ type cloudWorkerCredentialAuthority struct {
 	credentials workaws.CredentialResolver
 	revisions   workaws.CredentialRevisionResolver
 	exact       workaws.ExactCredentialResolver
-	list        func(context.Context, int, string) (coreaws.CredentialPage, error)
-	placement   *cloudWorkerPlacement
+	// list reads one credential scope: the empty room is the owner's own
+	// credential set, a room is that group's. The scope never comes from a
+	// model or tool argument, only from the authenticated turn origin.
+	list      func(context.Context, string, int, string) (coreaws.CredentialPage, error)
+	placement *cloudWorkerPlacement
 }
 
 func newCloudWorkerCredentialAuthority(
@@ -28,7 +34,7 @@ func newCloudWorkerCredentialAuthority(
 	revisions workaws.CredentialRevisionResolver,
 	exact workaws.ExactCredentialResolver,
 	hostRegion string,
-	list func(context.Context, int, string) (coreaws.CredentialPage, error),
+	list func(context.Context, string, int, string) (coreaws.CredentialPage, error),
 ) (*cloudWorkerCredentialAuthority, error) {
 	regionConfig := config.Config{CoreCloudWorkerHostRegion: hostRegion}
 	if credentials == nil || revisions == nil || exact == nil || list == nil ||
@@ -78,12 +84,8 @@ func (authority *cloudWorkerCredentialAuthority) resolveCurrentCredentialBinding
 	if authority == nil || authority.credentials == nil || authority.revisions == nil || authority.exact == nil || ctx == nil {
 		return cloudworker.AWSBinding{}, cloudworker.ErrInvalid
 	}
-	page, err := authority.list(ctx, 2, "")
-	if err != nil || len(page.Items) != 1 || page.NextPageToken != "" {
-		return cloudworker.AWSBinding{}, cloudworker.ErrStaleAuthorization
-	}
-	view := page.Items[0]
-	if view.Revision <= 0 || view.VerifiedRevision != view.Revision || view.TestedAt.IsZero() {
+	view, err := authority.currentCredentialView(ctx)
+	if err != nil {
 		return cloudworker.AWSBinding{}, cloudworker.ErrStaleAuthorization
 	}
 	credentialID := view.ID
@@ -106,16 +108,73 @@ func (authority *cloudWorkerCredentialAuthority) resolveCurrentCredentialBinding
 	return credentialBinding, nil
 }
 
+// currentCredentialView resolves the single usable credential for this turn:
+// the group's own credential when the turn belongs to a group that configured
+// one, and the owner's credential otherwise. A group whose own credential exists
+// but cannot be used fails closed instead of silently spending on the personal
+// one; a group with no credential of its own keeps inheriting the owner's.
+func (authority *cloudWorkerCredentialAuthority) currentCredentialView(ctx context.Context) (coreaws.CredentialView, error) {
+	return authority.currentCredentialViewFor(ctx, cloudWorkerTurnRoom(ctx))
+}
+
+// currentCredentialViewFor resolves the credential of one explicit turn scope,
+// so the inheritance and fail-closed rules are testable without forging a group
+// turn context.
+func (authority *cloudWorkerCredentialAuthority) currentCredentialViewFor(ctx context.Context, roomID string) (coreaws.CredentialView, error) {
+	if roomID == "" {
+		return authority.singleUsableCredential(ctx, "")
+	}
+	group, err := authority.singleUsableCredential(ctx, roomID)
+	if err == nil {
+		return group, nil
+	}
+	if errors.Is(err, errCloudWorkerCredentialUnconfigured) {
+		// Inherited: the group has no cloud credential of its own.
+		return authority.singleUsableCredential(ctx, "")
+	}
+	slog.Warn("[cloud-worker] group cloud credential unusable; refusing to spend with the owner's credential", "room_id", roomID, "error", groupAgentErrorSummary(err))
+	return coreaws.CredentialView{}, err
+}
+
+// errCloudWorkerCredentialUnconfigured distinguishes "this scope has no
+// credential" (which may inherit) from "this scope's credential is unusable"
+// (which must fail closed).
+var errCloudWorkerCredentialUnconfigured = errors.New("cloud worker credential is not configured for this scope")
+
+func (authority *cloudWorkerCredentialAuthority) singleUsableCredential(ctx context.Context, roomID string) (coreaws.CredentialView, error) {
+	page, err := authority.list(ctx, roomID, 2, "")
+	if err != nil {
+		return coreaws.CredentialView{}, err
+	}
+	if len(page.Items) == 0 && page.NextPageToken == "" {
+		return coreaws.CredentialView{}, errCloudWorkerCredentialUnconfigured
+	}
+	if len(page.Items) != 1 || page.NextPageToken != "" {
+		return coreaws.CredentialView{}, cloudworker.ErrStaleAuthorization
+	}
+	view := page.Items[0]
+	if view.Revision <= 0 || view.VerifiedRevision != view.Revision || view.TestedAt.IsZero() {
+		return coreaws.CredentialView{}, cloudworker.ErrStaleAuthorization
+	}
+	return view, nil
+}
+
+// cloudWorkerTurnRoom reports the room scope of this turn: the room of an
+// authenticated group turn, and empty for the owner's own work.
+func cloudWorkerTurnRoom(ctx context.Context) string {
+	origin, group := coreconversation.GroupOriginFromContext(ctx)
+	if !group || origin.Validate() != nil {
+		return ""
+	}
+	return strings.TrimSpace(origin.RoomID)
+}
+
 func (authority *cloudWorkerCredentialAuthority) HasCurrentVerifiedAWSBinding(ctx context.Context) bool {
 	if authority == nil || authority.list == nil || ctx == nil {
 		return false
 	}
-	page, err := authority.list(ctx, 2, "")
-	if err != nil || len(page.Items) != 1 || page.NextPageToken != "" {
-		return false
-	}
-	view := page.Items[0]
-	return view.Revision > 0 && view.VerifiedRevision == view.Revision && !view.TestedAt.IsZero()
+	_, err := authority.currentCredentialView(ctx)
+	return err == nil
 }
 
 func (authority *cloudWorkerCredentialAuthority) ResolveExactAWSBinding(ctx context.Context, expected cloudworker.AWSBinding) (cloudworker.AWSBinding, error) {

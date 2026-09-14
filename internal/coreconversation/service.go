@@ -192,7 +192,12 @@ type Service struct {
 	store               Store
 	models              ModelRunner
 	extensions          ExtensionResolver
+	groupScheduleMirror GroupScheduleMirror
 	intrinsics          IntrinsicResolver
+	groupExtensions     ExtensionResolver
+	groupSummary        GroupSummaryReader
+	groupIntrinsics     IntrinsicResolver
+	groupAuthorization  GroupAuthorizationGuard
 	staticSites         StaticSitePublisher
 	staticSiteOrigin    string
 	memoryRecall        MemoryRecallResolver
@@ -490,6 +495,11 @@ func nextMessageTime(c Conversation, t time.Time) time.Time {
 	return t
 }
 func (s *Service) runModel(ctx context.Context, req ModelRunRequest, emit func(ModelDelta) error) (ModelRunResult, error) {
+	if origin, group := GroupOriginFromContext(ctx); group {
+		if err := s.validateGroupAuthorization(ctx, &origin); err != nil {
+			return ModelRunResult{}, err
+		}
+	}
 	if emit != nil {
 		if runner, ok := s.models.(StreamingModelRunner); ok {
 			return runner.Stream(ctx, req, emit)
@@ -677,6 +687,13 @@ func (s *Service) CommitTurnAttachmentUpload(ctx context.Context, command Commit
 // execution goroutine intentionally uses a background context; disconnecting
 // the initiating RPC therefore cannot abandon an accepted turn.
 func (s *Service) StartTurn(ctx context.Context, cmd TurnStartCommand) (Turn, error) {
+	if cmd.GroupOrigin != nil {
+		return Turn{}, ErrGroupAuthorization
+	}
+	return s.startTurn(ctx, cmd)
+}
+
+func (s *Service) startTurn(ctx context.Context, cmd TurnStartCommand) (Turn, error) {
 	if s.turns == nil {
 		return Turn{}, ErrInvalid
 	}
@@ -698,8 +715,9 @@ func (s *Service) StartTurn(ctx context.Context, cmd TurnStartCommand) (Turn, er
 	if cmd.TurnID == "" {
 		cmd.TurnID = uuid.NewSHA1(uuid.NameSpaceOID, []byte("conversation-turn:"+cmd.RequestID)).String()
 	}
+	extensionResolver := s.extensionResolverForContext(ctx)
 	if !cmd.ExtensionSnapshotsPinned {
-		if automatic, ok := s.extensions.(AutomaticExtensionSelector); ok {
+		if automatic, ok := extensionResolver.(AutomaticExtensionSelector); ok {
 			var mergeErr error
 			cmd.Extensions, mergeErr = automatic.MergeAutomaticExtensions(ctx, cmd.Extensions)
 			if mergeErr != nil {
@@ -716,6 +734,11 @@ func (s *Service) StartTurn(ctx context.Context, cmd TurnStartCommand) (Turn, er
 			check.ProfileSnapshot = existing.ProfileSnapshot
 			check.ExtensionSnapshots = append([]ExtensionExecutionSnapshot(nil), existing.ExtensionSnapshots...)
 			check.AttachmentSources = append([]TurnAttachment(nil), existing.AttachmentSources...)
+			if cmd.GroupOrigin != nil && cmd.ExpectedRevision == nil {
+				// The Product adapter does not own conversation revisions. A
+				// redelivered event retains the revision resolved at admission.
+				check.ExpectedRevision = existing.ExpectedRevision
+			}
 			if !check.ExtensionSnapshotsPinned && len(check.Extensions) == 0 {
 				check.Extensions = snapshotSelections(existing.ExtensionSnapshots)
 			}
@@ -733,6 +756,18 @@ func (s *Service) StartTurn(ctx context.Context, cmd TurnStartCommand) (Turn, er
 			return Turn{}, lookupErr
 		}
 	}
+	if cmd.GroupOrigin != nil && cmd.ExpectedRevision == nil {
+		conversation, err := s.store.LoadConversation(ctx, cmd.ConversationID)
+		if err == nil {
+			if validateTurnConversationScope(conversation, Turn{GroupOrigin: cmd.GroupOrigin}) != nil {
+				return Turn{}, ErrGroupAuthorization
+			}
+			revision := conversation.Revision
+			cmd.ExpectedRevision = &revision
+		} else if !errors.Is(err, ErrConflict) {
+			return Turn{}, err
+		}
+	}
 	if cmd.ProfileSnapshot.ProfileID == "" {
 		if s.snapshots == nil {
 			return Turn{}, ErrInvalid
@@ -746,6 +781,11 @@ func (s *Service) StartTurn(ctx context.Context, cmd TurnStartCommand) (Turn, er
 	if err := validateProfilePins(cmd.ProfileSnapshot, cmd.ProfileID, cmd.ExpectedProfileRevision, cmd.ExpectedCredentialVersion); err != nil {
 		return Turn{}, err
 	}
+	if cmd.GroupOrigin != nil {
+		// The account-global owner instructions are not group configuration.
+		// Remove them from both model inputs and the persisted group snapshot.
+		cmd.ProfileSnapshot.SystemPrompt = ""
+	}
 	var admissionExtensions []ResolvedExtension
 	if cmd.ExtensionSnapshotsPinned {
 		var resolveErr error
@@ -754,10 +794,10 @@ func (s *Service) StartTurn(ctx context.Context, cmd TurnStartCommand) (Turn, er
 			return Turn{}, resolveErr
 		}
 	} else if len(cmd.ExtensionSnapshots) == 0 {
-		if s.extensions == nil {
+		if extensionResolver == nil {
 			return Turn{}, ErrInvalid
 		}
-		resolved, err := s.extensions.ResolveExtensions(ctx, append([]ExtensionSelection(nil), cmd.Extensions...))
+		resolved, err := extensionResolver.ResolveExtensions(ctx, append([]ExtensionSelection(nil), cmd.Extensions...))
 		if err != nil {
 			return Turn{}, err
 		}
@@ -799,6 +839,9 @@ func (s *Service) StartTurn(ctx context.Context, cmd TurnStartCommand) (Turn, er
 	if err != nil {
 		return Turn{}, err
 	}
+	if !sameGroupOrigin(candidate.GroupOrigin, cmd.GroupOrigin) {
+		return Turn{}, ErrGroupAuthorization
+	}
 	runtimeSnapshot, err := s.buildTurnAdmissionRuntime(ctx, candidate, admissionExtensions, cmd.IntrinsicPolicy, cmd.ExecutionMode, cmd.ConstrainedWorkflow)
 	if err != nil {
 		return Turn{}, err
@@ -807,6 +850,9 @@ func (s *Service) StartTurn(ctx context.Context, cmd TurnStartCommand) (Turn, er
 		conversation, loadErr := s.store.LoadConversation(ctx, cmd.ConversationID)
 		if loadErr != nil {
 			return Turn{}, loadErr
+		}
+		if err = validateTurnConversationScope(conversation, candidate); err != nil {
+			return Turn{}, err
 		}
 		envelope := automaticContextCompactionEnvelope{
 			CompiledSystemPrompt: runtimeSnapshot.CompiledSystemPrompt,
@@ -845,11 +891,26 @@ func (s *Service) buildTurnAdmissionRuntime(ctx context.Context, turn Turn, exte
 	}
 	profile := turn.ProfileSnapshot.Profile()
 	systemPrompt := appendSystemPrompt(compilePlatformSystemPrompt(profile.SystemPrompt), conversationConvergenceGuidance)
+	if turn.GroupOrigin != nil {
+		systemPrompt = groupAdmissionSystemPrompt(*turn.GroupOrigin)
+		// Derived group context: the owner's own questions get the rolling
+		// summary of this group; members keep the visibility floor of their
+		// own join and never receive it second-hand.
+		if turn.GroupOrigin.ActorID == turn.GroupOrigin.OwnerID {
+			if summary := s.groupRollingSummaryPrompt(ctx, *turn.GroupOrigin); summary != "" {
+				systemPrompt = appendSystemPrompt(systemPrompt, summary)
+			}
+		}
+	}
 	systemPrompt = appendMessageMCPRoutingGuidance(systemPrompt, extensions)
 	if containsStaticSiteIntrinsic(intrinsics) {
 		systemPrompt = staticSiteSystemPrompt(systemPrompt)
 	}
-	if containsScheduleIntrinsic(intrinsics) {
+	// The private schedule guidance pins one closed capability and its fixed
+	// tool bindings. A group schedule instead runs as an ordinary group request
+	// with the group's own tools, so that guidance would only make the group
+	// refuse requests it can actually serve.
+	if containsScheduleIntrinsic(intrinsics) && turn.GroupOrigin == nil {
 		systemPrompt = scheduleSystemPrompt(systemPrompt)
 	}
 	if containsCloudWorkerIntrinsic(intrinsics) {
@@ -859,7 +920,15 @@ func (s *Service) buildTurnAdmissionRuntime(ctx context.Context, turn Turn, exte
 	if err != nil {
 		return TurnRuntimeSnapshot{}, err
 	}
-	return newTurnRuntimeSnapshotWithPolicy(systemPrompt, turn.ProfileSnapshot, intrinsics, turn.ExtensionSnapshotDigest, turn.AttachmentSnapshotDigest, intrinsicPolicy, policy, workflow)
+	snapshot, err := newTurnRuntimeSnapshotWithPolicy(systemPrompt, turn.ProfileSnapshot, intrinsics, turn.ExtensionSnapshotDigest, turn.AttachmentSnapshotDigest, intrinsicPolicy, policy, workflow)
+	if err != nil {
+		return TurnRuntimeSnapshot{}, err
+	}
+	snapshot.GroupOrigin = cloneGroupOrigin(turn.GroupOrigin)
+	if snapshot.Validate() != nil {
+		return TurnRuntimeSnapshot{}, ErrInvalid
+	}
+	return snapshot, nil
 }
 
 func (s *Service) GetTurn(ctx context.Context, id string) (Turn, error) {
@@ -1304,9 +1373,28 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 		lease.Turn.LastSequence = started.Sequence
 	}
 	turn := lease.Turn
+	if !sameGroupOrigin(turn.GroupOrigin, admitted.RuntimeSnapshot.GroupOrigin) {
+		_, _ = s.turns.FailTurn(ctx, lease, "group_scope_invalid", "group execution scope is invalid")
+		return
+	}
+	if turn.GroupOrigin != nil {
+		ctx = WithGroupOrigin(ctx, *turn.GroupOrigin)
+		if err := s.validateGroupAuthorization(ctx, turn.GroupOrigin); err != nil {
+			_, _ = s.turns.FailTurn(ctx, lease, "group_authorization_revoked", "group Ying authorization is unavailable or revoked")
+			return
+		}
+	}
 	conv, err := s.store.LoadConversation(ctx, turn.ConversationID)
 	if err != nil {
+		if turn.GroupOrigin != nil {
+			_, _ = s.turns.FailTurn(ctx, lease, "group_scope_unavailable", "isolated group conversation is unavailable")
+			return
+		}
 		conv = Conversation{ID: turn.ConversationID, Revision: 0, CreatedAt: s.clock(), UpdatedAt: s.clock()}
+	}
+	if validateTurnConversationScope(conv, turn) != nil {
+		_, _ = s.turns.FailTurn(ctx, lease, "group_scope_invalid", "conversation execution scope does not match")
+		return
 	}
 	conversationTitleUserText := s.durableConversationTitleSource(ctx, conv, turn)
 	conv, persistedMessageCount, currentUserCommitted, err := conversationForTurnContinuation(conv, turn)
@@ -1314,7 +1402,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 		_, _ = s.turns.FailTurn(ctx, lease, "invalid_model_context", "durable conversation context is invalid")
 		return
 	}
-	if projector, ok := s.store.(ModelContextProjector); ok && strings.TrimSpace(turn.OwnerID) != "" && turn.AccountGeneration != 0 {
+	if projector, ok := s.store.(ModelContextProjector); ok && turn.GroupOrigin == nil && strings.TrimSpace(turn.OwnerID) != "" && turn.AccountGeneration != 0 {
 		conv, err = projector.ProjectModelContext(ctx, conv, turn.OwnerID, turn.AccountGeneration)
 		if err != nil {
 			_, _ = s.turns.FailTurn(ctx, lease, "model_context_projection_unavailable", "referenced conversation context is unavailable")
@@ -1468,7 +1556,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 	}()
 	resultCh := make(chan turnModelOutcome, 1)
 	var recalledMemory string
-	if !replayed && !history.memoryRecallDegraded && s.memoryRecall != nil {
+	if turn.GroupOrigin == nil && !replayed && !history.memoryRecallDegraded && s.memoryRecall != nil {
 		recallCtx, recallCancel := context.WithTimeout(ctx, s.memoryRecallTimeout)
 		recalledMemory, err = s.memoryRecall.RecallMemory(recallCtx, turn.Prompt)
 		recallCancel()
@@ -1851,6 +1939,10 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 	for {
 		select {
 		case out := <-resultCh:
+			if err := s.validateGroupAuthorization(ctx, turn.GroupOrigin); err != nil {
+				_, _ = s.turns.FailTurn(ctx, lease, "group_authorization_revoked", "group Ying authorization is unavailable or revoked")
+				return
+			}
 			if out.err != nil {
 				formatFailure := errors.Is(out.err, coremodel.ErrModelToolCallFormatInvalid)
 				canRetry := out.retry.Retryable && retryCount == 0 && !replayed && (!finalizing || formatFailure)
@@ -2102,6 +2194,10 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 					if previous, complete := toolCallAuthorities[call.ID]; complete && previous.state == turnToolCallTerminal {
 						continue
 					}
+					if err := s.validateGroupAuthorization(ctx, turn.GroupOrigin); err != nil {
+						_, _ = s.turns.FailTurn(ctx, lease, "group_authorization_revoked", "group Ying authorization is unavailable or revoked")
+						return
+					}
 					if coremodel.IsIntrinsicToolName(call.Name) {
 						var intrinsic *ResolvedIntrinsic
 						for index := range intrinsicTools {
@@ -2314,7 +2410,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			conv.UpdatedAt = s.clock()
 			conversationTitle := s.replaceProvisionalConversationTitle(ctx, conv.Title, conversationTitleUserText, m.Content)
 			response := ChatResponse{RequestID: turn.RequestID, ConversationID: turn.ConversationID, Revision: conv.Revision, Message: m, Done: true, ModelProfileID: turn.ProfileID, RelatedTaskIDs: append([]string(nil), m.RelatedTaskIDs...), RelatedPlanIDs: append([]string(nil), m.RelatedPlanIDs...), References: cloneReferences(m.References), ToolSummaries: append([]string(nil), m.ToolSummaries...), ToolResults: historyResults, ConversationTitle: conversationTitle, ConversationTitleSource: conversationTitleUserText}
-			if _, commitErr := s.turns.CommitTurn(ctx, lease, response); commitErr != nil {
+			if _, commitErr := s.commitAuthorizedTurn(ctx, lease, response); commitErr != nil {
 				current, readErr := s.turns.GetTurn(ctx, turn.ID)
 				if readErr == nil && current.State == TurnCompleted {
 					return
@@ -2548,7 +2644,7 @@ func (s *Service) commitTurnFinalizationFallback(ctx context.Context, lease Turn
 		References: cloneReferences(finalReferences), ToolSummaries: append([]string(nil), historySummaries...),
 		ToolResults: historyResults, ConversationTitle: conversationTitleFallback(titleSource), ConversationTitleSource: titleSource,
 	}
-	_, err = s.turns.CommitTurn(ctx, lease, response)
+	_, err = s.commitAuthorizedTurn(ctx, lease, response)
 	return err
 }
 
@@ -2873,6 +2969,9 @@ func recordIntrinsicOrderCorrection(ctx context.Context, store OrderedConversati
 }
 
 func (s *Service) resolveAcceptedTurnExtensions(ctx context.Context, snapshots []ExtensionExecutionSnapshot) ([]ResolvedExtension, error) {
+	if _, group := GroupOriginFromContext(ctx); group {
+		snapshots = filterGroupExtensions(snapshots)
+	}
 	if len(snapshots) == 0 {
 		return nil, nil
 	}
@@ -2883,7 +2982,7 @@ func (s *Service) resolveAcceptedTurnExtensions(ctx context.Context, snapshots [
 		}
 		selections = append(selections, snapshot.Selection)
 	}
-	resolved, err := s.extensions.ResolveExtensions(ctx, selections)
+	resolved, err := s.extensionResolverForContext(ctx).ResolveExtensions(ctx, selections)
 	if err != nil {
 		return nil, ErrConflict
 	}
@@ -2946,12 +3045,26 @@ func (s *Service) resolveAcceptedTurnExtensions(ctx context.Context, snapshots [
 		}
 		accepted = append(accepted, extension)
 	}
+	if origin, group := GroupOriginFromContext(ctx); group {
+		for index := range accepted {
+			execute := accepted[index].Execute
+			if execute == nil {
+				return nil, ErrGroupAuthorization
+			}
+			accepted[index].Execute = func(runCtx context.Context, request ToolExecutionRequest) (ToolResult, error) {
+				if err := s.validateGroupAuthorization(runCtx, &origin); err != nil {
+					return ToolResult{}, err
+				}
+				return execute(WithGroupOrigin(runCtx, origin), request)
+			}
+		}
+	}
 	return accepted, nil
 }
 
 func contextBoundExtensionSource(source string) bool {
 	switch source {
-	case "builtin:web_search:tavily", "builtin:knowledge:semantic", "product-capability", "message-mcp", "github-mcp":
+	case "builtin:web_search:tavily", "builtin:knowledge:semantic", "product-capability", "message-mcp", "github-mcp", "group-message":
 		return true
 	default:
 		return false

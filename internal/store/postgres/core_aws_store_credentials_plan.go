@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreaws"
@@ -29,7 +30,11 @@ func secretCredential(c coreaws.Credentials, a, se, t []byte) coreaws.Credential
 	defer clearBytes(a)
 	defer clearBytes(se)
 	defer clearBytes(t)
-	return coreaws.RehydrateCredentialsWithTestedAt(c.ID, c.Name, c.Region, c.AccountID, c.UserARN, a, se, t, c.VerifiedRevision, c.Revision, c.TestedAt, c.CreatedAt, c.UpdatedAt)
+	restored := coreaws.RehydrateCredentialsWithTestedAt(c.ID, c.Name, c.Region, c.AccountID, c.UserARN, a, se, t, c.VerifiedRevision, c.Revision, c.TestedAt, c.CreatedAt, c.UpdatedAt)
+	// The durable scope travels with the row: callers use it to keep one scope
+	// from reading or mutating another's credential.
+	restored.Scope = c.Scope
+	return restored
 }
 func credArgs(c coreaws.Credentials) ([]byte, []byte, []byte) {
 	return c.StoredSecretBytes()
@@ -121,7 +126,8 @@ func (s *CoreAWSStore) scanCredentialRow(row credentialRow) (coreaws.Credentials
 	var c coreaws.Credentials
 	var encrypted encryptedCredential
 	var testedAt *time.Time
-	if err := row.Scan(&c.ID, &c.Name, &c.Region, &encrypted.keyVersion, &encrypted.accessNonce, &encrypted.accessCiphertext, &encrypted.secretNonce, &encrypted.secretCiphertext, &encrypted.sessionNonce, &encrypted.sessionCiphertext, &c.AccountID, &c.UserARN, &c.VerifiedRevision, &c.Revision, &testedAt, &c.CreatedAt, &c.UpdatedAt); err != nil {
+	var roomID string
+	if err := row.Scan(&c.ID, &c.Name, &c.Region, &encrypted.keyVersion, &encrypted.accessNonce, &encrypted.accessCiphertext, &encrypted.secretNonce, &encrypted.secretCiphertext, &encrypted.sessionNonce, &encrypted.sessionCiphertext, &c.AccountID, &c.UserARN, &c.VerifiedRevision, &c.Revision, &testedAt, &c.CreatedAt, &c.UpdatedAt, &roomID); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return c, coreaws.ErrNotFound
 		}
@@ -130,6 +136,7 @@ func (s *CoreAWSStore) scanCredentialRow(row credentialRow) (coreaws.Credentials
 	if testedAt != nil {
 		c.TestedAt = testedAt.UTC()
 	}
+	c.Scope = coreaws.GroupScope(roomID)
 	return s.openCredential(c, encrypted)
 }
 
@@ -160,17 +167,18 @@ func (s *CoreAWSStore) CreateCredential(ctx context.Context, c coreaws.Credentia
 		return coreaws.Credentials{}, e
 	}
 	defer tx.Rollback(ctx)
-	if _, e = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, "core_aws:active_credential"); e != nil {
+	scopeKind, scopeRoom := awsCredentialScopeArgs(c.Scope)
+	if _, e = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, "core_aws:active_credential:"+scopeKind+":"+scopeRoom); e != nil {
 		return coreaws.Credentials{}, e
 	}
 	var active bool
-	if e = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM core_aws_credentials WHERE disabled_at IS NULL)`).Scan(&active); e != nil {
+	if e = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM core_aws_credentials WHERE disabled_at IS NULL AND scope=$1 AND room_id=$2)`, scopeKind, scopeRoom).Scan(&active); e != nil {
 		return coreaws.Credentials{}, e
 	}
 	if active {
 		return coreaws.Credentials{}, coreaws.ErrActiveCredentialExists
 	}
-	if _, e = tx.Exec(ctx, `INSERT INTO core_aws_credentials(credential_id,name,region,secret_key_version,access_key_id_nonce,access_key_id_ciphertext,secret_access_key_nonce,secret_access_key_ciphertext,session_token_nonce,session_token_ciphertext,session_token_configured,account_id,user_arn,verified_revision,revision,tested_at,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`, c.ID, c.Name, c.Region, encrypted.keyVersion, encrypted.accessNonce, encrypted.accessCiphertext, encrypted.secretNonce, encrypted.secretCiphertext, encrypted.sessionNonce, encrypted.sessionCiphertext, configured, c.AccountID, c.UserARN, c.VerifiedRevision, c.Revision, nullableCredentialTime(c.TestedAt), c.CreatedAt, c.UpdatedAt); e != nil {
+	if _, e = tx.Exec(ctx, `INSERT INTO core_aws_credentials(credential_id,name,region,secret_key_version,access_key_id_nonce,access_key_id_ciphertext,secret_access_key_nonce,secret_access_key_ciphertext,session_token_nonce,session_token_ciphertext,session_token_configured,account_id,user_arn,verified_revision,revision,tested_at,created_at,updated_at,scope,room_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`, c.ID, c.Name, c.Region, encrypted.keyVersion, encrypted.accessNonce, encrypted.accessCiphertext, encrypted.secretNonce, encrypted.secretCiphertext, encrypted.sessionNonce, encrypted.sessionCiphertext, configured, c.AccountID, c.UserARN, c.VerifiedRevision, c.Revision, nullableCredentialTime(c.TestedAt), c.CreatedAt, c.UpdatedAt, scopeKind, scopeRoom); e != nil {
 		return coreaws.Credentials{}, e
 	}
 	if _, e = tx.Exec(ctx, `INSERT INTO core_aws_credential_revisions(credential_id,revision,region,secret_key_version,access_key_id_nonce,access_key_id_ciphertext,secret_access_key_nonce,secret_access_key_ciphertext,session_token_nonce,session_token_ciphertext,session_token_configured,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`, c.ID, c.Revision, c.Region, encrypted.keyVersion, encrypted.accessNonce, encrypted.accessCiphertext, encrypted.secretNonce, encrypted.secretCiphertext, encrypted.sessionNonce, encrypted.sessionCiphertext, configured, c.CreatedAt); e != nil {
@@ -190,19 +198,30 @@ func (s *CoreAWSStore) GetCredential(ctx context.Context, id string) (coreaws.Cr
 	if s == nil || s.store == nil {
 		return coreaws.Credentials{}, coreaws.ErrInvalid
 	}
-	return s.scanCredentialRow(s.store.pool.QueryRow(ctx, `SELECT credential_id::text,name,region,secret_key_version,access_key_id_nonce,access_key_id_ciphertext,secret_access_key_nonce,secret_access_key_ciphertext,session_token_nonce,session_token_ciphertext,account_id,user_arn,verified_revision,revision,tested_at,created_at,updated_at FROM core_aws_credentials WHERE credential_id=$1 AND disabled_at IS NULL`, id))
+	return s.scanCredentialRow(s.store.pool.QueryRow(ctx, `SELECT credential_id::text,name,region,secret_key_version,access_key_id_nonce,access_key_id_ciphertext,secret_access_key_nonce,secret_access_key_ciphertext,session_token_nonce,session_token_ciphertext,account_id,user_arn,verified_revision,revision,tested_at,created_at,updated_at,room_id FROM core_aws_credentials WHERE credential_id=$1 AND disabled_at IS NULL`, id))
 }
 func (s *CoreAWSStore) GetCredentialRevision(ctx context.Context, id string, revision int64) (coreaws.Credentials, error) {
 	if s == nil || s.store == nil || revision < 1 {
 		return coreaws.Credentials{}, coreaws.ErrInvalid
 	}
-	return s.scanCredentialRow(s.store.pool.QueryRow(ctx, `SELECT c.credential_id::text,c.name,r.region,r.secret_key_version,r.access_key_id_nonce,r.access_key_id_ciphertext,r.secret_access_key_nonce,r.secret_access_key_ciphertext,r.session_token_nonce,r.session_token_ciphertext,COALESCE(e.account_id,''),COALESCE(e.user_arn,''),CASE WHEN e.tested_at IS NULL THEN 0 ELSE r.revision END,r.revision,e.tested_at,r.created_at,COALESCE(e.tested_at,r.created_at) FROM core_aws_credentials c JOIN core_aws_credential_revisions r ON r.credential_id=c.credential_id LEFT JOIN core_aws_credential_revision_evidence e ON e.credential_id=r.credential_id AND e.revision=r.revision WHERE c.credential_id=$1 AND r.revision=$2`, id, revision))
+	return s.scanCredentialRow(s.store.pool.QueryRow(ctx, `SELECT c.credential_id::text,c.name,r.region,r.secret_key_version,r.access_key_id_nonce,r.access_key_id_ciphertext,r.secret_access_key_nonce,r.secret_access_key_ciphertext,r.session_token_nonce,r.session_token_ciphertext,COALESCE(e.account_id,''),COALESCE(e.user_arn,''),CASE WHEN e.tested_at IS NULL THEN 0 ELSE r.revision END,r.revision,e.tested_at,r.created_at,COALESCE(e.tested_at,r.created_at),c.room_id FROM core_aws_credentials c JOIN core_aws_credential_revisions r ON r.credential_id=c.credential_id LEFT JOIN core_aws_credential_revision_evidence e ON e.credential_id=r.credential_id AND e.revision=r.revision WHERE c.credential_id=$1 AND r.revision=$2`, id, revision))
 }
 func (s *CoreAWSStore) ListCredentials(ctx context.Context, size int, token string) (coreaws.CredentialPage, error) {
+	return s.ListCredentialsScoped(ctx, "", size, token)
+}
+
+// ListCredentialsScoped lists the credentials of one scope: the owner's own
+// (roomID empty) or one group's. Scope is never taken from a model or tool
+// argument, only from the authenticated caller.
+func (s *CoreAWSStore) ListCredentialsScoped(ctx context.Context, roomID string, size int, token string) (coreaws.CredentialPage, error) {
 	if size < 0 || size > 100 {
 		return coreaws.CredentialPage{}, coreaws.ErrInvalid
 	}
-	rows, e := s.store.pool.Query(ctx, `SELECT credential_id::text,name,region,account_id,user_arn,verified_revision,revision,tested_at,created_at,updated_at,TRUE,TRUE,session_token_configured FROM core_aws_credentials WHERE disabled_at IS NULL AND credential_id::text>$1 ORDER BY credential_id LIMIT $2`, token, size+1)
+	scopeKind, scopedRoom := "personal", ""
+	if trimmed := strings.TrimSpace(roomID); trimmed != "" {
+		scopeKind, scopedRoom = "group", trimmed
+	}
+	rows, e := s.store.pool.Query(ctx, `SELECT credential_id::text,name,region,account_id,user_arn,verified_revision,revision,tested_at,created_at,updated_at,TRUE,TRUE,session_token_configured FROM core_aws_credentials WHERE disabled_at IS NULL AND scope=$1 AND room_id=$2 AND credential_id::text>$3 ORDER BY credential_id LIMIT $4`, scopeKind, scopedRoom, token, size+1)
 	if e != nil {
 		return coreaws.CredentialPage{}, e
 	}
@@ -228,6 +247,17 @@ func (s *CoreAWSStore) ListCredentials(ctx context.Context, size int, token stri
 	}
 	return page, rows.Err()
 }
+
+// awsCredentialScopeArgs maps a credential scope onto the durable scope
+// columns: the owner's own set is scope 'personal' with an empty room, and a
+// group is scope 'group' with that room.
+func awsCredentialScopeArgs(scope coreaws.Scope) (string, string) {
+	if room := scope.Normalize().RoomID; room != "" {
+		return "group", room
+	}
+	return "personal", ""
+}
+
 func (s *CoreAWSStore) UpdateCredential(ctx context.Context, c coreaws.Credentials, expected int64) (coreaws.Credentials, error) {
 	if c.Validate() != nil || c.Revision != expected+1 {
 		return coreaws.Credentials{}, coreaws.ErrInvalid
@@ -242,10 +272,10 @@ func (s *CoreAWSStore) UpdateCredential(ctx context.Context, c coreaws.Credentia
 		return coreaws.Credentials{}, e
 	}
 	defer tx.Rollback(ctx)
-	if _, e = tx.Exec(ctx, `INSERT INTO core_aws_credential_revisions(credential_id,revision,region,secret_key_version,access_key_id_nonce,access_key_id_ciphertext,secret_access_key_nonce,secret_access_key_ciphertext,session_token_nonce,session_token_ciphertext,session_token_configured,created_at) SELECT credential_id,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12 FROM core_aws_credentials WHERE credential_id=$1 AND revision=$13 AND disabled_at IS NULL`, c.ID, c.Revision, c.Region, encrypted.keyVersion, encrypted.accessNonce, encrypted.accessCiphertext, encrypted.secretNonce, encrypted.secretCiphertext, encrypted.sessionNonce, encrypted.sessionCiphertext, configured, c.UpdatedAt, expected); e != nil {
+	if _, e = tx.Exec(ctx, `INSERT INTO core_aws_credential_revisions(credential_id,revision,region,secret_key_version,access_key_id_nonce,access_key_id_ciphertext,secret_access_key_nonce,secret_access_key_ciphertext,session_token_nonce,session_token_ciphertext,session_token_configured,created_at) SELECT credential_id,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12 FROM core_aws_credentials WHERE credential_id=$1 AND revision=$13 AND disabled_at IS NULL AND room_id=$14::text`, c.ID, c.Revision, c.Region, encrypted.keyVersion, encrypted.accessNonce, encrypted.accessCiphertext, encrypted.secretNonce, encrypted.secretCiphertext, encrypted.sessionNonce, encrypted.sessionCiphertext, configured, c.UpdatedAt, expected, c.Scope.Normalize().RoomID); e != nil {
 		return coreaws.Credentials{}, e
 	}
-	tag, e := tx.Exec(ctx, `UPDATE core_aws_credentials SET name=$2,region=$3,secret_key_version=$4,access_key_id_nonce=$5,access_key_id_ciphertext=$6,secret_access_key_nonce=$7,secret_access_key_ciphertext=$8,session_token_nonce=$9,session_token_ciphertext=$10,session_token_configured=$11,account_id=$12,user_arn=$13,verified_revision=$14,revision=$15,tested_at=$16,updated_at=$17 WHERE credential_id=$1 AND revision=$18 AND disabled_at IS NULL`, c.ID, c.Name, c.Region, encrypted.keyVersion, encrypted.accessNonce, encrypted.accessCiphertext, encrypted.secretNonce, encrypted.secretCiphertext, encrypted.sessionNonce, encrypted.sessionCiphertext, configured, c.AccountID, c.UserARN, c.VerifiedRevision, c.Revision, nullableCredentialTime(c.TestedAt), c.UpdatedAt, expected)
+	tag, e := tx.Exec(ctx, `UPDATE core_aws_credentials SET name=$2,region=$3,secret_key_version=$4,access_key_id_nonce=$5,access_key_id_ciphertext=$6,secret_access_key_nonce=$7,secret_access_key_ciphertext=$8,session_token_nonce=$9,session_token_ciphertext=$10,session_token_configured=$11,account_id=$12,user_arn=$13,verified_revision=$14,revision=$15,tested_at=$16,updated_at=$17 WHERE credential_id=$1 AND revision=$18 AND disabled_at IS NULL AND room_id=$19::text`, c.ID, c.Name, c.Region, encrypted.keyVersion, encrypted.accessNonce, encrypted.accessCiphertext, encrypted.secretNonce, encrypted.secretCiphertext, encrypted.sessionNonce, encrypted.sessionCiphertext, configured, c.AccountID, c.UserARN, c.VerifiedRevision, c.Revision, nullableCredentialTime(c.TestedAt), c.UpdatedAt, expected, c.Scope.Normalize().RoomID)
 	if e != nil {
 		return coreaws.Credentials{}, e
 	}
@@ -359,7 +389,7 @@ func (s *CoreAWSStore) BeginCredentialTest(ctx context.Context, id string, expec
 	if currentRevision != expected {
 		return coreaws.CredentialTestClaim{}, nil, coreaws.ErrRevisionConflict
 	}
-	credential, err := s.scanCredentialRow(tx.QueryRow(ctx, `SELECT credential_id::text,name,region,secret_key_version,access_key_id_nonce,access_key_id_ciphertext,secret_access_key_nonce,secret_access_key_ciphertext,session_token_nonce,session_token_ciphertext,account_id,user_arn,verified_revision,revision,tested_at,created_at,updated_at FROM core_aws_credentials WHERE credential_id=$1 AND disabled_at IS NULL`, id))
+	credential, err := s.scanCredentialRow(tx.QueryRow(ctx, `SELECT credential_id::text,name,region,secret_key_version,access_key_id_nonce,access_key_id_ciphertext,secret_access_key_nonce,secret_access_key_ciphertext,session_token_nonce,session_token_ciphertext,account_id,user_arn,verified_revision,revision,tested_at,created_at,updated_at,room_id FROM core_aws_credentials WHERE credential_id=$1 AND disabled_at IS NULL`, id))
 	if err != nil {
 		return coreaws.CredentialTestClaim{}, nil, err
 	}
@@ -418,7 +448,7 @@ func (s *CoreAWSStore) CompleteCredentialTest(ctx context.Context, claim coreaws
 	if state != "in_progress" {
 		return coreaws.CredentialTest{}, coreaws.ErrResponseUncertain
 	}
-	credential, err := s.scanCredentialRow(tx.QueryRow(ctx, `SELECT c.credential_id::text,c.name,r.region,r.secret_key_version,r.access_key_id_nonce,r.access_key_id_ciphertext,r.secret_access_key_nonce,r.secret_access_key_ciphertext,r.session_token_nonce,r.session_token_ciphertext,COALESCE(e.account_id,''),COALESCE(e.user_arn,''),CASE WHEN e.tested_at IS NULL THEN 0 ELSE r.revision END,r.revision,e.tested_at,r.created_at,COALESCE(e.tested_at,r.created_at) FROM core_aws_credentials c JOIN core_aws_credential_revisions r ON r.credential_id=c.credential_id LEFT JOIN core_aws_credential_revision_evidence e ON e.credential_id=r.credential_id AND e.revision=r.revision WHERE c.credential_id=$1 AND r.revision=$2 FOR UPDATE OF r`, claim.CredentialID, claim.ExpectedRevision))
+	credential, err := s.scanCredentialRow(tx.QueryRow(ctx, `SELECT c.credential_id::text,c.name,r.region,r.secret_key_version,r.access_key_id_nonce,r.access_key_id_ciphertext,r.secret_access_key_nonce,r.secret_access_key_ciphertext,r.session_token_nonce,r.session_token_ciphertext,COALESCE(e.account_id,''),COALESCE(e.user_arn,''),CASE WHEN e.tested_at IS NULL THEN 0 ELSE r.revision END,r.revision,e.tested_at,r.created_at,COALESCE(e.tested_at,r.created_at),c.room_id FROM core_aws_credentials c JOIN core_aws_credential_revisions r ON r.credential_id=c.credential_id LEFT JOIN core_aws_credential_revision_evidence e ON e.credential_id=r.credential_id AND e.revision=r.revision WHERE c.credential_id=$1 AND r.revision=$2 FOR UPDATE OF r`, claim.CredentialID, claim.ExpectedRevision))
 	if err != nil {
 		return coreaws.CredentialTest{}, err
 	}

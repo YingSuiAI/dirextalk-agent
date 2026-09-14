@@ -22,6 +22,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/sshflow"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/sshworker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/sshworkload"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreserver"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
@@ -338,8 +339,8 @@ func TestSSHWorkerExecuteRejectsRotatedCurrentCredentialBeforeWorkspaceRead(t *t
 	resolver.revisions = []uint64{4, 4}
 	resolver.views[0].Revision, resolver.views[0].VerifiedRevision = 4, 4
 	sources := &workspaceSourceStub{reads: make(map[string]cloudworker.SourceRead)}
-	executor := &sshWorkerExecutor{authority: authority, sources: sources, root: t.TempDir()}
-	_, err = executor.Execute(context.Background(), sshflow.Request{AWS: requestBinding})
+	executor := &sshWorkerExecutor{authority: authority, sources: sources, root: t.TempDir(), groupTurnReader: privateTurnReaderFixture{}}
+	_, err = executor.Execute(context.Background(), sshflow.Request{AWS: requestBinding, TurnID: privateTurnFixtureID})
 	if !errors.Is(err, cloudworker.ErrStaleAuthorization) {
 		t.Fatalf("rotated credential returned %v", err)
 	}
@@ -413,7 +414,7 @@ func TestSSHWorkerPersistedRegionSurvivesRandomPlacementRestart(t *testing.T) {
 	catalog := &workerStatusPricingCatalog{snapshot: cloudworker.PricingCatalogSnapshot{Currency: "USD", SourceTime: time.Now(), ExpiresAt: time.Now().Add(time.Minute)}}
 	sources := &workspaceSourceStub{reads: make(map[string]cloudworker.SourceRead)}
 	executor := &sshWorkerExecutor{authority: restarted, exact: resolver, state: state, root: t.TempDir(), sources: sources, pricing: catalog,
-		providers: map[sshworker.CredentialIdentity]*sshworker.Provider{persisted.Credential: cachedProvider}}
+		providers: map[sshworker.CredentialIdentity]*sshworker.Provider{persisted.Credential: cachedProvider}, groupTurnReader: privateTurnReaderFixture{}}
 	if err := executor.authorizeWorkerCreate(ctx, persisted.Credential); err != nil {
 		t.Fatalf("persisted authorized creation was rerouted: %v", err)
 	}
@@ -454,8 +455,8 @@ func TestSSHWorkerRetainedReuseRechecksGitHubBindingBeforeWorkspaceRead(t *testi
 	if err = binding.Seal(); err != nil {
 		t.Fatal(err)
 	}
-	executor := &sshWorkerExecutor{authority: authority, github: github, sources: sources, root: t.TempDir()}
-	_, err = executor.Execute(context.Background(), sshflow.Request{AWS: awsBinding, GitHubBinding: binding, ReuseOnly: true, ReuseWorkerID: "11111111-1111-4111-8111-111111111111"})
+	executor := &sshWorkerExecutor{authority: authority, github: github, sources: sources, root: t.TempDir(), groupTurnReader: privateTurnReaderFixture{}}
+	_, err = executor.Execute(context.Background(), sshflow.Request{AWS: awsBinding, GitHubBinding: binding, ReuseOnly: true, ReuseWorkerID: "11111111-1111-4111-8111-111111111111", TurnID: privateTurnFixtureID})
 	if github.calls != 0 || sources.calls != 0 {
 		t.Fatalf("err=%v calls=%d sourceReads=%d", err, github.calls, sources.calls)
 	}
@@ -1022,7 +1023,19 @@ func sourceRead(item cloudworker.InputManifestItem, body []byte) cloudworker.Sou
 }
 
 func sshflowRequest(manifest cloudworker.InputManifest, mode cloudworker.WorkspaceMode) sshflow.Request {
-	return sshflow.Request{OwnerID: "owner", AccountGeneration: 1, ExecutionID: "33333333-3333-4333-8333-333333333333", InputManifest: manifest, WorkspaceMode: mode}
+	return sshflow.Request{OwnerID: "owner", AccountGeneration: 1, TurnID: privateTurnFixtureID, ExecutionID: "33333333-3333-4333-8333-333333333333", InputManifest: manifest, WorkspaceMode: mode}
+}
+
+// privateTurnFixtureID identifies the non-group durable turn used by the
+// Worker fixtures. Executors require a durable turn reader so a group-origin
+// turn can be revalidated; these fixtures assert credential/source boundaries
+// and therefore supply a plain private turn.
+const privateTurnFixtureID = "44444444-4444-4444-8444-444444444444"
+
+type privateTurnReaderFixture struct{}
+
+func (privateTurnReaderFixture) GetTurn(context.Context, string) (coreconversation.Turn, error) {
+	return coreconversation.Turn{ID: privateTurnFixtureID, OwnerID: "owner", AccountGeneration: 1}, nil
 }
 
 func workspaceArchiveFixture(t *testing.T, name string, body []byte) []byte {

@@ -191,6 +191,50 @@ func intrinsicAWSBinding() AWSBinding {
 	return AWSBinding{AccountID: "123456789012", Region: "us-east-1", CredentialID: uuid.NewSHA1(uuid.NameSpaceOID, []byte("aws-credential")).String(), CredentialRevision: 3}
 }
 
+// A persistent service deployed without a hostname is served straight on its
+// public IPv4, and the platform opens exactly that port. The receipt has to
+// carry the address: without it the model read an IP plus a port as "internal"
+// and told the user the deployed game had no address at all.
+func TestWorkerInventoryStatesTheDirectPublicAddressOfAHostnameFreeService(t *testing.T) {
+	inventory := RetainedWorkerInventory{Workers: []RetainedWorkerSnapshot{{
+		WorkerID: uuid.NewString(), InstanceType: "t3a.micro", PublicIPv4: "203.0.113.8",
+		Workloads: []RetainedWorkerWorkload{
+			{WorkloadID: "block-elimination-game", Kind: "service", Phase: "ready", Health: "healthy", Port: 8080},
+			{WorkloadID: "gitea-svc", Kind: "service", Phase: "ready", Health: "healthy", Port: 3000, Hostname: "gitea.example.com"},
+			{WorkloadID: "cleanup-job", Kind: "job", Phase: "succeeded"},
+		},
+	}}}
+	raw := string(boundedWorkerInventoryJSON(inventory))
+	for _, required := range []string{
+		`"public_url":"http://203.0.113.8:8080/"`,
+		`"public_url"`, `"gitea.example.com"`, `"hostname"`,
+	} {
+		if !strings.Contains(raw, required) {
+			t.Fatalf("inventory is missing %s: %s", required, raw)
+		}
+	}
+	if strings.Contains(raw, `"public_url":"http://203.0.113.8:3000/"`) ||
+		strings.Contains(raw, `"public_url":"http://203.0.113.8:0/"`) {
+		t.Fatalf("inventory invented an address for a bound hostname or a portless job: %s", raw)
+	}
+	for _, tc := range []struct {
+		ip       string
+		workload RetainedWorkerWorkload
+		want     string
+	}{
+		{ip: "", workload: RetainedWorkerWorkload{Kind: "service", Port: 8080}},
+		{ip: "2001:db8::1", workload: RetainedWorkerWorkload{Kind: "service", Port: 8080}},
+		{ip: "203.0.113.8", workload: RetainedWorkerWorkload{Kind: "service"}},
+		{ip: "203.0.113.8", workload: RetainedWorkerWorkload{Kind: "job", Port: 8080}},
+		{ip: "203.0.113.8", workload: RetainedWorkerWorkload{Kind: "service", Port: 8080, Hostname: "bound.example.com"}},
+		{ip: "203.0.113.8", workload: RetainedWorkerWorkload{Kind: "service", Port: 8080}, want: "http://203.0.113.8:8080/"},
+	} {
+		if got := publicServiceURL(tc.ip, tc.workload); got != tc.want {
+			t.Fatalf("publicServiceURL(%q, %+v) = %q, want %q", tc.ip, tc.workload, got, tc.want)
+		}
+	}
+}
+
 func intrinsicFixture(t *testing.T, prompt string, manifests IntrinsicManifestResolver, budgets IntrinsicBudgetResolver) (*ProposeIntrinsic, *intrinsicStore, coreconversation.TurnLease) {
 	t.Helper()
 	now := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)

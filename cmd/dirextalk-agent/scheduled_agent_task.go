@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -22,9 +23,19 @@ type scheduledConversationService interface {
 	StartTurn(context.Context, coreconversation.TurnStartCommand) (coreconversation.Turn, error)
 	GetTurn(context.Context, string) (coreconversation.Turn, error)
 	CancelTurn(context.Context, coreconversation.TurnCancelCommand) (coreconversation.Turn, error)
+	GetConversation(context.Context, string) (coreconversation.Conversation, error)
 }
 
-func scheduledAgentTaskHandler(conversation scheduledConversationService, profiles coreruntime.SnapshotProfileResolver) coreruntime.TaskHandler {
+// groupScheduledEnqueuer hands one due group schedule to Product.
+type groupScheduledEnqueuer interface {
+	EnqueueScheduledGroupRequest(context.Context, capabilityclient.GroupAgentScheduledRequest) (capabilityclient.GroupAgentScheduledResult, error)
+}
+
+// scheduledAgentTaskHandler runs a due scheduled task. Owner schedules keep
+// running as an isolated private turn; a group schedule is raised through
+// Product instead, which is the only path that can authorize a group run and
+// post its answer in the room.
+func scheduledAgentTaskHandler(conversation scheduledConversationService, profiles coreruntime.SnapshotProfileResolver, groupEnqueuers ...func() groupScheduledEnqueuer) coreruntime.TaskHandler {
 	return func(ctx context.Context, task coretask.Task) coreruntime.ManagedOutcome {
 		if conversation == nil || profiles == nil {
 			return coreruntime.ManagedOutcome{Err: coreruntime.ErrScheduledSnapshotInvalid}
@@ -37,6 +48,13 @@ func scheduledAgentTaskHandler(conversation scheduledConversationService, profil
 		}
 		if err := payload.ScheduledConversation.Validate(); err != nil {
 			return coreruntime.ManagedOutcome{Err: coreruntime.ErrScheduledSnapshotInvalid}
+		}
+		if len(groupEnqueuers) > 0 && groupEnqueuers[0] != nil {
+			if enqueuer := groupEnqueuers[0](); enqueuer != nil {
+				if outcome, handled := scheduledGroupOccurrence(ctx, conversation, task, payload, enqueuer); handled {
+					return outcome
+				}
+			}
 		}
 		prompt, err := scheduledAgentPrompt(task.Spec.Goal, task.AvailableAt, payload.ScheduledConversation.Timezone, payload.ScheduledConversation.Capability)
 		if err != nil {
@@ -114,6 +132,57 @@ func scheduledAgentTaskHandler(conversation scheduledConversationService, profil
 			}
 		}
 	}
+}
+
+// scheduledGroupOccurrence routes one due group schedule back through the group
+// delivery path. A private-shaped turn on a group conversation is refused by the
+// durable store, and a group turn started outside Product's request row would
+// carry no authorization, so the Agent asks Product to raise the occurrence as
+// an ordinary group request: the room, binding, membership, group tooling and
+// publication then all stay in the one place that already owns them.
+//
+// It reports handled=false for an owner's own private schedule, which keeps the
+// existing isolated private turn.
+func scheduledGroupOccurrence(ctx context.Context, conversation scheduledConversationService, task coretask.Task,
+	payload *coretask.AgentTaskPayload, enqueuer groupScheduledEnqueuer) (coreruntime.ManagedOutcome, bool) {
+	scope, err := conversation.GetConversation(ctx, task.Spec.ConversationID)
+	if err != nil {
+		// An unreadable conversation is not proof of a group schedule: fall back
+		// to the private path, whose own admission still fails closed.
+		return coreruntime.ManagedOutcome{}, false
+	}
+	if scope.GroupScope == nil {
+		return coreruntime.ManagedOutcome{}, false
+	}
+	group := *scope.GroupScope
+	actor := strings.TrimSpace(payload.ScheduledConversation.ActorID)
+	if actor == "" {
+		// A schedule created before the creator was recorded still belongs to
+		// the owner who shared Ying with the group.
+		actor = group.OwnerID
+	}
+	result, err := enqueuer.EnqueueScheduledGroupRequest(ctx, capabilityclient.GroupAgentScheduledRequest{
+		RequestID: scheduledAgentUUID("scheduled-group-request:" + task.ID),
+		RoomID:    group.RoomID, ActorMXID: actor,
+		Body: "[定时任务] " + strings.TrimSpace(task.Spec.Goal),
+	})
+	if err != nil {
+		// The task failure a user sees would otherwise read as a model error.
+		slog.Warn("[scheduled-agent] group occurrence was not delivered",
+			"task_id", task.ID, "room_id", group.RoomID, "error", groupAgentErrorSummary(err))
+		return coreruntime.ManagedOutcome{Err: errors.Join(coreruntime.ErrScheduledGroupDelivery, err)}, true
+	}
+	text := "Scheduled group task queued for its room."
+	if result.Replayed {
+		text = "Scheduled group task was already queued for its room."
+	}
+	outcome := coretask.Result{Text: text, Summary: text}
+	if outcome.Validate() != nil {
+		return coreruntime.ManagedOutcome{Err: coreruntime.ErrScheduledSnapshotInvalid}, true
+	}
+	// The task executor still owns terminalizing this occurrence: the group
+	// answer arrives separately, after the group loop has run it.
+	return coreruntime.ManagedOutcome{Result: outcome}, true
 }
 
 func scheduledConversationSnapshots(in []coretask.ScheduledExtensionSnapshot) []coreconversation.ExtensionExecutionSnapshot {

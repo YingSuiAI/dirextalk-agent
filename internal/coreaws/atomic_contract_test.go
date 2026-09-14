@@ -26,15 +26,15 @@ func TestCredentialIdentityBindsRevisionAndReplacementInvalidates(t *testing.T) 
 	r := NewMemoryRepository()
 	sts := &FakeSTSProvider{AccountID: "123456789012", UserARN: "arn:aws:iam::123456789012:user/test"}
 	s := NewService(r, sts, nil)
-	view, err := s.SaveCredential(context.Background(), CredentialInput{Name: "prod", Region: "us-east-1", AccessKeyID: "a", SecretAccessKey: "b", IdempotencyKey: uuid.NewString()})
+	view, err := s.SaveCredential(context.Background(), PersonalScope(), CredentialInput{Name: "prod", Region: "us-east-1", AccessKeyID: "a", SecretAccessKey: "b", IdempotencyKey: uuid.NewString()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	checked, err := s.TestCredential(context.Background(), view.ID)
+	checked, err := s.TestCredential(context.Background(), PersonalScope(), view.ID)
 	if err != nil || checked.CredentialRevision != 1 {
 		t.Fatalf("test=%#v err=%v", checked, err)
 	}
-	updated, err := s.ReplaceCredential(context.Background(), CredentialInput{ID: view.ID, Name: "prod2", Region: "us-east-1", AccessKeyID: "a", SecretAccessKey: "b"}, 1, uuid.NewString())
+	updated, err := s.ReplaceCredential(context.Background(), PersonalScope(), CredentialInput{ID: view.ID, Name: "prod2", Region: "us-east-1", AccessKeyID: "a", SecretAccessKey: "b"}, 1, uuid.NewString())
 	if err != nil {
 		t.Fatal(err)
 	}

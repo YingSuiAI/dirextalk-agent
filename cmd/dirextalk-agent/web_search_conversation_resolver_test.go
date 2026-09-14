@@ -18,24 +18,40 @@ import (
 
 type resolverWebSearchRepository struct {
 	resolved corewebsearch.ResolvedConfig
+	byRoom   map[string]corewebsearch.ResolvedConfig
+	scopes   []corewebsearch.Scope
 }
 
-func (r *resolverWebSearchRepository) Get(context.Context, string, int64) (corewebsearch.Config, error) {
+func (r *resolverWebSearchRepository) Get(context.Context, corewebsearch.Scope) (corewebsearch.Config, error) {
 	return r.resolved.Config, nil
 }
-func (r *resolverWebSearchRepository) Resolve(_ context.Context, owner string, generation int64) (corewebsearch.ResolvedConfig, error) {
-	r.resolved.OwnerID = owner
-	r.resolved.AccountGeneration = generation
+func (r *resolverWebSearchRepository) Resolve(_ context.Context, scope corewebsearch.Scope) (corewebsearch.ResolvedConfig, error) {
+	r.scopes = append(r.scopes, scope)
+	if r.byRoom != nil {
+		value, ok := r.byRoom[scope.RoomID]
+		if !ok {
+			return corewebsearch.ResolvedConfig{}, corewebsearch.ErrNotConfigured
+		}
+		value.OwnerID, value.AccountGeneration, value.RoomID = scope.OwnerID, scope.AccountGeneration, scope.RoomID
+		return value, nil
+	}
+	r.resolved.OwnerID = scope.OwnerID
+	r.resolved.AccountGeneration = scope.AccountGeneration
+	r.resolved.RoomID = scope.RoomID
 	return r.resolved, nil
 }
-func (r *resolverWebSearchRepository) ResolveForDispatch(ctx context.Context, owner string, generation int64, _ corewebsearch.ResolvedConfig) (corewebsearch.ResolvedConfig, func() error, error) {
-	value, err := r.Resolve(ctx, owner, generation)
+func (r *resolverWebSearchRepository) ResolveForDispatch(ctx context.Context, scope corewebsearch.Scope, _ corewebsearch.ResolvedConfig) (corewebsearch.ResolvedConfig, func() error, error) {
+	value, err := r.Resolve(ctx, scope)
 	return value, func() error { return nil }, err
 }
 func (r *resolverWebSearchRepository) Update(context.Context, corewebsearch.Mutation) (corewebsearch.Config, error) {
 	return r.resolved.Config, nil
 }
-func (r *resolverWebSearchRepository) MarkTested(context.Context, string, int64, int64, time.Time) (corewebsearch.Config, error) {
+func (r *resolverWebSearchRepository) DeleteGroupScope(context.Context, corewebsearch.Scope, string) error {
+	return nil
+}
+
+func (r *resolverWebSearchRepository) MarkTested(context.Context, corewebsearch.Scope, int64, time.Time) (corewebsearch.Config, error) {
 	return r.resolved.Config, nil
 }
 
@@ -56,32 +72,99 @@ type racingWebSearchRepository struct {
 	beforeSecond func(*corewebsearch.ResolvedConfig)
 }
 
-func (r *racingWebSearchRepository) Get(context.Context, string, int64) (corewebsearch.Config, error) {
+func (r *racingWebSearchRepository) Get(context.Context, corewebsearch.Scope) (corewebsearch.Config, error) {
 	return r.current.Config, nil
 }
-func (r *racingWebSearchRepository) Resolve(_ context.Context, owner string, generation int64) (corewebsearch.ResolvedConfig, error) {
+func (r *racingWebSearchRepository) Resolve(_ context.Context, scope corewebsearch.Scope) (corewebsearch.ResolvedConfig, error) {
 	r.resolveCall++
 	if r.resolveCall == 2 && r.beforeSecond != nil {
 		r.beforeSecond(&r.current)
 	}
 	value := r.current
-	value.OwnerID = owner
-	value.AccountGeneration = generation
+	value.OwnerID = scope.OwnerID
+	value.AccountGeneration = scope.AccountGeneration
+	value.RoomID = scope.RoomID
 	return value, nil
 }
-func (r *racingWebSearchRepository) ResolveForDispatch(ctx context.Context, owner string, generation int64, _ corewebsearch.ResolvedConfig) (corewebsearch.ResolvedConfig, func() error, error) {
-	value, err := r.Resolve(ctx, owner, generation)
+func (r *racingWebSearchRepository) ResolveForDispatch(ctx context.Context, scope corewebsearch.Scope, _ corewebsearch.ResolvedConfig) (corewebsearch.ResolvedConfig, func() error, error) {
+	value, err := r.Resolve(ctx, scope)
 	return value, func() error { return nil }, err
 }
 func (r *racingWebSearchRepository) Update(context.Context, corewebsearch.Mutation) (corewebsearch.Config, error) {
 	return r.current.Config, nil
 }
-func (r *racingWebSearchRepository) MarkTested(context.Context, string, int64, int64, time.Time) (corewebsearch.Config, error) {
+func (r *racingWebSearchRepository) DeleteGroupScope(context.Context, corewebsearch.Scope, string) error {
+	return nil
+}
+
+func (r *racingWebSearchRepository) MarkTested(context.Context, corewebsearch.Scope, int64, time.Time) (corewebsearch.Config, error) {
 	return r.current.Config, nil
 }
 
 func webSearchResolverContext() context.Context {
 	return capabilityclient.WithCallContext(context.Background(), &capv1.CallContext{ChainId: "00000000-0000-4000-8000-000000000001", RootOperationId: "00000000-0000-4000-8000-000000000002"}, &capv1.PermissionContext{AuthenticatedOwnerId: "owner", AccountGeneration: 1})
+}
+
+// TestWebSearchExecutionScopeFailsClosedWithoutAnIdentity pins the scope used
+// for one search call: a normal turn takes the owner's own call permission, and
+// a context with no identity at all resolves nothing instead of searching with
+// ambient authority. The group branch takes the authenticated group origin,
+// which Core injects and revalidates before every group tool call.
+func TestWebSearchExecutionScopeFailsClosedWithoutAnIdentity(t *testing.T) {
+	personal := corewebsearch.ResolvedConfig{OwnerID: "owner", AccountGeneration: 1}
+	scope, ok := webSearchExecutionScope(webSearchResolverContext(), personal)
+	if !ok || scope.OwnerID != "owner" || scope.AccountGeneration != 1 || !scope.Personal() {
+		t.Fatalf("owner call scope=%+v ok=%v", scope, ok)
+	}
+	if scope, ok = webSearchExecutionScope(context.Background(), personal); ok {
+		t.Fatalf("identity-free context searched as %+v", scope)
+	}
+	// A snapshot compiled for another owner is never dispatched under this
+	// caller's identity.
+	foreign := corewebsearch.ResolvedConfig{OwnerID: "other", AccountGeneration: 1}
+	if scope, ok = webSearchExecutionScope(webSearchResolverContext(), foreign); ok {
+		t.Fatalf("foreign snapshot searched as %+v", scope)
+	}
+}
+
+// TestWebSearchGroupScopeUsesItsOwnCredentialOrInheritsTheOwners pins the group
+// search rule: a group that keeps its own credential searches only with it, a
+// group without one inherits the owner's configured provider (search stays
+// allowed by default), and a personal turn never picks up a group credential.
+func TestWebSearchGroupScopeUsesItsOwnCredentialOrInheritsTheOwners(t *testing.T) {
+	groupConfig := corewebsearch.ResolvedConfig{
+		Config: corewebsearch.Config{Enabled: true, Provider: corewebsearch.ProviderTavily, APIKeyConfigured: true, Revision: 4},
+		APIKey: "tvly-group", CredentialVersion: 2,
+	}
+	personalConfig := corewebsearch.ResolvedConfig{
+		Config: corewebsearch.Config{Enabled: true, Provider: corewebsearch.ProviderTavily, APIKeyConfigured: true, Revision: 7},
+		APIKey: "tvly-personal", CredentialVersion: 3,
+	}
+	const roomID = "!group-room:example.test"
+	repository := &resolverWebSearchRepository{byRoom: map[string]corewebsearch.ResolvedConfig{
+		"":     personalConfig,
+		roomID: groupConfig,
+	}}
+	service, _ := corewebsearch.NewService(repository, &resolverWebSearcher{})
+	resolver := &webSearchConversationResolver{service: service}
+	ctx := context.Background()
+
+	// A group with its own row keeps it.
+	config, served, err := resolver.resolveWithInheritance(ctx, corewebsearch.GroupScope("owner", 1, roomID), true)
+	if err != nil || config.Revision != 4 || served.RoomID != roomID {
+		t.Fatalf("group scope config=%+v served=%+v err=%v", config, served, err)
+	}
+	// A group without a row inherits the owner's provider, and the inherited
+	// scope is recorded so dispatch fences against the credential it used.
+	config, served, err = resolver.resolveWithInheritance(ctx, corewebsearch.GroupScope("owner", 1, "!empty-room:example.test"), true)
+	if err != nil || config.Revision != 7 || !served.Personal() {
+		t.Fatalf("inherited search config=%+v served=%+v err=%v", config, served, err)
+	}
+	// The owner's own turn never resolves a group scope.
+	config, served, err = resolver.resolveWithInheritance(ctx, corewebsearch.PersonalScope("owner", 1), false)
+	if err != nil || config.Revision != 7 || !served.Personal() {
+		t.Fatalf("personal search config=%+v served=%+v err=%v", config, served, err)
+	}
 }
 
 func TestWebSearchConversationResolverInjectsStoredCredentialWithoutPersistingIt(t *testing.T) {

@@ -89,6 +89,9 @@ func delegatedWorkerReply(authorities map[string]turnToolCallAuthority, prompt s
 }
 
 func (s *Service) commitWorkerReply(ctx context.Context, lease TurnLease, conv Conversation, first int, titleSource, content string) error {
+	if err := s.validateGroupAuthorization(ctx, lease.Turn.GroupOrigin); err != nil {
+		return err
+	}
 	store, ok := s.turns.(TurnWorkerReplyStore)
 	if !ok {
 		return ErrInvalid

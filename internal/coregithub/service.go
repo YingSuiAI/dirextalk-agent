@@ -37,6 +37,7 @@ type Config struct {
 }
 
 type ResolvedConfig struct {
+	RoomID string `json:"-"`
 	Config
 	// GitHubToken is populated only for the short interval in which the service
 	// resolves a provider request.  Compiled tools must retain only the
@@ -55,6 +56,7 @@ func (c ResolvedConfig) String() string {
 func (c ResolvedConfig) GoString() string { return c.String() }
 
 type UpdateCommand struct {
+	Scope             Scope
 	OwnerID           string
 	AccountGeneration int64
 	IdempotencyKey    string
@@ -65,7 +67,48 @@ type UpdateCommand struct {
 	GitHubTokenClear  bool
 }
 
+// Scope identifies one independent credential set: the personal Agent
+// (RoomID empty) or one group the owner shares Ying with. Room scope is
+// derived from the turn origin by callers and never from a tool argument.
+type Scope struct {
+	OwnerID           string
+	AccountGeneration int64
+	RoomID            string
+}
+
+// PersonalScope is the owner's own Agent credentials.
+func PersonalScope(ownerID string, accountGeneration int64) Scope {
+	return Scope{OwnerID: ownerID, AccountGeneration: accountGeneration}
+}
+
+// GroupScope is one group's independent credential set.
+func GroupScope(ownerID string, accountGeneration int64, roomID string) Scope {
+	return Scope{OwnerID: ownerID, AccountGeneration: accountGeneration, RoomID: roomID}
+}
+
+func (s Scope) normalized() Scope {
+	return Scope{
+		OwnerID:           strings.TrimSpace(s.OwnerID),
+		AccountGeneration: s.AccountGeneration,
+		RoomID:            strings.TrimSpace(s.RoomID),
+	}
+}
+
+func (s Scope) valid() bool {
+	if !validIdentity(s.OwnerID, s.AccountGeneration) {
+		return false
+	}
+	if s.RoomID == "" {
+		return true
+	}
+	return strings.HasPrefix(s.RoomID, "!") && len(s.RoomID) <= 1024
+}
+
+// Personal reports whether this scope is the owner's own Agent.
+func (s Scope) Personal() bool { return s.RoomID == "" }
+
 type Mutation struct {
+	Scope             Scope
 	OwnerID           string
 	AccountGeneration int64
 	IdempotencyKey    string
@@ -103,18 +146,18 @@ type SearchItem struct {
 }
 
 type Repository interface {
-	Get(context.Context, string, int64) (Config, error)
-	Resolve(context.Context, string, int64) (ResolvedConfig, error)
+	Get(context.Context, Scope) (Config, error)
+	Resolve(context.Context, Scope) (ResolvedConfig, error)
 	// ResolveForDispatch acquires the durable account admission guard, reloads
 	// and validates the current non-secret snapshot, and returns a release
 	// function whose scope must cover the bounded provider request.
-	ResolveForDispatch(context.Context, string, int64, ResolvedConfig) (ResolvedConfig, func() error, error)
+	ResolveForDispatch(context.Context, Scope, ResolvedConfig) (ResolvedConfig, func() error, error)
 	// Update commits one mutation while holding the immutable owner/generation
 	// and revision fence. validateEnable receives only the exact proposed PAT
 	// and must run before a disabled configuration becomes enabled or an enabled
 	// configuration installs a replacement PAT.
 	Update(context.Context, Mutation, func(string) error) (Config, error)
-	MarkTested(context.Context, string, int64, int64, time.Time) (Config, error)
+	MarkTested(context.Context, Scope, int64, time.Time) (Config, error)
 }
 
 // Tester validates a PAT with GitHub's authenticated identity endpoint.
@@ -139,12 +182,12 @@ func DefaultConfig() Config {
 	return Config{Provider: ProviderGitHub}
 }
 
-func (s *Service) Get(ctx context.Context, ownerID string, accountGeneration int64) (Config, error) {
-	ownerID = strings.TrimSpace(ownerID)
-	if !validIdentity(ownerID, accountGeneration) {
+func (s *Service) Get(ctx context.Context, scope Scope) (Config, error) {
+	scope = scope.normalized()
+	if !scope.valid() {
 		return Config{}, ErrInvalid
 	}
-	value, err := s.repository.Get(ctx, ownerID, accountGeneration)
+	value, err := s.repository.Get(ctx, scope)
 	if err != nil {
 		return Config{}, safeRepositoryError(err)
 	}
@@ -152,8 +195,12 @@ func (s *Service) Get(ctx context.Context, ownerID string, accountGeneration int
 }
 
 func (s *Service) Update(ctx context.Context, command UpdateCommand) (Config, error) {
-	command.OwnerID = strings.TrimSpace(command.OwnerID)
-	if !validIdentity(command.OwnerID, command.AccountGeneration) || command.ExpectedRevision < 0 {
+	if command.Scope.OwnerID == "" {
+		command.Scope = PersonalScope(command.OwnerID, command.AccountGeneration)
+	}
+	command.Scope = command.Scope.normalized()
+	command.OwnerID, command.AccountGeneration = command.Scope.OwnerID, command.Scope.AccountGeneration
+	if !command.Scope.valid() || command.ExpectedRevision < 0 {
 		return Config{}, ErrInvalid
 	}
 	parsed, err := uuid.Parse(command.IdempotencyKey)
@@ -182,6 +229,7 @@ func (s *Service) Update(ctx context.Context, command UpdateCommand) (Config, er
 		return Config{}, ErrInvalid
 	}
 	value, err := s.repository.Update(ctx, Mutation{
+		Scope:   command.Scope,
 		OwnerID: command.OwnerID, AccountGeneration: command.AccountGeneration, IdempotencyKey: command.IdempotencyKey, RequestDigest: digest,
 		ExpectedRevision: command.ExpectedRevision, Enabled: command.Enabled, Provider: command.Provider,
 		GitHubToken: command.GitHubToken, GitHubTokenClear: command.GitHubTokenClear, Now: s.now().UTC(),
@@ -206,17 +254,18 @@ func containsProtocolControl(value string) bool {
 	return false
 }
 
-func (s *Service) Resolve(ctx context.Context, ownerID string, accountGeneration int64) (ResolvedConfig, error) {
-	ownerID = strings.TrimSpace(ownerID)
-	if !validIdentity(ownerID, accountGeneration) {
+func (s *Service) Resolve(ctx context.Context, scope Scope) (ResolvedConfig, error) {
+	scope = scope.normalized()
+	if !scope.valid() {
 		return ResolvedConfig{}, ErrInvalid
 	}
-	value, err := s.repository.Resolve(ctx, ownerID, accountGeneration)
+	value, err := s.repository.Resolve(ctx, scope)
 	if err != nil {
 		return ResolvedConfig{}, safeRepositoryError(err)
 	}
-	value.OwnerID = ownerID
-	value.AccountGeneration = accountGeneration
+	value.OwnerID = scope.OwnerID
+	value.AccountGeneration = scope.AccountGeneration
+	value.RoomID = scope.RoomID
 	value.Config = sanitizeConfig(value.Config)
 	if !value.GitHubTokenConfigured || strings.TrimSpace(value.GitHubToken) == "" {
 		return ResolvedConfig{}, ErrNotConfigured
@@ -224,9 +273,9 @@ func (s *Service) Resolve(ctx context.Context, ownerID string, accountGeneration
 	return value, nil
 }
 
-func (s *Service) Test(ctx context.Context, ownerID string, accountGeneration int64) (TestResult, error) {
-	ownerID = strings.TrimSpace(ownerID)
-	resolved, err := s.Resolve(ctx, ownerID, accountGeneration)
+func (s *Service) Test(ctx context.Context, scope Scope) (TestResult, error) {
+	scope = scope.normalized()
+	resolved, err := s.Resolve(ctx, scope)
 	if err != nil {
 		return TestResult{}, err
 	}
@@ -237,7 +286,7 @@ func (s *Service) Test(ctx context.Context, ownerID string, accountGeneration in
 	// Treat the connectivity test as a provider dispatch too: reload the
 	// current credential after resolving the snapshot so a concurrent rotation
 	// or account fence cannot test stale plaintext.
-	current, release, err := s.repository.ResolveForDispatch(ctx, ownerID, accountGeneration, resolved)
+	current, release, err := s.repository.ResolveForDispatch(ctx, scope, resolved)
 	if err == nil && release == nil {
 		err = ErrRepository
 	}
@@ -256,7 +305,7 @@ func (s *Service) Test(ctx context.Context, ownerID string, accountGeneration in
 		return TestResult{}, safeProviderError(err)
 	}
 	testedAt := s.now().UTC()
-	updated, err := s.repository.MarkTested(ctx, ownerID, accountGeneration, resolved.Revision, testedAt)
+	updated, err := s.repository.MarkTested(ctx, scope, resolved.Revision, testedAt)
 	if err != nil {
 		return TestResult{}, safeRepositoryError(err)
 	}
@@ -265,15 +314,15 @@ func (s *Service) Test(ctx context.Context, ownerID string, accountGeneration in
 
 // WithTokenResolved reloads and fences the current credential for one bounded
 // outbound request. Callers must not retain the token after fn returns.
-func (s *Service) WithTokenResolved(ctx context.Context, ownerID string, accountGeneration int64, resolved ResolvedConfig, fn func(string) error) error {
-	ownerID = strings.TrimSpace(ownerID)
-	if !validIdentity(ownerID, accountGeneration) || resolved.OwnerID != ownerID || resolved.AccountGeneration != accountGeneration {
+func (s *Service) WithTokenResolved(ctx context.Context, scope Scope, resolved ResolvedConfig, fn func(string) error) error {
+	scope = scope.normalized()
+	if !scope.valid() || resolved.OwnerID != scope.OwnerID || resolved.AccountGeneration != scope.AccountGeneration || resolved.RoomID != scope.RoomID {
 		return ErrInvalid
 	}
 	if resolved.Revision <= 0 || resolved.CredentialVersion <= 0 || resolved.Provider != ProviderGitHub || !resolved.GitHubTokenConfigured {
 		return ErrNotConfigured
 	}
-	current, release, err := s.repository.ResolveForDispatch(ctx, ownerID, accountGeneration, resolved)
+	current, release, err := s.repository.ResolveForDispatch(ctx, scope, resolved)
 	if err != nil {
 		return safeRepositoryError(err)
 	}
@@ -285,7 +334,7 @@ func (s *Service) WithTokenResolved(ctx context.Context, ownerID string, account
 		if current.Revision != resolved.Revision || current.CredentialVersion != resolved.CredentialVersion || current.Provider != resolved.Provider || !current.GitHubTokenConfigured {
 			return ErrRevisionConflict
 		}
-		if current.OwnerID != ownerID || current.AccountGeneration != accountGeneration {
+		if current.OwnerID != scope.OwnerID || current.AccountGeneration != scope.AccountGeneration || current.RoomID != scope.RoomID {
 			return ErrInvalid
 		}
 		if !current.Enabled {

@@ -65,7 +65,7 @@ type fakeSearch struct {
 	resolveErr error
 }
 
-func (f *fakeSearch) Resolve(context.Context, string, int64) (corewebsearch.ResolvedConfig, error) {
+func (f *fakeSearch) Resolve(context.Context, corewebsearch.Scope) (corewebsearch.ResolvedConfig, error) {
 	if f.resolveErr != nil {
 		return corewebsearch.ResolvedConfig{}, f.resolveErr
 	}
@@ -74,7 +74,7 @@ func (f *fakeSearch) Resolve(context.Context, string, int64) (corewebsearch.Reso
 	}
 	return corewebsearch.ResolvedConfig{Config: corewebsearch.Config{Enabled: true, Provider: corewebsearch.ProviderTavily, APIKeyConfigured: true, Revision: 1}, APIKey: "tvly-server-secret", CredentialVersion: 1, OwnerID: "owner", AccountGeneration: 1}, nil
 }
-func (f *fakeSearch) SearchResolved(_ context.Context, _ string, _ int64, _ corewebsearch.ResolvedConfig, query string, max int) (corewebsearch.SearchResult, error) {
+func (f *fakeSearch) SearchResolved(_ context.Context, _ corewebsearch.Scope, _ corewebsearch.ResolvedConfig, query string, max int) (corewebsearch.SearchResult, error) {
 	f.max = max
 	f.query = query
 	return corewebsearch.SearchResult{Results: []corewebsearch.SearchItem{{Title: "Title", URL: "https://example.test", Content: "Evidence"}}}, nil
