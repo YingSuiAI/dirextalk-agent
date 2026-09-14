@@ -906,7 +906,11 @@ func (s *Service) buildTurnAdmissionRuntime(ctx context.Context, turn Turn, exte
 	if containsStaticSiteIntrinsic(intrinsics) {
 		systemPrompt = staticSiteSystemPrompt(systemPrompt)
 	}
-	if containsScheduleIntrinsic(intrinsics) {
+	// The private schedule guidance pins one closed capability and its fixed
+	// tool bindings. A group schedule instead runs as an ordinary group request
+	// with the group's own tools, so that guidance would only make the group
+	// refuse requests it can actually serve.
+	if containsScheduleIntrinsic(intrinsics) && turn.GroupOrigin == nil {
 		systemPrompt = scheduleSystemPrompt(systemPrompt)
 	}
 	if containsCloudWorkerIntrinsic(intrinsics) {

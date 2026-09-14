@@ -269,12 +269,22 @@ func executeScheduleIntrinsic(ctx context.Context, store ConversationScheduleSto
 	if strings.TrimSpace(turn.OwnerID) == "" || turn.AccountGeneration == 0 || !validUUID(turn.ConversationID) || !validUUID(turn.ProfileID) || turn.CreatedAt.IsZero() {
 		return IntrinsicExecutionResult{}, ErrInvalid
 	}
-	if err = requireScheduledCapability(args.Capability, turn.ExtensionSnapshots); err != nil {
-		return IntrinsicExecutionResult{}, err
-	}
-	scheduledSnapshots, err := scheduledExtensionSnapshots(args.Capability, turn.ExtensionSnapshots)
-	if err != nil {
-		return IntrinsicExecutionResult{}, err
+	var scheduledSnapshots []coretask.ScheduledExtensionSnapshot
+	if turn.GroupOrigin != nil {
+		// A group schedule runs as an ordinary group request, which resolves the
+		// group's own tools (including its room-scoped reads) at run time. It
+		// therefore pins no private capability binding.
+		if !groupScheduledCapabilityAllowed(args.Capability) {
+			return IntrinsicExecutionResult{}, ErrInvalid
+		}
+		scheduledSnapshots = []coretask.ScheduledExtensionSnapshot{}
+	} else {
+		if err = requireScheduledCapability(args.Capability, turn.ExtensionSnapshots); err != nil {
+			return IntrinsicExecutionResult{}, err
+		}
+		if scheduledSnapshots, err = scheduledExtensionSnapshots(args.Capability, turn.ExtensionSnapshots); err != nil {
+			return IntrinsicExecutionResult{}, err
+		}
 	}
 	// Turn creation is the immutable time anchor for the same recorded model
 	// call across lease recovery. Wall-clock time here would change the replay
