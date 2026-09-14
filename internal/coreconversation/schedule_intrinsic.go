@@ -164,20 +164,6 @@ func groupScheduleIntrinsic(store ConversationScheduleStore, bound TurnLease, mi
 			capability["description"] = "Select \"scheduled_note\" for any group schedule, including one that must be posted to this group: in this group it means \"write the result from the scheduled goal and publish it here\". It is the only workflow a group schedule supports, and its name does not mean a private note. Do not refuse a schedule, or ask for another workflow, because the request says \"send/post it in the group\": that is exactly what scheduled_note does here."
 		}
 	}
-	// A group has exactly one workflow, so asking the model to name it only
-	// creates a chance to refuse the request. Omit it and default it here.
-	if required, ok := intrinsic.Tool.InputSchema["required"].([]any); ok {
-		kept := make([]any, 0, len(required))
-		for _, value := range required {
-			if value != string("capability") {
-				kept = append(kept, value)
-			}
-		}
-		intrinsic.Tool.InputSchema["required"] = kept
-	}
-	if properties, ok := intrinsic.Tool.InputSchema["properties"].(map[string]any); ok {
-		delete(properties, "capability")
-	}
 	return intrinsic
 }
 
