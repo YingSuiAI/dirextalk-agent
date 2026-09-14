@@ -25,6 +25,7 @@ type groupProduct interface {
 	ReadGroupAgentHistory(context.Context, string, int64, int, string) (capabilityclient.GroupAgentHistory, error)
 	PublishGroupAgentReply(context.Context, capabilityclient.GroupAgentPublish) error
 	CompleteGroupAgentRequest(context.Context, string, int64, string) error
+	RecordGroupMemory(context.Context, capabilityclient.GroupAgentMemoryMirror) error
 }
 
 type groupTurns interface {

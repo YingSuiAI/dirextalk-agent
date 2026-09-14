@@ -82,6 +82,33 @@ type GroupAgentPublish struct {
 	Status          string `json:"status"`
 }
 
+// GroupAgentMemoryMirror is the group's own rolling digest. It is published into
+// room state so every member reads the same memory of their own group, and it
+// never carries the owner's private Knowledge or other conversations.
+type GroupAgentMemoryMirror struct {
+	RoomID           string
+	Summary          string
+	CoveredThroughTS int64
+	MessageCount     int
+}
+
+// RecordGroupMemory publishes the group digest for its members. It is
+// idempotent per room and covered-through timestamp.
+func (c *Client) RecordGroupMemory(ctx context.Context, memory GroupAgentMemoryMirror) error {
+	if !validGroupRoomID(memory.RoomID) || strings.TrimSpace(memory.Summary) == "" ||
+		len(memory.Summary) > groupMemoryMaxBytes || memory.CoveredThroughTS < 0 || memory.MessageCount < 0 {
+		return errors.New("invalid group Agent memory mirror")
+	}
+	key := uuid.NewSHA1(uuid.NameSpaceOID, []byte(fmt.Sprintf("group-agent:record-memory:%s:%d", memory.RoomID, memory.CoveredThroughTS))).String()
+	_, err := c.groupAgentMutation(ctx, key, "record_memory", map[string]any{
+		"room_id": memory.RoomID, "summary": memory.Summary,
+		"covered_through_ts": memory.CoveredThroughTS, "message_count": memory.MessageCount,
+	})
+	return err
+}
+
+const groupMemoryMaxBytes = 8 << 10
+
 // GroupAgentScheduleMirror is one durable group schedule Product stores so every
 // member can read it from the group detail page.
 type GroupAgentScheduleMirror struct {

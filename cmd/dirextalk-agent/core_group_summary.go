@@ -106,6 +106,15 @@ func (l *groupAgentLoop) refreshGroupSummary(ctx context.Context, ownerID string
 	}); err != nil {
 		return err
 	}
+	// The digest is the group's own memory, so every member may see it. Publish
+	// it into room state, which federates to every member's node; a mirror
+	// failure is reported and never rolls the stored digest back.
+	if err := l.product.RecordGroupMemory(ctx, capabilityclient.GroupAgentMemoryMirror{
+		RoomID: binding.RoomID, Summary: summary,
+		CoveredThroughTS: messages[len(messages)-1].OriginServerTS, MessageCount: messageCount,
+	}); err != nil {
+		slog.Warn("[group-agent] group memory mirror failed", "room_id", binding.RoomID, "error", groupAgentErrorSummary(err))
+	}
 	slog.Info("[group-agent] group summary refreshed", "room_id", binding.RoomID, "messages", len(messages),
 		"summary_runes", len([]rune(summary)))
 	return nil
