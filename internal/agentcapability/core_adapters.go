@@ -566,7 +566,13 @@ func (c *coreChatCapability) HandleOperation(ctx context.Context, operationID st
 			"model_active_millis": usage.ModelActiveMillis,
 			"tool_calls":          usage.ToolCalls,
 			"worker_plans":        usage.WorkerPlans,
-			"last_activity_at":    "",
+			// Cloud spending is only ever a quoted estimate, never a bill. The
+			// owner still gets it as a rough reference, split into everything
+			// proposed and only what actually started.
+			"worker_quote_micros":   usage.WorkerQuoteMicros,
+			"worker_started_micros": usage.WorkerStartedMicros,
+			"worker_quote_currency": usage.WorkerQuoteCurrency,
+			"last_activity_at":      "",
 		}
 		if usage.LastActivityAt != nil {
 			payload["last_activity_at"] = usage.LastActivityAt.UTC().Format(time.RFC3339)
