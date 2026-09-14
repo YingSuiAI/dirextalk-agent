@@ -82,6 +82,10 @@ func (f *groupProductFake) CompleteGroupAgentRequest(_ context.Context, requestI
 	return nil
 }
 
+func (f *groupProductFake) RecordGroupMemory(context.Context, capabilityclient.GroupAgentMemoryMirror) error {
+	return nil
+}
+
 type groupTurnsFake struct {
 	turn      *coreconversation.Turn
 	getErr    error
