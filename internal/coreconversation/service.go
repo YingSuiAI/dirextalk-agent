@@ -35,10 +35,17 @@ const (
 	workerSuccessContinuationGuidance  = "The Cloud Worker execution succeeded; this is an intermediate result, not proof that the entire user request is complete. Continue outstanding user-authorized actions with the admitted tools and remaining budget, including recipient lookup and report delivery when requested. Claim a follow-up action succeeded only after its own successful tool receipt. Its stdout and Worker report are internal evidence: do not paste, quote, or lightly reformat them. After completing the authorized follow-ups, summarize the verified result and only useful deliverables. " + CloudWorkerCompletionGuidance
 	finalResponseSynthesisGuidance     = "Finalization mode: tools are unavailable in this dispatch; do not attempt tool calls. Using only recorded evidence, return one concise user-facing Markdown answer now in the latest user language. Summarize verified completed work and remaining gaps. Do not expose internal reasoning, protocol markup, or raw tool or Worker output. Preserve only verified requested artifact references."
 	toolCallFormatSynthesisGuidance    = "A previous tool-enabled response used invalid text markup instead of the structured tool protocol. Tools are disabled for this finalization. Produce the best useful final answer from evidence already present in the conversation, explicitly state any remaining gaps, and do not emit or describe DSML, XML, or tool-call markup."
-	outputContinuationGuidance         = "Continue the previous assistant response by emitting only the missing suffix. Do not restart or repeat any prior analysis, reasoning, plan, or response text. Preserve the work already completed. If a tool call was cut off, issue it again once as one complete call."
-	staticSitePublishCorrection        = "static_site_publish arguments are invalid; invoke static_site_publish again immediately with the required non-empty html string containing the complete page, and do not repeat analysis or draft the page outside the tool call"
-	conversationConvergenceGuidance    = "When sufficient information is available, act or call the needed tool, then synthesize the result without restating the user's request or tool instructions."
-	messageMCPRoutingGuidance          = "For requests that need authoritative Dirextalk contacts, rooms, or messages, use the available Dirextalk tools. If a Message mutation has unknown completion, read authoritative state before deciding whether to retry; never retry blindly."
+	// deliverySynthesisGuidance replaces finalResponseSynthesisGuidance when the
+	// finalization dispatch still holds the delivery intrinsics. Those calls end
+	// the turn, so they cannot start a loop: the model may publish the result it
+	// was about to deliver instead of only describing it.
+	deliverySynthesisGuidance       = "Finalization mode: only the delivery tools are available in this dispatch. If the recorded evidence already answers the user's request, call the delivery tool now with complete arguments. Otherwise return one concise user-facing Markdown answer now, state what is still missing, and do not describe a tool call in plain text."
+	invalidModelResultCode          = "invalid_model_result"
+	invalidModelResultSummary       = "model returned an invalid or empty terminal response"
+	outputContinuationGuidance      = "Continue the previous assistant response by emitting only the missing suffix. Do not restart or repeat any prior analysis, reasoning, plan, or response text. Preserve the work already completed. If a tool call was cut off, issue it again once as one complete call."
+	staticSitePublishCorrection     = "static_site_publish arguments are invalid; invoke static_site_publish again immediately with the required non-empty html string containing the complete page, and do not repeat analysis or draft the page outside the tool call"
+	conversationConvergenceGuidance = "When sufficient information is available, act or call the needed tool, then synthesize the result without restating the user's request or tool instructions."
+	messageMCPRoutingGuidance       = "For requests that need authoritative Dirextalk contacts, rooms, or messages, use the available Dirextalk tools. If a Message mutation has unknown completion, read authoritative state before deciding whether to retry; never retry blindly."
 )
 
 const (
@@ -47,6 +54,17 @@ const (
 	// Delivery intrinsics commit the turn, so the window is bounded and can
 	// never become another way to keep looping.
 	maxPostBudgetToolDeliveryRounds = 2
+)
+
+// turnModelRecovery selects the corrective prompt guidance for one
+// re-dispatched round. Both values are dispatch-local: they add guidance for
+// the tools the turn already admitted and never grant new authority.
+type turnModelRecovery int
+
+const (
+	turnModelRecoveryNone turnModelRecovery = iota
+	turnModelRecoveryToolCallFormat
+	turnModelRecoveryTerminalOutput
 )
 
 type turnModelDeadlines struct {
@@ -1616,8 +1634,13 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 	if turn.RuntimeSnapshot != nil {
 		intrinsicPolicy = turn.RuntimeSnapshot.IntrinsicPolicy
 	}
+	// A finalization that interrupted the turn before delivery keeps the
+	// delivery intrinsics, so those bindings must be resolved for it as well.
+	// The immutable runtime snapshot still bounds what this turn may ever hold.
+	keepDeliveryTools := finalizing && finalizationKeepsDeliveryTools(finalization.Reason) &&
+		runtimeSnapshotAdmitsDeliveryIntrinsic(turn.RuntimeSnapshot)
 	var intrinsicTools []ResolvedIntrinsic
-	if !finalizing && intrinsicPolicy != TurnIntrinsicPolicyNone {
+	if (!finalizing || keepDeliveryTools) && intrinsicPolicy != TurnIntrinsicPolicyNone {
 		var available []ResolvedIntrinsic
 		available, err = s.resolveIntrinsicTools(ctx, lease)
 		if err != nil {
@@ -1644,7 +1667,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			seen[intrinsic.Tool.Name] = struct{}{}
 		}
 	}
-	deferredWorkerFollowUp := history.supervisorTerminal && failedWorker && unappliedWorkerSteer && containsCloudWorkerIntrinsic(intrinsicTools)
+	deferredWorkerFollowUp := !finalizing && history.supervisorTerminal && failedWorker && unappliedWorkerSteer && containsCloudWorkerIntrinsic(intrinsicTools)
 	executionPolicy := turn.RuntimeSnapshot.ExecutionPolicy
 	var scheduledState *scheduledWorkflowState
 	if !finalizing && !turn.RuntimeSnapshot.ConstrainedWorkflow.IsZero() {
@@ -1716,7 +1739,11 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 	}
 	switch {
 	case finalizing:
-		directive = NewTurnDispatchDirective(TurnDispatchGuidanceLoopSynthesis, TurnDispatchToolsNone, "")
+		toolMode := TurnDispatchToolsNone
+		if keepDeliveryTools && len(terminalIntrinsics(intrinsicTools)) != 0 {
+			toolMode = TurnDispatchToolsTerminal
+		}
+		directive = NewTurnDispatchDirective(TurnDispatchGuidanceLoopSynthesis, toolMode, "")
 		directive.FinalizationReason = finalization.Reason
 	case deferredWorkerFollowUp:
 		directive = NewTurnDispatchDirective(TurnDispatchGuidanceNone, TurnDispatchToolsAdmitted, workerFollowUpTool)
@@ -1805,6 +1832,10 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 		modelExtensions = nil
 		modelExtensionSnapshots = nil
 		modelIntrinsicTools = nil
+	case TurnDispatchToolsTerminal:
+		modelExtensions = nil
+		modelExtensionSnapshots = nil
+		modelIntrinsicTools = terminalIntrinsics(intrinsicTools)
 	}
 	if deferredWorkerFollowUp {
 		modelExtensions = nil
@@ -1832,9 +1863,13 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 		case directive.FinalizationReason == TurnFinalizationToolCallFormat:
 			systemPrompt = appendSystemPrompt(systemPrompt, toolCallFormatSynthesisGuidance)
 		}
-		// Keep the short final-answer-only policy last so frozen tool-routing
-		// instructions cannot distract a tools-disabled synthesis.
-		systemPrompt = appendSystemPrompt(systemPrompt, finalResponseSynthesisGuidance)
+		// Keep the closing policy last so frozen tool-routing instructions
+		// cannot distract the synthesis dispatch.
+		if directive.ToolMode == TurnDispatchToolsTerminal {
+			systemPrompt = appendSystemPrompt(systemPrompt, deliverySynthesisGuidance)
+		} else {
+			systemPrompt = appendSystemPrompt(systemPrompt, finalResponseSynthesisGuidance)
+		}
 	}
 	frozenModelRequest := ModelRunRequest{
 		Finalization: finalizing,
@@ -1871,7 +1906,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			}
 		}
 	}
-	runAttempt := func(formatRecovery bool) {
+	runAttempt := func(recovery turnModelRecovery) {
 		deltaBuffer := newTurnDeltaBuffer(defaultTurnDeltaFlushBytes, defaultTurnDeltaFlushInterval, func(delta ModelDelta) error {
 			_, appendErr := s.turns.AppendTurnEvent(ctx, id, TurnEvent{
 				Kind: TurnEventDelta,
@@ -1893,7 +1928,8 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			providerPayload := false
 			var callbackErr error
 			modelRequest := frozenModelRequest
-			modelRequest.ToolCallFormatRecovery = formatRecovery
+			modelRequest.ToolCallFormatRecovery = recovery == turnModelRecoveryToolCallFormat
+			modelRequest.TerminalOutputRecovery = recovery == turnModelRecoveryTerminalOutput
 			seenModelPhases := map[string]bool{}
 			result, runErr := s.runModel(dispatchCtx, modelRequest, func(delta ModelDelta) error {
 				deadlineGuard.observe(delta)
@@ -1948,7 +1984,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 	if replayed {
 		resultCh <- turnModelOutcome{result: replay}
 	} else {
-		runAttempt(false)
+		runAttempt(turnModelRecoveryNone)
 	}
 	interval := s.turnLeaseTTL / 3
 	if interval <= 0 {
@@ -1960,7 +1996,35 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 	cancelEvents := (<-chan struct{})(cancelSignal)
 	steerEvents := (<-chan struct{})(steerSignal)
 	retryCount := 0
-	retryFormatRecovery := false
+	recovery := turnModelRecoveryNone
+	// An unusable terminal response is retried once with the same admitted
+	// tools before the turn is finalized. The model may have been interrupted
+	// while issuing the call that delivers the result, and a tools-disabled
+	// synthesis cannot publish what it was about to deliver. The retry is
+	// fenced by the durable attempt row, so a restart cannot retry twice.
+	retryTerminalOutput := func() bool {
+		if finalizing || replayed || retryCount != 0 || !durableDispatch ||
+			directive.ToolMode != TurnDispatchToolsAdmitted {
+			return false
+		}
+		attempts, ok := s.turns.(TurnModelAttemptStore)
+		if !ok {
+			return false
+		}
+		delay := deterministicRetryBackoff(turn.ID, retryCount)
+		failure := ModelAttemptFailure{
+			Code:         invalidModelResultCode,
+			Summary:      invalidModelResultSummary,
+			RetryAfterMS: delay.Milliseconds(),
+		}
+		if attempts.MarkTurnModelRetryable(ctx, lease, failure) != nil {
+			return false
+		}
+		retryCount++
+		recovery = turnModelRecoveryTerminalOutput
+		retryTimer = time.After(delay)
+		return true
+	}
 	for {
 		select {
 		case out := <-resultCh:
@@ -1981,7 +2045,10 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 						failure := ModelAttemptFailure{Code: code, Summary: summary, RateLimited: out.retry.RateLimited, RetryAfterMS: delay.Milliseconds()}
 						if attempts.MarkTurnModelRetryable(ctx, lease, failure) == nil {
 							retryCount++
-							retryFormatRecovery = formatFailure
+							recovery = turnModelRecoveryNone
+							if formatFailure {
+								recovery = turnModelRecoveryToolCallFormat
+							}
 							retryTimer = time.After(delay)
 							continue
 						}
@@ -2038,6 +2105,9 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 					out.result.Message.ID = uuid.NewString()
 				}
 				if !validModelContinuation(out.result) {
+					if retryTerminalOutput() {
+						continue
+					}
 					if !durableFinalization {
 						_, _ = s.turns.FailTurn(ctx, lease, "invalid_model_result", "model returned an invalid continuation")
 						return
@@ -2394,6 +2464,20 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 				}
 				return
 			}
+			m := out.result.Message
+			m.Content = history.continuationContent + m.Content
+			userTime := nextMessageTime(conv, s.clock())
+			m.ModelProfileID, m.Role, m.CreatedAt = turn.ProfileID, RoleAssistant, userTime.Add(time.Microsecond)
+			if m.ID == "" {
+				m.ID = uuid.NewString()
+			}
+			usableTerminalMessage := m.Validate() == nil && strings.TrimSpace(m.Content) != ""
+			// The corrective round is decided before the provider result becomes
+			// durable: a retry is only legal while this attempt is still the
+			// active, unrecorded dispatch.
+			if !usableTerminalMessage && retryTerminalOutput() {
+				continue
+			}
 			if durableDispatch && !replayed {
 				if err := dispatchStore.RecordTurnModelResult(ctx, lease, out.result); err != nil {
 					return
@@ -2412,8 +2496,6 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 				s.executeTurn(ctx, id)
 				return
 			}
-			m := out.result.Message
-			m.Content = history.continuationContent + m.Content
 			if containsScheduleIntrinsic(intrinsicTools) && isReservedScheduleSuccessReceipt(m.Content) {
 				_, _ = s.turns.FailTurn(ctx, lease, "schedule_commit_missing", "schedule success requires an authoritative Core schedule commit")
 				return
@@ -2423,12 +2505,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			m.RelatedPlanIDs = stableIDs(append(append(m.RelatedPlanIDs, out.result.RelatedPlanIDs...), historyPlans...))
 			m.References = answerReferences(m.Content, append(append(m.References, out.result.References...), historyReferences...), conv.Messages)
 			m.ToolSummaries = stableStrings(append(append(m.ToolSummaries, out.result.ToolSummaries...), historySummaries...))
-			userTime := nextMessageTime(conv, s.clock())
-			m.ModelProfileID, m.Role, m.CreatedAt = turn.ProfileID, RoleAssistant, userTime.Add(time.Microsecond)
-			if m.ID == "" {
-				m.ID = uuid.NewString()
-			}
-			if err := m.Validate(); err != nil || strings.TrimSpace(m.Content) == "" {
+			if !usableTerminalMessage {
 				if !durableFinalization {
 					_, _ = s.turns.FailTurn(ctx, lease, "invalid_model_result", "model returned invalid message")
 					return
@@ -2502,8 +2579,8 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			if finalizing {
 				modelDeadlineCap = 0
 			}
-			runAttempt(retryFormatRecovery)
-			retryFormatRecovery = false
+			runAttempt(recovery)
+			recovery = turnModelRecoveryNone
 		case <-heartbeat.C:
 			t, e := s.turns.GetTurn(ctx, id)
 			if e == nil && t.CancelRequested {

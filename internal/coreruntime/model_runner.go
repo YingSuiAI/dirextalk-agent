@@ -193,6 +193,9 @@ func (r *ModelRunner) resolve(ctx context.Context, req coreconversation.ModelRun
 			toolChoice = coremodel.ToolChoiceRequired
 		}
 	}
+	if req.TerminalOutputRecovery {
+		p.SystemPrompt = appendTerminalOutputRecoveryInstruction(p.SystemPrompt, len(tools) != 0)
+	}
 	client, err := r.factory(p)
 	if err != nil {
 		return coremodel.Profile{}, nil, coremodel.CompletionRequest{}, err

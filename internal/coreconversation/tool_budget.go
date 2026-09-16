@@ -41,6 +41,45 @@ func toolRoundBudgetCost(
 	return cost, delivers
 }
 
+// finalizationKeepsDeliveryTools reports whether one finalization reason
+// stopped the turn before the model could deliver its result. Those
+// dispatches keep the terminal intrinsics: publishing a page, creating a
+// schedule, or proposing a Worker commits the turn, so the delivered result
+// cannot be replaced by a tools-disabled synthesis that only describes it.
+func finalizationKeepsDeliveryTools(reason TurnFinalizationReason) bool {
+	switch reason {
+	case TurnFinalizationInvalidOutput, TurnFinalizationToolBudget:
+		return true
+	default:
+		return false
+	}
+}
+
+// runtimeSnapshotAdmitsDeliveryIntrinsic reports whether the turn's immutable
+// runtime snapshot ever admitted an intrinsic that delivers a result.
+func runtimeSnapshotAdmitsDeliveryIntrinsic(snapshot *TurnRuntimeSnapshot) bool {
+	if snapshot == nil {
+		return false
+	}
+	for _, tool := range snapshot.IntrinsicTools {
+		if coremodel.IsTerminalIntrinsicToolName(tool.Name) {
+			return true
+		}
+	}
+	return false
+}
+
+// terminalIntrinsics keeps only the delivery intrinsics of an admitted set.
+func terminalIntrinsics(tools []ResolvedIntrinsic) []ResolvedIntrinsic {
+	result := make([]ResolvedIntrinsic, 0, len(tools))
+	for _, tool := range tools {
+		if coremodel.IsTerminalIntrinsicToolName(tool.Tool.Name) {
+			result = append(result, tool)
+		}
+	}
+	return result
+}
+
 // readOnlyExtensionTools names the model-facing tools whose extension snapshot
 // is read-only, so MCP and Skill tools are accounted for the same way.
 func readOnlyExtensionTools(

@@ -14,6 +14,8 @@ const (
 	modelToolCallFormatRecoveryInstruction = `The previous response used text markup for a tool call. If a tool is needed, return it only through the standard OpenAI-compatible message.tool_calls field. Do not put DSML, XML, or any other tool-call markup in message content. Do not describe or imitate a tool call in plain text. If no tool is needed, return a normal final answer.`
 	modelToolFreeFormatRecoveryInstruction = `The previous response used text markup for a tool call, but tools are disabled for this final response. Return only a normal final answer. Do not put DSML, XML, or any other tool-call markup in message content. Do not describe or imitate a tool call in plain text.`
 	deepSeekStructuredToolInstruction      = `This request uses the OpenAI-compatible structured tool protocol. When a tool is needed, emit it only through message.tool_calls with a declared function name and JSON arguments. Never emit DSML, XML, or tool-call markup in message content. Ordinary message content is never interpreted as a tool call.`
+	terminalOutputRecoveryInstruction      = `The previous response could not be used: it carried neither a usable final answer nor a valid tool call. If you were starting a tool call, issue it again now as one complete call through message.tool_calls with valid JSON arguments. If the evidence you already have is enough for the user's request, call the tool that delivers the result. Otherwise return a normal final answer now and state what is still missing.`
+	terminalOutputToolFreeInstruction      = `The previous response could not be used: it carried neither a usable final answer nor a valid tool call. Tools are unavailable for this response. Return one normal final answer from the evidence already recorded and state what is still missing.`
 )
 
 type toolCallTextGuard struct {
@@ -101,6 +103,21 @@ func appendToolCallFormatRecoveryInstruction(systemPrompt string, toolsAvailable
 	instruction := modelToolCallFormatRecoveryInstruction
 	if !toolsAvailable {
 		instruction = modelToolFreeFormatRecoveryInstruction
+	}
+	systemPrompt = strings.TrimSpace(systemPrompt)
+	if systemPrompt == "" {
+		return instruction
+	}
+	return systemPrompt + "\n\n" + instruction
+}
+
+// appendTerminalOutputRecoveryInstruction adds the corrective guidance for the
+// single round that answers an unusable terminal response. It never adds tools:
+// the caller only sets the hint while the admitted tool set is unchanged.
+func appendTerminalOutputRecoveryInstruction(systemPrompt string, toolsAvailable bool) string {
+	instruction := terminalOutputRecoveryInstruction
+	if !toolsAvailable {
+		instruction = terminalOutputToolFreeInstruction
 	}
 	systemPrompt = strings.TrimSpace(systemPrompt)
 	if systemPrompt == "" {
