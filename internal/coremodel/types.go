@@ -47,11 +47,6 @@ const (
 	DefaultConversationMaxOutputTokens = 32768
 )
 
-// legacyDefaultConversationMaxOutputTokens is the conversation output limit
-// that profiles created before the page-sized default was raised still carry.
-// It is only used to recognize a stale copy of the server's own default.
-const legacyDefaultConversationMaxOutputTokens = 8192
-
 type Profile struct {
 	ID              string
 	ClientProfileID string

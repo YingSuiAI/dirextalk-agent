@@ -447,15 +447,8 @@ func validateProfile(p Profile, requireAPIKey bool) (Profile, error) {
 	if p.TopP != nil && (math.IsNaN(*p.TopP) || math.IsInf(*p.TopP, 0) || *p.TopP < 0 || *p.TopP > 1) {
 		return Profile{}, fmt.Errorf("%w: top_p out of range", ErrInvalidProfile)
 	}
-	if p.ModelKind == ModelKindConversation {
-		// A conversation profile always carries the effective default. A stored
-		// value that still equals the previous default is a stale copy of the
-		// server's own value - the model configuration surface never exposes
-		// this field, so no operator chose it - and one client save must not
-		// downgrade the budget a page-sized delivery needs.
-		if p.MaxOutputTokens <= 0 || p.MaxOutputTokens == legacyDefaultConversationMaxOutputTokens {
-			p.MaxOutputTokens = DefaultConversationMaxOutputTokens
-		}
+	if p.ModelKind == ModelKindConversation && p.MaxOutputTokens <= 0 {
+		p.MaxOutputTokens = DefaultConversationMaxOutputTokens
 	}
 	if p.MaxOutputTokens < 0 || p.MaxOutputTokens > 1<<20 {
 		return Profile{}, fmt.Errorf("%w: max output tokens out of range", ErrInvalidProfile)
