@@ -1055,6 +1055,31 @@ func TestOpenAIFinishReasonLengthPreservesDeltaThenReportsOutputLimit(t *testing
 	}
 }
 
+// A conversation profile that still carries the previous server default is a
+// stale copy, not an operator choice: normalize it to the effective default so
+// one client save cannot downgrade a page-sized delivery budget. Any other
+// value is an explicit choice and stays untouched.
+func TestConversationProfileRaisesLegacyStaleMaxOutputTokens(t *testing.T) {
+	stale := validProfile(ProviderOpenAICompatible, "https://example.com", "k")
+	stale.MaxOutputTokens = legacyDefaultConversationMaxOutputTokens
+	normalized, err := ValidateProfile(stale)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if normalized.MaxOutputTokens != DefaultConversationMaxOutputTokens {
+		t.Fatalf("normalized=%d", normalized.MaxOutputTokens)
+	}
+	explicit := validProfile(ProviderOpenAICompatible, "https://example.com", "k")
+	explicit.MaxOutputTokens = 4096
+	kept, err := ValidateProfile(explicit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kept.MaxOutputTokens != 4096 {
+		t.Fatalf("explicit limit was rewritten: %d", kept.MaxOutputTokens)
+	}
+}
+
 func TestConversationProfileDefaultsNonPositiveMaxOutputTokensInSnapshot(t *testing.T) {
 	for _, value := range []int{0, -1} {
 		profile := validProfile(ProviderOpenAICompatible, "https://example.com", "k")
