@@ -119,7 +119,7 @@ func (f continuationModelFunc) Stream(ctx context.Context, request ModelRunReque
 func TestNewTurnBudgetAllowsRequestedWorkAndHistoricalPins(t *testing.T) {
 	for _, mode := range []TurnExecutionMode{TurnExecutionInteractive, TurnExecutionDeep, TurnExecutionScheduled, TurnExecutionWorkerOrchestration} {
 		policy, err := AdmittedTurnExecutionPolicy(mode)
-		if err != nil || policy.MaxToolCalls != 48 || policy.MaxModelDispatches != 52 || policy.MaxModelActiveDuration() != time.Hour {
+		if err != nil || policy.MaxToolCalls != 100 || policy.MaxModelDispatches != 200 || policy.MaxModelActiveDuration() != time.Hour {
 			t.Fatalf("mode=%s policy=%+v err=%v", mode, policy, err)
 		}
 		policy.MaxToolCalls, policy.MaxModelDispatches, policy.MaxModelActiveMilliseconds = 20, 24, uint64((20 * time.Minute).Milliseconds())

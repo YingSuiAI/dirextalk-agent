@@ -20,7 +20,7 @@ import (
 )
 
 const (
-	MaxAdmittedTurnModelDispatches     = 52
+	MaxAdmittedTurnModelDispatches     = 200
 	MaxAdmittedTurnModelActiveDuration = time.Hour
 	MaxTurnFinalizationDispatches      = 1
 	MaxTurnFinalizationFormatRetries   = 1
@@ -28,7 +28,7 @@ const (
 	turnModelMeaningfulActionDeadline  = 90 * time.Second
 	turnModelSingleDispatchDeadline    = 5 * time.Minute
 	turnMemoryRecallTimeout            = 3 * time.Second
-	MaxAdmittedTurnToolCalls           = 48
+	MaxAdmittedTurnToolCalls           = 100
 	toolLoopNudgeGuidance              = "The latest tool action and result are repeating without new evidence. Change approach or synthesize from what is already available; do not repeat the same action."
 	toolLoopSynthesisGuidance          = "The tool loop continued without new evidence. Do not call tools. Produce the best useful answer now from all accumulated evidence and explicitly state remaining gaps."
 	workerTerminalSynthesisGuidance    = "The Cloud Worker is terminal. Its stdout and Worker report are internal evidence, not a user-facing deliverable: do not paste, quote, or lightly reformat them. Synthesize a concise normal answer from the completed work, verification, failures, and genuine user-requested artifacts. Preserve only useful artifact references, and mention the retained Worker and ask whether to destroy it when the result says it remains available. " + CloudWorkerCompletionGuidance
@@ -39,6 +39,14 @@ const (
 	staticSitePublishCorrection        = "static_site_publish arguments are invalid; invoke static_site_publish again immediately with the required non-empty html string containing the complete page, and do not repeat analysis or draft the page outside the tool call"
 	conversationConvergenceGuidance    = "When sufficient information is available, act or call the needed tool, then synthesize the result without restating the user's request or tool instructions."
 	messageMCPRoutingGuidance          = "For requests that need authoritative Dirextalk contacts, rooms, or messages, use the available Dirextalk tools. If a Message mutation has unknown completion, read authoritative state before deciding whether to retry; never retry blindly."
+)
+
+const (
+	// maxPostBudgetToolDeliveryRounds is how many rounds a task may still spend
+	// after its tool budget is gone in order to deliver what it already built.
+	// Delivery intrinsics commit the turn, so the window is bounded and can
+	// never become another way to keep looping.
+	maxPostBudgetToolDeliveryRounds = 2
 )
 
 type turnModelDeadlines struct {
@@ -1646,7 +1654,6 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			return
 		}
 	}
-	toolCallBudgetExhausted := uint32(len(toolCallAuthorities)) >= executionPolicy.MaxToolCalls
 	profile := turn.ProfileSnapshot.Profile()
 	runtimeSnapshot := *turn.RuntimeSnapshot
 	systemPrompt := runtimeSnapshot.CompiledSystemPrompt
@@ -1657,11 +1664,29 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 		}
 	}
 	if !finalizing {
+		// A spent tool budget does not have to end the turn while the Agent is
+		// still holding something to deliver: publishing the page it built,
+		// running the Worker it prepared, or creating the schedule it proposed.
+		// Those intrinsics commit the turn, so the window is bounded and cannot
+		// become another way to keep looping.
+		deliveryAvailable := false
+		for _, intrinsic := range intrinsicTools {
+			if coremodel.IsTerminalIntrinsicToolName(intrinsic.Tool.Name) {
+				deliveryAvailable = true
+				break
+			}
+		}
+		budgetFinalizes := preRoundBudgetFinalizes(
+			history.billableToolCalls,
+			executionPolicy.MaxToolCalls,
+			deliveryAvailable,
+			history.postBudgetRounds,
+		)
 		var reason TurnFinalizationReason
 		switch {
 		case history.supervisorTerminal && !deferredWorkerFollowUp:
 			reason = TurnFinalizationToolOutcome
-		case toolCallBudgetExhausted:
+		case budgetFinalizes:
 			reason = TurnFinalizationToolBudget
 		case history.loopRecovery == toolLoopSynthesize:
 			reason = TurnFinalizationToolLoop
@@ -2070,6 +2095,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 					validateStaticSiteCorrectionCalls(history.forcedToolName, calls) != nil
 				seenCallIDs := make(map[string]struct{}, len(calls))
 				newToolCalls := 0
+				newCalls := make([]ToolCall, 0, len(calls))
 				var intrinsicOrderViolation *ToolCall
 				for index, call := range calls {
 					if call.Validate() != nil {
@@ -2110,6 +2136,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 					}
 					if _, exists := toolCallAuthorities[call.ID]; !exists {
 						newToolCalls++
+						newCalls = append(newCalls, call)
 					}
 					seenCallIDs[call.ID] = struct{}{}
 					if coremodel.IsIntrinsicToolName(call.Name) && index != len(calls)-1 && !forcedStaticSiteViolation && intrinsicOrderViolation == nil {
@@ -2117,7 +2144,19 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 						intrinsicOrderViolation = &copy
 					}
 				}
-				if uint32(len(toolCallAuthorities)+newToolCalls) > executionPolicy.MaxToolCalls {
+				roundCost, roundDelivers := toolRoundBudgetCost(newCalls, readOnlyExtensionTools(turn.ExtensionSnapshots))
+				// A round that delivers the turn through a terminal intrinsic is
+				// allowed to spend the last of the budget: the intrinsic commits
+				// the answer, so it cannot extend the loop. Without this, a long
+				// task that used its whole budget could no longer publish the
+				// page, run the Worker, or create the schedule it just built.
+				if roundBudgetFinalizes(
+					history.billableToolCalls,
+					executionPolicy.MaxToolCalls,
+					roundCost,
+					roundDelivers,
+					history.postBudgetRounds,
+				) {
 					if durableDispatch && !replayed {
 						if err := dispatchStore.RecordTurnModelResult(ctx, lease, out.result); err != nil {
 							return
@@ -3364,6 +3403,13 @@ type turnHistoryReplay struct {
 	supervisorTerminal   bool
 	memoryRecallDegraded bool
 	loopRecovery         toolLoopRecovery
+	// billableToolCalls is what this turn has spent from its tool budget so far,
+	// with read-only rounds charged once and terminal intrinsics charged none.
+	billableToolCalls uint32
+	// postBudgetRounds counts completed rounds that already ran with the tool
+	// budget spent. They are the delivery window a long task gets to publish,
+	// run, or schedule what it built.
+	postBudgetRounds uint32
 }
 
 func (s *Service) appendTurnToolHistory(ctx context.Context, turn Turn, conversation *Conversation, ignoreLatestOutputFragment bool) (turnHistoryReplay, error) {
@@ -3405,6 +3451,13 @@ func (s *Service) appendTurnToolHistory(ctx context.Context, turn Turn, conversa
 		firstSequence int64
 	}
 	batch := toolBatch{results: make(map[string]batchResult)}
+	readOnlyTools := readOnlyExtensionTools(turn.ExtensionSnapshots)
+	billableToolCalls := uint32(0)
+	postBudgetRounds := uint32(0)
+	toolCallBudgetCap := uint32(MaxAdmittedTurnToolCalls)
+	if snapshot := turn.RuntimeSnapshot; snapshot != nil && snapshot.ExecutionPolicy.Validate() == nil {
+		toolCallBudgetCap = snapshot.ExecutionPolicy.MaxToolCalls
+	}
 	var continuationContent strings.Builder
 	continueOutput := false
 	forcedToolName := ""
@@ -3437,6 +3490,11 @@ func (s *Service) appendTurnToolHistory(ctx context.Context, turn Turn, conversa
 				CreatedAt: createdAt, ModelProfileID: turn.ProfileID,
 			})
 		}
+		roundCost, _ := toolRoundBudgetCost(batch.calls, readOnlyTools)
+		if billableToolCalls >= toolCallBudgetCap {
+			postBudgetRounds++
+		}
+		billableToolCalls += roundCost
 		batch = toolBatch{results: make(map[string]batchResult)}
 		return nil
 	}
@@ -3559,6 +3617,7 @@ func (s *Service) appendTurnToolHistory(ctx context.Context, turn Turn, conversa
 		authorities: authorities, continuationContent: continuationContent.String(),
 		continueOutput: continueOutput, forcedToolName: forcedToolName, supervisorTerminal: supervisorTerminal,
 		memoryRecallDegraded: memoryRecallDegraded, loopRecovery: toolLoopRecoveryFor(loopPairs),
+		billableToolCalls: billableToolCalls, postBudgetRounds: postBudgetRounds,
 	}, nil
 }
 

@@ -2301,7 +2301,7 @@ func TestExecuteTurnStopsRepeatedToolRoundsWithoutFinalResponse(t *testing.T) {
 }
 
 func TestExecuteTurnEnforcesDurableToolCallBudget(t *testing.T) {
-	if MaxAdmittedTurnToolCalls != 48 {
+	if MaxAdmittedTurnToolCalls != 100 {
 		t.Fatalf("turn tool call cap=%d", MaxAdmittedTurnToolCalls)
 	}
 	profile := testTurnSnapshot()
