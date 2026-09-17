@@ -39,12 +39,7 @@ const (
 	// DefaultConversationMaxOutputTokens is the single effective default for
 	// conversation profiles. Persisted profiles and immutable turn snapshots
 	// must carry this positive value instead of relying on provider defaults.
-	//
-	// 32K keeps a complete self-contained page (inline CSS plus every section)
-	// inside one response. A page that outgrows a single response has to be
-	// built on a Worker and published from its artifact instead, because the
-	// model cannot emit a tool call larger than this limit.
-	DefaultConversationMaxOutputTokens = 32768
+	DefaultConversationMaxOutputTokens = 8192
 )
 
 type Profile struct {
