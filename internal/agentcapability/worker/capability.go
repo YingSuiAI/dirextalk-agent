@@ -14,6 +14,7 @@ import (
 	capabilityclient "github.com/YingSuiAI/dirextalk-agent/internal/capability/client"
 	capabilityoperation "github.com/YingSuiAI/dirextalk-agent/internal/capability/operation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/sshworker"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreserver"
 	capv1 "github.com/YingSuiAI/dirextalk-capability-api/gen/go/dirextalk/capability/v1"
 )
 
@@ -31,7 +32,7 @@ const (
 	getInputSchema      = `{"additionalProperties":false,"properties":{"identity":` + identitySchema + `},"required":["identity"],"type":"object"}`
 	getResultSchema     = `{"additionalProperties":false,"properties":{"worker":` + statusSchema + `},"required":["worker"],"type":"object"}`
 	destroyInputSchema  = `{"additionalProperties":false,"properties":{"confirmation":{"const":"destroy_worker","type":"string"},"identity":` + identitySchema + `},"required":["identity","confirmation"],"type":"object"}`
-	destroyResultSchema = `{"additionalProperties":false,"properties":{"destroyed":{"const":true,"type":"boolean"},"identity":` + identitySchema + `},"required":["identity","destroyed"],"type":"object"}`
+	destroyResultSchema = `{"additionalProperties":false,"properties":{"destroyed":{"type":"boolean"},"identity":` + identitySchema + `,"notices":{"items":{"additionalProperties":false,"properties":{"detail":{"type":"string"},"name":{"type":"string"},"resource":{"type":"string"}},"required":["resource","name","detail"],"type":"object"},"type":"array"}},"required":["identity","destroyed"],"type":"object"}`
 )
 
 // CredentialSource returns the one current verified AWS credential. The
@@ -174,10 +175,18 @@ func (c *Capability) HandleOperation(ctx context.Context, operationID string, ra
 		}
 		identity.OwnerID, identity.AccountGeneration = authority.OwnerID, authority.AccountGeneration
 		authorization := sshworker.DestroyAuthorization{Authorized: true, Proof: "capability:destroy_worker"}
-		if err := c.bindings.Workers.DestroyWorker(ctx, authority, sshworker.DestroyRequest{Identity: identity, Authorization: authorization}); err != nil {
+		// A destroy can deliberately leave a resource in place, such as a DNS
+		// record that no longer belongs to this Worker. Report those so the
+		// owner sees what survived instead of an unnotified success.
+		noticeCtx, notices := coreserver.WithDestroyNotices(ctx)
+		if err := c.bindings.Workers.DestroyWorker(noticeCtx, authority, sshworker.DestroyRequest{Identity: identity, Authorization: authorization}); err != nil {
 			return nil, managerFailure(err)
 		}
-		return json.Marshal(map[string]any{"identity": projectIdentity(identity), "destroyed": true})
+		result := map[string]any{"identity": projectIdentity(identity), "destroyed": true}
+		if len(*notices) != 0 {
+			result["notices"] = *notices
+		}
+		return json.Marshal(result)
 	default:
 		return nil, invalid(errors.New("unknown worker operation"))
 	}

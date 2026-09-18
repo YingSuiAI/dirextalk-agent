@@ -32,6 +32,38 @@ type Authority struct {
 	AccountGeneration uint64
 }
 
+// DestroyNotice records one resource a destroy deliberately left in place.
+// The owner sees exactly which resource was not touched and why, instead of a
+// destroy that silently reports success.
+type DestroyNotice struct {
+	Resource string `json:"resource"`
+	Name     string `json:"name"`
+	Detail   string `json:"detail"`
+}
+
+type destroyNoticeKey struct{}
+
+// WithDestroyNotices attaches a collector so a destroy can report resources it
+// intentionally left untouched, such as a DNS record that no longer belongs to
+// the Worker. Callers read the slice after the destroy returns.
+func WithDestroyNotices(ctx context.Context) (context.Context, *[]DestroyNotice) {
+	notices := make([]DestroyNotice, 0, 1)
+	return context.WithValue(ctx, destroyNoticeKey{}, &notices), &notices
+}
+
+// AppendDestroyNotice records one skipped resource when a collector is
+// attached; it is a no-op otherwise.
+func AppendDestroyNotice(ctx context.Context, notice DestroyNotice) {
+	if ctx == nil || strings.TrimSpace(notice.Resource) == "" {
+		return
+	}
+	collector, ok := ctx.Value(destroyNoticeKey{}).(*[]DestroyNotice)
+	if !ok || collector == nil {
+		return
+	}
+	*collector = append(*collector, notice)
+}
+
 func (a Authority) Valid() bool {
 	return strings.TrimSpace(a.OwnerID) == a.OwnerID && a.OwnerID != "" && len(a.OwnerID) <= 512 && a.AccountGeneration > 0
 }

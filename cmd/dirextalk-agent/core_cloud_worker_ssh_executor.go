@@ -1035,6 +1035,18 @@ func completeWorkerResourceIdentity(identity sshworker.WorkerIdentity) bool {
 	return strings.TrimSpace(identity.InstanceID) != "" && strings.TrimSpace(identity.KeyPairID) != "" && strings.TrimSpace(identity.SecurityGroupID) != ""
 }
 
+func canonicalDestroyHostname(hostname string) string {
+	return strings.TrimSuffix(strings.TrimSpace(hostname), ".")
+}
+
+func shortDestroyAddress(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "(unset)"
+	}
+	return value
+}
+
 const workerDomainTTL uint32 = 300
 
 // releaseSupersededDomain decides what one failed DNS cleanup means for the
@@ -1060,6 +1072,12 @@ func releaseSupersededDomain(ctx context.Context, record *sshworkload.Domain, er
 		"record_ipv4", mismatch.Existing.IPv4,
 		"worker_expected_ipv4", mismatch.Intended.IPv4,
 	)
+	coreserver.AppendDestroyNotice(ctx, coreserver.DestroyNotice{
+		Resource: "dns_record",
+		Name:     canonicalDestroyHostname(hostname),
+		Detail: fmt.Sprintf("DNS record was not deleted: it points to %s but this Worker expected %s",
+			shortDestroyAddress(mismatch.Existing.IPv4), shortDestroyAddress(mismatch.Intended.IPv4)),
+	})
 	return nil
 }
 
