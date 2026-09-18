@@ -205,6 +205,14 @@ func (s *Service) deleteExecutionArtifacts(ctx context.Context, authority Author
 		}
 		deleteKey := uuid.NewSHA1(uuid.NameSpaceOID, []byte("dirextalk:destroy-server-artifact:"+operationID+":"+artifact.ArtifactID)).String()
 		if err := s.deleter.DeleteArtifact(ctx, authority, artifact, deleteKey); err != nil {
+			// The recorded source may already be gone: a previous destroy
+			// attempt, an expiry, or an owner-triggered delete can remove it
+			// while the inventory row still lists the file. Cleanup is
+			// idempotent by design, so an already-missing artifact must never
+			// keep the server record stuck in the deleting state.
+			if errors.Is(err, ErrNotFound) {
+				continue
+			}
 			return err
 		}
 	}
