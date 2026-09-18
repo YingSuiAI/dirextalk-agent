@@ -1037,6 +1037,32 @@ func completeWorkerResourceIdentity(identity sshworker.WorkerIdentity) bool {
 
 const workerDomainTTL uint32 = 300
 
+// releaseSupersededDomain decides what one failed DNS cleanup means for the
+// destroy. A record that still matches the Worker belongs to the Worker and is
+// removed; a record that no longer matches was re-pointed by someone else, so
+// the Worker releases its claim and leaves the record exactly as it is. That
+// distinction is what keeps a destroy from deleting the apex record of a live
+// site, while still letting the Worker's inventory entry be cleared.
+func releaseSupersededDomain(ctx context.Context, record *sshworkload.Domain, err error) error {
+	if err == nil {
+		return nil
+	}
+	var mismatch remoteservice.DNSRecordMismatchError
+	if !errors.As(err, &mismatch) {
+		return err
+	}
+	hostname := mismatch.Hostname
+	if record != nil && strings.TrimSpace(record.Hostname) != "" {
+		hostname = record.Hostname
+	}
+	slog.WarnContext(ctx, "worker domain release skipped: the record no longer belongs to this Worker",
+		"hostname", hostname,
+		"record_ipv4", mismatch.Existing.IPv4,
+		"worker_expected_ipv4", mismatch.Intended.IPv4,
+	)
+	return nil
+}
+
 func (executor *sshWorkerExecutor) deleteDomain(ctx context.Context, service sshworkload.Service) error {
 	if service.Domain == nil && service.PendingDomain == nil {
 		return nil
@@ -1050,12 +1076,15 @@ func (executor *sshWorkerExecutor) deleteDomain(ctx context.Context, service ssh
 	if service.PendingDomain != nil {
 		err := remoteservice.ReconcilePlannedDelete(ctx, dns, domainMutation(service.Worker.Credential.AccountID, service.Worker.WorkerID, service.WorkloadID, remoteservice.DNSDeleteA, service.PendingDomain))
 		pendingDeleted = err == nil
-		if err != nil && !(errors.Is(err, remoteservice.ErrReadback) && sameDomainRecordKey(service.PendingDomain, service.Domain)) {
+		if residual := releaseSupersededDomain(ctx, service.PendingDomain, err); residual != nil &&
+			!(errors.Is(err, remoteservice.ErrReadback) && sameDomainRecordKey(service.PendingDomain, service.Domain)) {
+			err = residual
 			result = errors.Join(result, err)
 		}
 	}
 	if service.Domain != nil && !(pendingDeleted && sameDomainRecordKey(service.PendingDomain, service.Domain)) {
-		result = errors.Join(result, remoteservice.ReconcilePlannedDelete(ctx, dns, domainMutation(service.Worker.Credential.AccountID, service.Worker.WorkerID, service.WorkloadID, remoteservice.DNSDeleteA, service.Domain)))
+		err := remoteservice.ReconcilePlannedDelete(ctx, dns, domainMutation(service.Worker.Credential.AccountID, service.Worker.WorkerID, service.WorkloadID, remoteservice.DNSDeleteA, service.Domain))
+		result = errors.Join(result, releaseSupersededDomain(ctx, service.Domain, err))
 	}
 	if result != nil {
 		return result
