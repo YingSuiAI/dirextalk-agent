@@ -33,6 +33,18 @@ func NewService(repository Repository, workers WorkerInventory, deleter Artifact
 	return &Service{repository: repository, workers: workers, deleter: deleter, config: config}, nil
 }
 
+// workerReachable reports whether a Worker's advertised status still describes
+// a machine the owner can act on. Provisioning, busy, destroying, and healthy
+// all describe live state; the unavailable and failed states do not.
+func workerReachable(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "unavailable", "failed":
+		return false
+	default:
+		return true
+	}
+}
+
 func (s *Service) ListServers(ctx context.Context, authority Authority) ([]Server, error) {
 	if s == nil || !authority.Valid() {
 		return nil, ErrInvalid
@@ -61,11 +73,22 @@ func (s *Service) ListServers(ctx context.Context, authority Authority) ([]Serve
 		if listErr != nil {
 			return nil, listErr
 		}
+		visible := make([]Server, 0, len(workers))
 		for index := range workers {
 			workers[index].ArtifactCount = counts[workers[index].ServerID]
 			workers[index].ServerKind = ServerWorker
 			workers[index].CanDestroy = true
+			// A Worker AWS no longer reports and that holds no inventory is a
+			// ghost: nothing is running to manage and there is no artifact to
+			// open. Listing it only shows the owner a server that cannot be
+			// used or destroyed. It stays out of the list until AWS reports it
+			// again, which also keeps a destroyed Worker from lingering.
+			if workers[index].ArtifactCount == 0 && !workerReachable(workers[index].Status) {
+				continue
+			}
+			visible = append(visible, workers[index])
 		}
+		workers = visible
 		sort.Slice(workers, func(i, j int) bool {
 			if workers[i].CreatedAt.Equal(workers[j].CreatedAt) {
 				return workers[i].ServerID < workers[j].ServerID
