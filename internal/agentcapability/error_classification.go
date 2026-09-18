@@ -3,8 +3,11 @@ package agentcapability
 import (
 	"context"
 	"errors"
+	"strings"
 
 	capabilityoperation "github.com/YingSuiAI/dirextalk-agent/internal/capability/operation"
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/remoteservice"
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/sshworker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreaws"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfig"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
@@ -20,6 +23,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretexttool"
 	"github.com/YingSuiAI/dirextalk-agent/internal/corewebsearch"
+	"github.com/YingSuiAI/dirextalk-agent/internal/security"
 	capv1 "github.com/YingSuiAI/dirextalk-capability-api/gen/go/dirextalk/capability/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -44,6 +48,24 @@ func (c *errorClassifyingCapability) HandleOperation(ctx context.Context, operat
 	return result, classifyCapabilityError(err)
 }
 
+// boundedDestroyMessage surfaces the exact resource failure to the owner while
+// keeping the capability error message small and free of unbounded provider
+// text. The underlying error stays attached for logs and diagnosis.
+func boundedDestroyMessage(err error, fallback string) string {
+	if err == nil {
+		return fallback
+	}
+	message := strings.TrimSpace(security.RedactText(err.Error()))
+	if message == "" {
+		return fallback
+	}
+	const limit = 400
+	if len(message) > limit {
+		message = strings.TrimRight(message[:limit], " ") + "..."
+	}
+	return message
+}
+
 func classifyCapabilityError(err error) error {
 	if err == nil {
 		return nil
@@ -66,6 +88,15 @@ func classifyCapabilityError(err error) error {
 		return capabilityoperation.NewFailure("NOT_FOUND", "The server or artifact was not found", err)
 	case errors.Is(err, coreserver.ErrConflict):
 		return capabilityoperation.NewFailure("CONFLICT", "Server inventory changed; refresh and retry", err)
+	case errors.Is(err, remoteservice.ErrReadback), errors.Is(err, remoteservice.ErrDNSConflict):
+		// A Worker owns its DNS record for as long as it exists. Cleanup stops
+		// instead of deleting a record that no longer matches, so the owner has
+		// to see which record blocked it and what it points to.
+		return capabilityoperation.NewFailure("PRECONDITION_FAILED", boundedDestroyMessage(err, "DNS record cleanup failed; review the Route53 record and retry the destroy"), err)
+	case errors.Is(err, sshworker.ErrResourceDestroy):
+		// Name the AWS resource that could not be destroyed (instance, security
+		// group, key pair) instead of reporting a generic upstream failure.
+		return capabilityoperation.NewFailure("UPSTREAM_FAILED", boundedDestroyMessage(err, "A Worker resource could not be destroyed"), err)
 	case errors.Is(err, coreserver.ErrInvalid):
 		return capabilityoperation.NewFailure("INVALID_ARGUMENT", "Server inventory request is invalid", err)
 	case errors.Is(err, coredeprovision.ErrRetainedWorkers):

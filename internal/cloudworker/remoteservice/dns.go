@@ -68,6 +68,32 @@ func PreflightPlannedUpsert(ctx context.Context, client Route53, mutation DNSMut
 	return nil
 }
 
+// DNSRecordMismatchError reports the exact Route53 record that blocked a
+// Worker's DNS cleanup. The Worker only ever deletes the record it created,
+// never one that was re-pointed, so the message names both values and lets the
+// owner decide from the App or the AWS console.
+type DNSRecordMismatchError struct {
+	Hostname string
+	Existing ARecord
+	Intended ARecord
+}
+
+func (e DNSRecordMismatchError) Error() string {
+	return fmt.Sprintf(
+		"DNS record cleanup failed: %s currently points to %s but this Worker expects %s; review the Route53 record and retry the destroy",
+		canonicalHostname(e.Hostname), shortRecordValue(e.Existing.IPv4), shortRecordValue(e.Intended.IPv4),
+	)
+}
+
+func (e DNSRecordMismatchError) Is(target error) bool { return target == ErrReadback }
+
+func shortRecordValue(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "(unset)"
+	}
+	return value
+}
+
 // ReconcilePlannedDelete removes one exact record already authorized by its
 // owning Worker operation and verifies that it is absent.
 func ReconcilePlannedDelete(ctx context.Context, client Route53, mutation DNSMutation) error {
@@ -85,7 +111,7 @@ func ReconcilePlannedDelete(ctx context.Context, client Route53, mutation DNSMut
 		return nil
 	}
 	if !sameRecord(current, mutation.Record) {
-		return ErrReadback
+		return DNSRecordMismatchError{Hostname: mutation.Record.Hostname, Existing: current, Intended: mutation.Record}
 	}
 	if err = client.VerifyAccount(ctx, mutation.AccountID); err != nil {
 		return err

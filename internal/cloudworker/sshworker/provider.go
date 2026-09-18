@@ -921,31 +921,37 @@ func matchesDestroyIdentity(worker WorkerRecord, identity WorkerIdentity) bool {
 }
 
 func (provider *Provider) destroy(ctx context.Context, authorization DestroyAuthorization, tags ResourceTags, worker *WorkerRecord) error {
+	// Every owned resource is torn down independently and reported by name, so
+	// one blocked resource (a security group still referenced by another
+	// instance, for example) cannot hide the state of the others. An instance
+	// AWS no longer reports is already destroyed, not an error.
+	var failures error
 	if worker.Instance.ID != "" {
 		instance, found, err := provider.aws.ObserveInstance(ctx, worker.Credential, worker.Instance.ID, tags)
 		if err != nil {
-			return err
-		}
-		if found && instance.State != "terminated" && instance.State != "shutting-down" {
-			if err := provider.aws.TerminateInstance(ctx, worker.Credential, authorization, instance, tags); err != nil {
-				return err
+			failures = errors.Join(failures, fmt.Errorf("%w: EC2 instance %s could not be observed: %w", ErrResourceDestroy, worker.Instance.ID, err))
+		} else {
+			if found && instance.State != "terminated" && instance.State != "shutting-down" {
+				if err := provider.aws.TerminateInstance(ctx, worker.Credential, authorization, instance, tags); err != nil {
+					failures = errors.Join(failures, fmt.Errorf("%w: EC2 instance %s could not be terminated: %w", ErrResourceDestroy, worker.Instance.ID, err))
+				}
 			}
-		}
-		if err := provider.waitTerminated(ctx, worker, tags); err != nil {
-			return err
+			if err := provider.waitTerminated(ctx, worker, tags); err != nil {
+				failures = errors.Join(failures, fmt.Errorf("%w: EC2 instance %s termination was not confirmed: %w", ErrResourceDestroy, worker.Instance.ID, err))
+			}
 		}
 	}
 	if worker.SecurityGroup.ID != "" && worker.SecurityGroup.Name != "" {
 		if err := provider.aws.DeleteSecurityGroup(ctx, worker.Credential, authorization, worker.SecurityGroup, tags); err != nil {
-			return err
+			failures = errors.Join(failures, fmt.Errorf("%w: security group %s could not be deleted: %w", ErrResourceDestroy, worker.SecurityGroup.ID, err))
 		}
 	}
 	if worker.KeyPair.ID != "" && worker.KeyPair.Name != "" {
 		if err := provider.aws.DeleteKeyPair(ctx, worker.Credential, authorization, worker.KeyPair, tags); err != nil {
-			return err
+			failures = errors.Join(failures, fmt.Errorf("%w: key pair %s could not be deleted: %w", ErrResourceDestroy, worker.KeyPair.ID, err))
 		}
 	}
-	return nil
+	return failures
 }
 
 func (provider *Provider) waitTerminated(ctx context.Context, worker *WorkerRecord, tags ResourceTags) error {
