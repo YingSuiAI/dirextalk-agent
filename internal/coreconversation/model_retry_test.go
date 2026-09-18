@@ -24,8 +24,9 @@ type retrySequenceModel struct {
 }
 
 type retryModelOutcome struct {
-	delta *ModelDelta
-	err   error
+	delta  *ModelDelta
+	result *ModelRunResult
+	err    error
 }
 
 type convergenceObserverFunc func(context.Context, ConvergenceRecord)
@@ -54,6 +55,9 @@ func (m *retrySequenceModel) Stream(_ context.Context, request ModelRunRequest, 
 	}
 	if outcome.err != nil {
 		return ModelRunResult{}, outcome.err
+	}
+	if outcome.result != nil {
+		return *outcome.result, nil
 	}
 	return ModelRunResult{Done: true, Message: Message{ID: uuid.NewString(), Role: RoleAssistant, Content: "ok", CreatedAt: time.Now().UTC()}}, nil
 }
@@ -359,7 +363,9 @@ func TestToolFreeFinalizationUsesFrozenRuntimeWithMessageMCP(t *testing.T) {
 	turn.RuntimeSnapshot = &runtime
 	store.turn = turn
 	store.runtime = &runtime
-	intent := NewTurnFinalizationIntent(TurnFinalizationToolBudget)
+	// A no-progress loop keeps the tools-disabled synthesis, so the finalization
+	// must reuse the frozen runtime instead of resolving the live tool set.
+	intent := NewTurnFinalizationIntent(TurnFinalizationToolLoop)
 	store.finalization = &intent
 	resolverCalls := 0
 	service.extensions = extensionResolverFunc(func(context.Context, []ExtensionSelection) ([]ResolvedExtension, error) {
@@ -382,6 +388,61 @@ func TestToolFreeFinalizationUsesFrozenRuntimeWithMessageMCP(t *testing.T) {
 		!strings.Contains(request.Profile.SystemPrompt, messageMCPRoutingGuidance) ||
 		!strings.HasSuffix(request.Profile.SystemPrompt, finalResponseSynthesisGuidance) {
 		t.Fatalf("tools-disabled finalization did not preserve the frozen prompt: %+v", request)
+	}
+}
+
+// A finalization that interrupted the turn before delivery keeps exactly the
+// admitted delivery intrinsics: the model may still publish the page it built,
+// while extensions and every other tool stay unavailable.
+func TestInterruptedFinalizationKeepsDeliveryIntrinsic(t *testing.T) {
+	model := &retrySequenceModel{}
+	service, store, turn := newAttemptTurnService(t, model)
+	delivery := ResolvedIntrinsic{
+		Tool: coremodel.Tool{Name: coremodel.IntrinsicStaticSitePublishToolName, InputSchema: map[string]any{"type": "object"}},
+		Execute: func(context.Context, IntrinsicExecutionRequest) (IntrinsicExecutionResult, error) {
+			return IntrinsicExecutionResult{}, nil
+		},
+	}
+	readOnly := ResolvedIntrinsic{
+		ReadOnly: true,
+		Tool:     coremodel.Tool{Name: coremodel.IntrinsicStaticSiteReadToolName, InputSchema: map[string]any{"type": "object"}},
+		Execute: func(context.Context, IntrinsicExecutionRequest) (IntrinsicExecutionResult, error) {
+			return IntrinsicExecutionResult{}, nil
+		},
+	}
+	service.intrinsics = intrinsicResolverFunc(func(context.Context, TurnLease) ([]ResolvedIntrinsic, error) {
+		return []ResolvedIntrinsic{readOnly, delivery}, nil
+	})
+	runtime, err := service.buildTurnAdmissionRuntime(context.Background(), turn, nil, "", TurnExecutionDeep, TurnConstrainedWorkflow{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	turn.RuntimeSnapshot = &runtime
+	store.turn = turn
+	store.runtime = &runtime
+	intent := NewTurnFinalizationIntent(TurnFinalizationInvalidOutput)
+	store.finalization = &intent
+	extensionResolverCalls := 0
+	service.extensions = extensionResolverFunc(func(context.Context, []ExtensionSelection) ([]ResolvedExtension, error) {
+		extensionResolverCalls++
+		return nil, errors.New("delivery-only finalization must not resolve extensions")
+	})
+
+	service.executeTurn(context.Background(), turn.ID)
+
+	if extensionResolverCalls != 0 || model.callCount() != 1 || store.turn.State != TurnCompleted || store.turn.Response == nil {
+		t.Fatalf("extension_resolver_calls=%d model_calls=%d turn=%+v failure=%q", extensionResolverCalls, model.callCount(), store.turn, store.failedCode)
+	}
+	request := model.requests[0]
+	if len(request.Intrinsics) != 1 || request.Intrinsics[0].Tool.Name != coremodel.IntrinsicStaticSitePublishToolName ||
+		len(request.Extensions) != 0 || len(request.ExtensionSnapshots) != 0 ||
+		!strings.HasSuffix(request.Profile.SystemPrompt, deliverySynthesisGuidance) ||
+		strings.Contains(request.Profile.SystemPrompt, finalResponseSynthesisGuidance) {
+		t.Fatalf("delivery-only finalization request=%+v", request)
+	}
+	if directive := store.directive; directive.ToolMode != TurnDispatchToolsTerminal ||
+		directive.FinalizationReason != TurnFinalizationInvalidOutput {
+		t.Fatalf("directive=%+v", directive)
 	}
 }
 
@@ -605,5 +666,53 @@ func TestSameAdmittedRuntimeProducesIdenticalRequestAfterRestart(t *testing.T) {
 	secondService.executeTurn(context.Background(), firstTurn.ID)
 	if firstModel.callCount() != 1 || secondModel.callCount() != 1 || !reflect.DeepEqual(firstModel.requests[0], secondModel.requests[0]) {
 		t.Fatalf("requests differ after restart\nfirst=%+v\nsecond=%+v", firstModel.requests, secondModel.requests)
+	}
+}
+
+// An unusable terminal response is retried once with the same admitted tools
+// and corrective guidance instead of being finalized straight away.
+func TestUnusableTerminalOutputRetriesOnceWithAdmittedTools(t *testing.T) {
+	unusable := ModelRunResult{Done: true, Message: Message{ID: uuid.NewString(), Role: RoleAssistant, Content: "   ", CreatedAt: time.Now().UTC()}}
+	model := &retrySequenceModel{outcomes: []retryModelOutcome{{result: &unusable}, {}}}
+	service, store, turn := newAttemptTurnService(t, model)
+
+	service.executeTurn(context.Background(), turn.ID)
+
+	if model.callCount() != 2 || store.turn.ModelDispatchCount != 2 || len(store.retryFailures) != 1 {
+		t.Fatalf("calls=%d attempts=%d retry_failures=%+v", model.callCount(), store.turn.ModelDispatchCount, store.retryFailures)
+	}
+	if store.retryFailures[0].Code != invalidModelResultCode {
+		t.Fatalf("failure=%+v", store.retryFailures[0])
+	}
+	if model.requests[0].TerminalOutputRecovery || !model.requests[1].TerminalOutputRecovery {
+		t.Fatalf("terminal recovery flags=%t,%t", model.requests[0].TerminalOutputRecovery, model.requests[1].TerminalOutputRecovery)
+	}
+	if store.turn.State != TurnCompleted || store.turn.Response == nil || store.turn.Response.Message.Content != "ok" {
+		t.Fatalf("turn=%+v", store.turn)
+	}
+}
+
+// The corrective round is granted once. A second unusable response falls back
+// to the tools-disabled synthesis instead of looping.
+func TestSecondUnusableTerminalOutputFinalizes(t *testing.T) {
+	unusable := ModelRunResult{Done: true, Message: Message{ID: uuid.NewString(), Role: RoleAssistant, Content: "", CreatedAt: time.Now().UTC()}}
+	model := &retrySequenceModel{outcomes: []retryModelOutcome{{result: &unusable}, {result: &unusable}, {}}}
+	service, store, turn := newAttemptTurnService(t, model)
+
+	service.executeTurn(context.Background(), turn.ID)
+
+	if model.callCount() != 3 || len(store.retryFailures) != 1 {
+		t.Fatalf("calls=%d retry_failures=%+v", model.callCount(), store.retryFailures)
+	}
+	finalization := model.requests[2]
+	if finalization.TerminalOutputRecovery || finalization.ToolCallFormatRecovery ||
+		len(finalization.Intrinsics) != 0 || !strings.HasSuffix(finalization.Profile.SystemPrompt, finalResponseSynthesisGuidance) {
+		t.Fatalf("finalization request=%+v", finalization)
+	}
+	if store.directive.FinalizationReason != TurnFinalizationInvalidOutput || store.directive.ToolMode != TurnDispatchToolsNone {
+		t.Fatalf("directive=%+v", store.directive)
+	}
+	if store.turn.State != TurnCompleted || store.turn.Response == nil {
+		t.Fatalf("turn=%+v", store.turn)
 	}
 }

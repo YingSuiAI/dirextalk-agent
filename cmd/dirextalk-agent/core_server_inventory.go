@@ -91,7 +91,14 @@ func (inventory coreServerWorkerInventory) Destroy(ctx context.Context, authorit
 		return coreserver.ErrBusy
 	}
 	if errors.Is(err, sshworker.ErrIdentity) {
-		return coreserver.ErrNotFound
+		// The Worker record this catalog entry refers to is gone (or belongs to
+		// another authority), so there is no machine the Agent can address and
+		// terminate. Failing here would leave the record stuck in "deleting"
+		// forever: the destroy marks the server deleting before this call, and
+		// nothing else ever clears it. Let the service finish its cleanup so the
+		// inventory matches reality; an instance that outlived its record is a
+		// separate reconciliation concern (tag scan by dirextalk:worker).
+		return nil
 	}
 	return err
 }
@@ -100,7 +107,14 @@ func (inventory coreServerWorkerInventory) FinalizeDestroy(ctx context.Context, 
 	if inventory.executor == nil {
 		return coreserver.ErrNotFound
 	}
-	return inventory.executor.FinalizeRetainedWorkerDestroy(ctx, authority.OwnerID, authority.AccountGeneration, serverID, "servers:"+operationID)
+	err := inventory.executor.FinalizeRetainedWorkerDestroy(ctx, authority.OwnerID, authority.AccountGeneration, serverID, "servers:"+operationID)
+	if errors.Is(err, sshworker.ErrIdentity) {
+		// Nothing to finalize once the Worker record is gone: the inventory
+		// cleanup already ran, so report success instead of a failure the user
+		// cannot act on.
+		return nil
+	}
+	return err
 }
 
 type coreServerArtifactDeleter struct {

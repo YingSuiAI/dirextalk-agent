@@ -31,7 +31,7 @@ func (c *coreServerCapability) Descriptor() *capv1.CapabilityDescriptor {
 		{ID: "get_server", DisplayName: "Get server", Type: capv1.OperationType_OPERATION_TYPE_READ, Scope: "agent:servers:read", InputSchema: serverIDInputSchema, ResultSchema: `{"additionalProperties":false,"properties":{"server":` + serverSchema + `},"required":["server"],"type":"object"}`},
 		{ID: "list_artifacts", DisplayName: "List artifacts", Type: capv1.OperationType_OPERATION_TYPE_READ, Scope: "agent:servers:read", InputSchema: listArtifactsInputSchema, ResultSchema: `{"additionalProperties":false,"properties":{"artifacts":{"items":` + artifactSchema + `,"type":"array"},"next_page_token":{"type":"string"}},"required":["artifacts","next_page_token"],"type":"object"}`},
 		{ID: "delete_artifact", DisplayName: "Delete artifact", Type: capv1.OperationType_OPERATION_TYPE_MUTATION, Scope: "agent:servers:write", Risk: capv1.RiskLevel_RISK_LEVEL_MEDIUM, InputSchema: deleteArtifactInputSchema, ResultSchema: `{"additionalProperties":false,"properties":{"artifact_id":{"format":"uuid","type":"string"},"deleted":{"const":true,"type":"boolean"}},"required":["artifact_id","deleted"],"type":"object"}`},
-		{ID: "destroy_server", DisplayName: "Destroy server", Type: capv1.OperationType_OPERATION_TYPE_MUTATION, Scope: "agent:servers:destroy", Risk: capv1.RiskLevel_RISK_LEVEL_HIGH, InputSchema: destroyServerInputSchema, ResultSchema: `{"additionalProperties":false,"properties":{"destroyed":{"const":true,"type":"boolean"},"server_id":{"format":"uuid","type":"string"}},"required":["server_id","destroyed"],"type":"object"}`},
+		{ID: "destroy_server", DisplayName: "Destroy server", Type: capv1.OperationType_OPERATION_TYPE_MUTATION, Scope: "agent:servers:destroy", Risk: capv1.RiskLevel_RISK_LEVEL_HIGH, InputSchema: destroyServerInputSchema, ResultSchema: `{"additionalProperties":false,"properties":{"destroyed":{"type":"boolean"},"notices":{"items":{"additionalProperties":false,"properties":{"detail":{"type":"string"},"name":{"type":"string"},"resource":{"type":"string"}},"required":["resource","name","detail"],"type":"object"},"type":"array"},"server_id":{"format":"uuid","type":"string"}},"required":["server_id","destroyed"],"type":"object"}`},
 	})
 	for _, operation := range d.Operations {
 		operation.Audience = []capv1.Audience{capv1.Audience_AUDIENCE_OWNER_CLIENT}
@@ -101,8 +101,16 @@ func (c *coreServerCapability) HandleOperation(ctx context.Context, operationID 
 		if err := decodeStrictObject(raw, &request); err != nil || request.Confirmation != "destroy_server" {
 			return nil, coreserver.ErrInvalid
 		}
-		err := c.service.DestroyServer(ctx, authority, request.ServerID, request.IdempotencyKey)
-		return marshalResult(map[string]any{"server_id": request.ServerID, "destroyed": true}, err)
+		// A destroy can leave a resource in place on purpose (a DNS record that
+		// no longer belongs to the Worker). Report those to the owner instead of
+		// claiming a clean, unnotified success.
+		noticeCtx, notices := coreserver.WithDestroyNotices(ctx)
+		err := c.service.DestroyServer(noticeCtx, authority, request.ServerID, request.IdempotencyKey)
+		result := map[string]any{"server_id": request.ServerID, "destroyed": err == nil}
+		if len(*notices) != 0 {
+			result["notices"] = *notices
+		}
+		return marshalResult(result, err)
 	default:
 		return nil, fmt.Errorf("unknown server operation %q", operationID)
 	}

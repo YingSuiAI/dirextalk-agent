@@ -29,6 +29,10 @@ var (
 	ErrBusy              = errors.New("ssh worker is busy")
 	ErrExecutionFailed   = errors.New("ssh worker execution has already failed")
 	ErrResultTooLarge    = errors.New("ssh worker result exceeds its limit")
+	// ErrResourceDestroy marks one named AWS resource that could not be
+	// destroyed. The Agent reports which resource failed instead of collapsing
+	// every cleanup problem into one opaque error.
+	ErrResourceDestroy = errors.New("worker resource destroy failed")
 )
 
 const (

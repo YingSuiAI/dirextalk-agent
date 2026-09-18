@@ -504,6 +504,11 @@ type ModelRunRequest struct {
 	// only after a quarantined text tool-call envelope. It can add corrective
 	// protocol guidance but cannot add tools or execution authority.
 	ToolCallFormatRecovery bool
+	// TerminalOutputRecovery is a dispatch-local, non-durable adapter hint set
+	// only for the single corrective round that follows a response carrying
+	// neither a usable final answer nor a valid tool call. It adds corrective
+	// guidance for the already admitted tools and never grants new authority.
+	TerminalOutputRecovery bool
 	// GuardTextToolCallEnvelope keeps the structured-tool protocol guard active
 	// when a capability-reducing finalization dispatch has removed every tool
 	// from the physical provider request. It is derived from the admitted turn

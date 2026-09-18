@@ -51,6 +51,30 @@ func IsCloudWorkerExecutionTool(value string) bool {
 	return value == IntrinsicCloudWorkerProposeToolName || value == IntrinsicCloudWorkerRunToolName
 }
 
+// IsReadOnlyIntrinsicToolName reports the Core intrinsics that only observe
+// state and return an observation to the model.
+func IsReadOnlyIntrinsicToolName(value string) bool {
+	switch value {
+	case IntrinsicCloudWorkerInventoryToolName, IntrinsicStaticSiteReadToolName:
+		return true
+	default:
+		return false
+	}
+}
+
+// IsTerminalIntrinsicToolName reports the Core intrinsics that commit the
+// turn's answer. They end the turn instead of extending a tool loop, which is
+// why the turn's tool budget never has to hold calls back for them.
+func IsTerminalIntrinsicToolName(value string) bool {
+	switch value {
+	case IntrinsicStaticSitePublishToolName, IntrinsicScheduleCreateToolName,
+		IntrinsicCloudWorkerProposeToolName, IntrinsicCloudWorkerDestroyToolName:
+		return true
+	default:
+		return false
+	}
+}
+
 // Core intrinsics and extension tools share the same conservative provider-
 // safe identifier grammar.
 func validToolName(value string) bool {

@@ -481,12 +481,19 @@ type TurnDispatchToolMode string
 const (
 	TurnDispatchToolsAdmitted TurnDispatchToolMode = "admitted"
 	TurnDispatchToolsNone     TurnDispatchToolMode = "none"
+	// TurnDispatchToolsTerminal keeps only the intrinsics that commit the
+	// turn (publish a page, create a schedule, propose or destroy a Worker).
+	// A dispatch that stopped before delivery still needs them: the call ends
+	// the turn instead of extending a tool loop, so the result the model was
+	// about to deliver is not lost behind a tools-disabled synthesis.
+	TurnDispatchToolsTerminal TurnDispatchToolMode = "terminal"
 )
 
 // TurnDispatchDirective is the durable, capability-reducing control applied
 // to one physical model dispatch. The admitted TurnRuntimeSnapshot remains the
 // immutable capability envelope; a directive can add bounded loop guidance,
-// force one admitted tool, or remove every tool for final synthesis.
+// force one admitted tool, keep only the delivery intrinsics, or remove every
+// tool for final synthesis.
 type TurnDispatchDirective struct {
 	Version            int                    `json:"version"`
 	Guidance           TurnDispatchGuidance   `json:"guidance"`
@@ -512,13 +519,18 @@ func (d TurnDispatchDirective) ValidateFor(runtime TurnRuntimeSnapshot, extensio
 	default:
 		return ErrInvalid
 	}
-	if d.ToolMode != TurnDispatchToolsAdmitted && d.ToolMode != TurnDispatchToolsNone {
+	switch d.ToolMode {
+	case TurnDispatchToolsAdmitted, TurnDispatchToolsTerminal, TurnDispatchToolsNone:
+	default:
 		return ErrInvalid
 	}
-	if d.Guidance == TurnDispatchGuidanceLoopSynthesis && d.ToolMode != TurnDispatchToolsNone {
+	if d.Guidance == TurnDispatchGuidanceLoopSynthesis && d.ToolMode == TurnDispatchToolsAdmitted {
 		return ErrInvalid
 	}
 	if d.ToolMode == TurnDispatchToolsNone && (d.ForcedToolName != "" || d.Guidance != TurnDispatchGuidanceLoopSynthesis) {
+		return ErrInvalid
+	}
+	if d.ToolMode == TurnDispatchToolsTerminal && (d.ForcedToolName != "" || d.Guidance != TurnDispatchGuidanceLoopSynthesis) {
 		return ErrInvalid
 	}
 	if d.Guidance == TurnDispatchGuidanceLoopNudge && d.ForcedToolName != "" {
@@ -526,7 +538,8 @@ func (d TurnDispatchDirective) ValidateFor(runtime TurnRuntimeSnapshot, extensio
 	}
 	if d.FinalizationReason != "" {
 		if NewTurnFinalizationIntent(d.FinalizationReason).Validate() != nil ||
-			d.ToolMode != TurnDispatchToolsNone || d.Guidance != TurnDispatchGuidanceLoopSynthesis {
+			(d.ToolMode != TurnDispatchToolsNone && d.ToolMode != TurnDispatchToolsTerminal) ||
+			d.Guidance != TurnDispatchGuidanceLoopSynthesis {
 			return ErrInvalid
 		}
 	}
