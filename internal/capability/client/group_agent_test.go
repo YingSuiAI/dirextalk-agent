@@ -89,7 +89,7 @@ func TestGroupAgentPrivateClientUsesFixedOperationsAndStableMutationIDs(t *testi
 	if err := c.CompleteGroupAgentRequest(ctx, id, 4, "cancelled"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.ReadGroupAgentHistory(ctx, id, 4, 100, ""); err == nil {
+	if _, err := c.ReadGroupAgentHistory(ctx, id, 4, groupHistoryMaxLimit+1, ""); err == nil {
 		t.Fatal("unbounded history accepted")
 	}
 }

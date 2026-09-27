@@ -184,11 +184,16 @@ func TestChatStreamAndStartTurnSharePostgresModelBudget(t *testing.T) {
 			command := adapterChatCommand(snapshot)
 			switch mode {
 			case "chat":
-				if response, err := service.Chat(context.Background(), command); err != nil || !response.Done || response.Message.Content == "" {
-					t.Fatalf("chat budget response=%+v err=%v", response, err)
+				ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+				defer cancel()
+				if response, err := service.Chat(ctx, command); err != nil || !response.Done || response.Message.Content == "" {
+					turn := waitAdapterTurn(t, store.CoreConversationStore, command.RequestID)
+					t.Fatalf("chat budget response=%+v err=%v state=%s dispatches=%d", response, err, turn.State, turn.ModelDispatchCount)
 				}
 			case "stream_chat":
-				stream, err := service.StreamChat(context.Background(), command)
+				ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+				defer cancel()
+				stream, err := service.StreamChat(ctx, command)
 				if err != nil {
 					t.Fatal(err)
 				}

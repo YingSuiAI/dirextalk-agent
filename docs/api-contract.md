@@ -190,8 +190,8 @@ or stream after admission. It never cancels the accepted Turn; callers use
   omission means `interactive`. `scheduled` is reserved for the trusted due-Task
   adapter and is rejected on owner chat surfaces. The selected mode is bound by
   the request fingerprint and admits a versioned immutable policy: interactive,
-  deep, scheduled, and worker orchestration each use 52 provider dispatches,
-  one hour of cumulative model-active time, and 48 tool calls. A supported policy version accepts previously
+  deep, scheduled, and worker orchestration each use 200 provider dispatches,
+  one hour of cumulative model-active time, and 100 tool calls. A supported policy version accepts previously
   admitted safe values within those absolute maxima instead of comparing them
   with the current binary presets, so a safe preset change cannot strand an
   active turn. Unsupported versions, unknown modes, out-of-range values, or a
@@ -265,8 +265,8 @@ or stream after admission. It never cancels the accepted Turn; callers use
   `provider_timeout`, not ordinary `model_budget_exhausted`; earlier provider
   failures retain their own classification. The
   total physical attempt sequence can therefore reach the admitted dispatch
-  cap plus one normally (at most 53), or plus two only for that exact live
-  format-recovery case (at most 54). If the final attempt returns useful text,
+  cap plus one normally (at most 201), or plus two only for that exact live
+  format-recovery case (at most 202). If the final attempt returns useful text,
   that text is the normal completed Markdown response. If the model returned
   before every dispatch guard and only the durable delta flush crosses the
   ordinary model-active deadline, Core does not relabel that completed result

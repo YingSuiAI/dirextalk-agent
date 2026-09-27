@@ -7,6 +7,8 @@
 1. Let a group Agent use its shared conversation, rolling digest, roster, model selection, usage accounting, and approved Worker tools while keeping owner-only capabilities private.
 2. Scope GitHub, Web Search, AWS, model, and extension credentials and bindings to each group, preserving the selected scope through tool dispatch and refusing group GitHub writes.
 3. Let a group create and run schedules within its own room, deliver scheduled results through Product, and publish verified artifacts after answers while preserving delivery and Worker-destroy completion.
+4. Raise the durable model-attempt ceiling to match the admitted 200 ordinary dispatches, one final synthesis, and one format-recovery retry, preserving budget finalization at the boundary.
+5. Keep previously admitted lower execution budgets unchanged. A v1.0.217 binary cannot resume turns admitted with the new 200-dispatch policy after rollback.
 
 ## v1.0.217
 

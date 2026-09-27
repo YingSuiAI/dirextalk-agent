@@ -17,6 +17,12 @@ contract](message-server-integration-development-contract.md), and
 
 ## Implemented at HEAD
 
+- Schema 41 raises the durable attempt and dispatch-directive ceilings to 202,
+  matching 200 admitted model dispatches plus one final synthesis and one
+  format-recovery retry. The exact PostgreSQL release fixture passed targeted
+  Chat, StreamChat, StartTurn, fresh-schema, and schema-40 upgrade tests. Lower
+  persisted execution policies retain their limits; v1.0.217 cannot resume
+  turns admitted under the new 200-dispatch policy after binary rollback.
 - Public errors retain semantic type and HTTP status instead of `4xx`/exit-code
   collapse; balance, auth, permissions, request/context limits, rate limits,
   timeout and service failures remain actionable without another model call.
@@ -278,8 +284,8 @@ contract](message-server-integration-development-contract.md), and
   explicit equal operation and turn identities.
 - Native turns persist execution-policy version, mode, and admitted values, and
   use those values through the same durable counters during recovery.
-  Interactive, deep, scheduled, and Worker orchestration each admit 52
-  dispatches, one model-active hour, and 48 tool calls. Supported safe
+  Interactive, deep, scheduled, and Worker orchestration each admit 200
+  dispatches, one model-active hour, and 100 tool calls. Supported safe
   historical values remain executable after preset changes, while unsupported
   or unsafe policies fail before claim/event mutation. Worker-owned runtime and
   Task limits remain independent. Tool results with validated runtime references persist

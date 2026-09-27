@@ -3073,3 +3073,14 @@ CREATE TABLE core_group_extension_bindings (
     PRIMARY KEY (owner_id, account_generation, room_id, installation_id)
 );
 -- dirextalk-agent migration end 000040_group_extension_bindings.up.sql
+-- dirextalk-agent migration begin 000041_model_dispatch_budget_ceiling.up.sql
+-- The admitted policy now allows 200 ordinary model dispatches. Reserve one
+-- final synthesis and one live structured-tool-format retry in both durable
+-- attempt ledgers; older lower policy snapshots keep their original bounds.
+ALTER TABLE core_conversation_model_attempts
+    DROP CONSTRAINT core_conversation_model_attempts_attempt_sequence_check,
+    ADD CONSTRAINT core_conversation_model_attempts_attempt_sequence_check CHECK (attempt_sequence BETWEEN 1 AND 202);
+ALTER TABLE core_conversation_model_dispatch_directives
+    DROP CONSTRAINT core_conversation_model_dispatch_attempt_sequence_check,
+    ADD CONSTRAINT core_conversation_model_dispatch_attempt_sequence_check CHECK (attempt_sequence BETWEEN 1 AND 202);
+-- dirextalk-agent migration end 000041_model_dispatch_budget_ceiling.up.sql

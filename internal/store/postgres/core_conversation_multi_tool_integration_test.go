@@ -475,11 +475,22 @@ func TestToolFreeFinalizationFormatRetryPreservesDirectivePostgres(t *testing.T)
 	assertFinalizationFormatAttemptCeilingPostgres(t, h)
 }
 
+func TestToolFreeFinalizationFormatRetryAfterSchema40UpgradePostgres(t *testing.T) {
+	h := openTurnDBAtVersion(t, 40)
+	if err := ApplyMigrations(context.Background(), h.pool, h.store.instanceID.String()); err != nil {
+		t.Fatal(err)
+	}
+	assertFinalizationFormatAttemptCeilingPostgres(t, h)
+}
+
 func assertFinalizationFormatAttemptCeilingPostgres(t *testing.T, h *turnDBHarness) {
 	t.Helper()
 	ctx := context.Background()
 	turn := startPersistedFinalization(t, h, core.TurnFinalizationToolBudget)
-	if _, err := h.pool.Exec(ctx, `UPDATE core_conversation_turns SET model_dispatch_count=52,model_active_milliseconds=3600000 WHERE turn_id=$1`, turn.ID); err != nil {
+	ordinary := int(core.MaxAdmittedTurnModelDispatches)
+	finalAttempt := ordinary + core.MaxTurnFinalizationDispatches
+	maxPhysical := finalAttempt + core.MaxTurnFinalizationFormatRetries
+	if _, err := h.pool.Exec(ctx, `UPDATE core_conversation_turns SET model_dispatch_count=$2,model_active_milliseconds=3600000 WHERE turn_id=$1`, turn.ID, ordinary); err != nil {
 		t.Fatal(err)
 	}
 	lease, err := h.store.ClaimTurn(ctx, turn.ID, time.Now().UTC(), time.Minute)
@@ -489,7 +500,7 @@ func assertFinalizationFormatAttemptCeilingPostgres(t *testing.T, h *turnDBHarne
 	directive := core.NewTurnDispatchDirective(core.TurnDispatchGuidanceLoopSynthesis, core.TurnDispatchToolsNone, "")
 	directive.FinalizationReason = core.TurnFinalizationToolBudget
 	prepared, err := h.store.PrepareTurnModel(ctx, lease, directive)
-	if err != nil || prepared.ModelDispatchCount != 53 {
+	if err != nil || prepared.ModelDispatchCount != uint32(finalAttempt) {
 		t.Fatalf("final attempt=%d err=%v", prepared.ModelDispatchCount, err)
 	}
 	if err = h.store.BindTurnModelRuntime(ctx, lease, *prepared.RuntimeSnapshot); err != nil {
@@ -505,7 +516,7 @@ func assertFinalizationFormatAttemptCeilingPostgres(t *testing.T, h *turnDBHarne
 		t.Fatal(err)
 	}
 	retried, err := h.store.PrepareTurnModelRetry(ctx, lease)
-	if err != nil || retried.ModelDispatchCount != 54 ||
+	if err != nil || retried.ModelDispatchCount != uint32(maxPhysical) ||
 		retried.ModelActiveDuration != prepared.ModelActiveDuration {
 		t.Fatalf("retried=%+v err=%v", retried, err)
 	}
@@ -514,10 +525,10 @@ func assertFinalizationFormatAttemptCeilingPostgres(t *testing.T, h *turnDBHarne
 		t.Fatalf("retry directive=%+v first=%+v err=%v", retryDirective, first, err)
 	}
 	for _, table := range []string{"core_conversation_model_attempts", "core_conversation_model_dispatch_directives"} {
-		_, err := h.pool.Exec(ctx, `UPDATE `+table+` SET attempt_sequence=55 WHERE turn_id=$1 AND attempt_sequence=54`, turn.ID)
+		_, err := h.pool.Exec(ctx, `UPDATE `+table+` SET attempt_sequence=$2 WHERE turn_id=$1 AND attempt_sequence=$3`, turn.ID, maxPhysical+1, maxPhysical)
 		var constraintErr *pgconn.PgError
 		if !errors.As(err, &constraintErr) || constraintErr.Code != "23514" {
-			t.Fatalf("%s accepted physical attempt55: %v", table, err)
+			t.Fatalf("%s accepted physical attempt %d: %v", table, maxPhysical+1, err)
 		}
 	}
 
