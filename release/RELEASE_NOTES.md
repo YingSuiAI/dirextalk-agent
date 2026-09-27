@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## v1.0.218
+
+1. Let a group Agent use its shared conversation, rolling digest, roster, model selection, usage accounting, and approved Worker tools while keeping owner-only capabilities private.
+2. Scope GitHub, Web Search, AWS, model, and extension credentials and bindings to each group, preserving the selected scope through tool dispatch and refusing group GitHub writes.
+3. Let a group create and run schedules within its own room, deliver scheduled results through Product, and publish verified artifacts after answers while preserving delivery and Worker-destroy completion.
+
 ## v1.0.217
 
 1. Allow a new non-speech model profile to reuse an active matching profile's credential during sync, while keeping the secret sealed to the new profile identity and rejecting incompatible or ambiguous reuse.
