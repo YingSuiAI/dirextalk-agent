@@ -565,8 +565,8 @@ request-dialect digest, intrinsic tool schemas, extension/attachment digests,
 and versioned execution policy. Owner chat accepts only `interactive`, `deep`,
 or `worker_orchestration`, defaulting omission to `interactive`; only the
 trusted due-Task adapter may admit `scheduled`. Interactive, deep, scheduled,
-and worker orchestration each admit 52 model dispatches, one cumulative
-model-active hour, and 48 tool calls. The supported policy version validates persisted values against
+and worker orchestration each admit 200 model dispatches, one cumulative
+model-active hour, and 100 tool calls. The supported policy version validates persisted values against
 absolute safety bounds rather than current presets, and every service and
 PostgreSQL budget decision reads those admitted values. Unsupported versions,
 unknown modes, unsafe values, and selector/runtime mismatches fail before turn
@@ -596,7 +596,7 @@ progress-idle check. For an ordinary dispatch, the admitted remaining
 model-active clock is stronger and owns equal expirations as
 `model_budget_exhausted`; a dispatch-local expiry is `provider_timeout`. A
 durable finalization intent normally reserves one additional physical attempt,
-so the ledger permits at most sequence 53 without changing the admitted
+so the ledger permits at most sequence 201 without changing the admitted
 ordinary fuse. The finalization attempt has no intrinsic tools, extensions,
 extension snapshots, or forced tool; receives fresh standard dispatch guards
 without an additional finalization-only deadline; and is not added to ordinary
@@ -605,7 +605,7 @@ ordinary failure. The sole exception is a quarantined
 `MODEL_TOOL_CALL_FORMAT_INVALID` response from a turn whose admitted runtime
 originally exposed structured tools: one live recovery attempt copies the same
 tools-disabled directive, receives final-answer-only protocol guidance, and may
-reach sequence 54 with fresh standard dispatch guards. It never restores tool
+reach sequence 202 with fresh standard dispatch guards. It never restores tool
 authority. A finalization guard expiry is `provider_timeout`, not ordinary
 budget exhaustion; earlier provider failures retain their classification.
 Intent persistence before dispatch allows one attempt after restart.

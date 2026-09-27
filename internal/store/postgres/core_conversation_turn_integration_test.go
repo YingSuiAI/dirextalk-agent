@@ -254,7 +254,7 @@ func TestCoreConversationNewBudgetPhysicalRetryAccountingPostgres(t *testing.T) 
 	ctx := context.Background()
 	turn := startAdmittedTurn(t, h, turnCommand())
 	policy := turn.RuntimeSnapshot.ExecutionPolicy
-	if policy.MaxToolCalls != 48 || policy.MaxModelDispatches != 52 || policy.MaxModelActiveDuration() != time.Hour {
+	if policy.MaxToolCalls != core.MaxAdmittedTurnToolCalls || policy.MaxModelDispatches != core.MaxAdmittedTurnModelDispatches || policy.MaxModelActiveDuration() != time.Hour {
 		t.Fatalf("new admission policy=%+v", policy)
 	}
 	// The formerly terminal 24-dispatch/20-minute boundary is ordinary work
